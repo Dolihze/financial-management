@@ -1,0 +1,21 @@
+node_modules/
+dist/
+target/
+*.log
+.env
+.env.local
+
+# 本地数据库与备份
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Tauri sidecar 产物
+apps/desktop/src-tauri/binaries/
+apps/desktop/src-tauri/server-dist/
+apps/desktop/src-tauri/gen/
+
+.vscode/*
+!.vscode/extensions.json
+.idea/

@@ -1,0 +1,33 @@
+{
+  "name": "financial-management",
+  "version": "0.1.0",
+  "private": true,
+  "description": "公司财务管理软件 (Tauri + Vue3 + Node.js)",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "dev": "concurrently -k -n server,desktop -c blue,green \"npm run dev:server\" \"wait-on -t 60000 http-get://127.0.0.1:17890/api/health && npm run tauri:dev\"",
+    "dev:server": "npm run dev -w @fm/server",
+    "dev:web": "npm run dev -w @fm/desktop",
+    "tauri:dev": "npm run tauri -w @fm/desktop -- dev",
+    "tauri:build": "npm run tauri -w @fm/desktop -- build",
+    "build:server": "npm run build -w @fm/server",
+    "build:web": "npm run build -w @fm/desktop",
+    "test": "npm run test -w @fm/shared && npm run test -w @fm/server",
+    "typecheck": "npm run typecheck -w @fm/shared && npm run typecheck -w @fm/server && npm run typecheck -w @fm/desktop"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.0",
+    "wait-on": "^9.0.0"
+  },
+  "allowScripts": {
+    "better-sqlite3@12.11.1": true,
+    "esbuild@0.28.2": true,
+    "esbuild@0.21.5": true
+  }
+}

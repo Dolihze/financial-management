@@ -1,0 +1,88 @@
+<script setup lang="ts">
+import { ACCOUNT_TYPES, ACCOUNT_TYPE_LABELS, type AccountType } from '@fm/shared';
+import { ElMessage, ElMessageBox } from 'element-plus';
+import { reactive, ref } from 'vue';
+import { api } from '@/api';
+import { useBaseStore } from '@/stores/base';
+import { errorMessage, formatMoney, toCents } from '@/utils/format';
+
+const base = useBaseStore();
+const dialog = ref(false);
+const form = reactive({ name: '', type: 'bank' as AccountType, opening: '0', note: '' });
+
+function openDialog() {
+  Object.assign(form, { name: '', type: 'bank', opening: '0', note: '' });
+  dialog.value = true;
+}
+
+async function submit() {
+  try {
+    await api.accounts.create({
+      name: form.name,
+      type: form.type,
+      openingBalance: toCents(form.opening || '0'),
+      note: form.note
+    });
+    dialog.value = false;
+    await base.loadAccounts();
+    ElMessage.success('账户已创建');
+  } catch (e) {
+    ElMessage.error(errorMessage(e));
+  }
+}
+
+async function archive(id: string, name: string) {
+  try {
+    await ElMessageBox.confirm(`确认归档账户「${name}」？归档后不能再记账（仅余额为 0 的账户可归档）。`, '归档账户', { type: 'warning' });
+    await api.accounts.archive(id);
+    await base.loadAccounts();
+    ElMessage.success('已归档');
+  } catch (e) {
+    if (e !== 'cancel') ElMessage.error(errorMessage(e));
+  }
+}
+</script>
+
+<template>
+  <div>
+    <div class="page-toolbar">
+      <el-button type="primary" icon="Plus" @click="openDialog">新增账户</el-button>
+      <span class="spacer" />
+      <span>合计：<b>{{ formatMoney(base.totalBalance) }}</b></span>
+    </div>
+
+    <el-table :data="base.accounts" border>
+      <el-table-column prop="name" label="账户名称" />
+      <el-table-column label="类型" width="120">
+        <template #default="{ row }">{{ ACCOUNT_TYPE_LABELS[row.type as AccountType] }}</template>
+      </el-table-column>
+      <el-table-column label="期初余额" align="right" width="160">
+        <template #default="{ row }">{{ formatMoney(row.openingBalance) }}</template>
+      </el-table-column>
+      <el-table-column label="当前余额" align="right" width="160">
+        <template #default="{ row }"><b>{{ formatMoney(row.balance) }}</b></template>
+      </el-table-column>
+      <el-table-column prop="note" label="备注" />
+      <el-table-column label="操作" width="100">
+        <template #default="{ row }"><el-button link type="danger" @click="archive(row.id, row.name)">归档</el-button></template>
+      </el-table-column>
+    </el-table>
+
+    <el-dialog v-model="dialog" title="新增账户" width="460px">
+      <el-form :model="form" label-width="90px">
+        <el-form-item label="账户名称"><el-input v-model="form.name" placeholder="如：招商银行基本户" /></el-form-item>
+        <el-form-item label="账户类型">
+          <el-select v-model="form.type" style="width: 100%">
+            <el-option v-for="t in ACCOUNT_TYPES" :key="t" :value="t" :label="ACCOUNT_TYPE_LABELS[t]" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="期初余额"><el-input v-model="form.opening" placeholder="元，如 10000.00" /></el-form-item>
+        <el-form-item label="备注"><el-input v-model="form.note" /></el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="dialog = false">取消</el-button>
+        <el-button type="primary" :disabled="!form.name.trim()" @click="submit">确定</el-button>
+      </template>
+    </el-dialog>
+  </div>
+</template>

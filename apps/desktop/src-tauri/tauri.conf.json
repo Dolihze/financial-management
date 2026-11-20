@@ -1,0 +1,42 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "财务管理",
+  "version": "0.1.0",
+  "identifier": "com.company.financial-management",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "财务管理",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 1000,
+        "minHeight": 640,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' http://127.0.0.1:17890 http://localhost:17890 ipc: http://ipc.localhost; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": ["icons/icon.ico"],
+    "externalBin": ["binaries/node"],
+    "resources": {
+      "server-dist/**/*": "server-dist/"
+    },
+    "windows": {
+      "nsis": {
+        "languages": ["SimpChinese"],
+        "installMode": "currentUser"
+      }
+    }
+  }
+}

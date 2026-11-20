@@ -66,6 +66,14 @@ npm run dev
 #   npm run dev:web      仅前端  http://127.0.0.1:1420（浏览器调试，不开桌面窗口）
 #   npm run tauri:dev    仅桌面壳（需后端已在运行）
 
+# 演示数据：一条命令用演示库启动（后端 + 前端 + 桌面窗口），不会碰真实库 finance.db
+npm run dev:demo                          # demo.db 不存在时自动生成（约 300 笔、近 12 个月、6 个账户）
+npm run dev:demo -- --reset               # 先重新生成演示库再启动
+npm run dev:demo -- --reset --count=3000 --months=24 --seed=7
+# 只生成不启动：
+npm run seed -w @fm/server                # 已存在 demo.db 则报错，不覆盖
+npm run seed -w @fm/server -- --reset
+
 # 打包发布
 npm run bundle -w @fm/server # 先打包后端 sidecar
 npm run tauri:build          # 生成 NSIS 安装包

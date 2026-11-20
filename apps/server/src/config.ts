@@ -21,6 +21,15 @@ function defaultDataDir(): string {
   return join(base, 'financial-management');
 }
 
+/**
+ * 演示库路径：与真实库放在同一数据目录，但文件名不同。
+ * 只取决于数据目录，不受 FM_DB_PATH 影响（FM_DB_PATH 可能已被指向演示库本身）。
+ * 根目录 scripts/dev-demo.mjs 里有同样的规则，修改时需同步。
+ */
+export function getDemoDbPath(): string {
+  return join(process.env.FM_DATA_DIR ?? defaultDataDir(), 'demo.db');
+}
+
 /** 解析端口：未设置时用默认值；非法值直接报错，避免带着 NaN 去监听 */
 export function parsePort(raw: string | undefined): number {
   if (raw === undefined || raw.trim() === '') return DEFAULT_PORT;

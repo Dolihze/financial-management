@@ -78,10 +78,10 @@ onBeforeUnmount(() => {
         <el-card shadow="never"><el-statistic title="公司总余额" :value="formatMoney(data.totalBalance)" /></el-card>
       </el-col>
       <el-col :span="8">
-        <el-card shadow="never"><el-statistic title="本月收入"><template #default><span class="money-in">{{ formatMoney(data.monthIncome) }}</span></template></el-statistic></el-card>
+        <el-card shadow="never"><el-statistic title="本月收入" :value="formatMoney(data.monthIncome)" value-style="color: #67c23a" /></el-card>
       </el-col>
       <el-col :span="8">
-        <el-card shadow="never"><el-statistic title="本月支出"><template #default><span class="money-out">{{ formatMoney(data.monthExpense) }}</span></template></el-statistic></el-card>
+        <el-card shadow="never"><el-statistic title="本月支出" :value="formatMoney(data.monthExpense)" value-style="color: #f56c6c" /></el-card>
       </el-col>
     </el-row>
 

@@ -11,6 +11,9 @@ import type {
 } from '@fm/shared';
 import { get, getBaseUrl, patch, post, upload } from './http';
 
+export { resolveBackendBase, waitBackendReady } from './backend';
+export { setBaseUrl } from './http';
+
 export interface TransactionFilter {
   accountId?: string;
   type?: TransactionType;

@@ -24,3 +24,7 @@
 
 - Node 24 + npm 11：安装脚本需显式批准（`npm approve-scripts`），better-sqlite3 / esbuild 已批准。
 - 命令行用 PowerShell 5.1 调接口传中文需显式 UTF-8 字节，否则会出现 `????`（客户端编码问题，非服务端问题）。
+- `src-tauri/src/lib.rs` 的 Job Object 必须在派生任何子进程之前调用（`run()` 第一行），否则 sidecar 不会被系统带走。
+- 传给 Node sidecar 的路径必须经 `to_plain_path()` 去掉 Windows 的 `\\?\` 前缀，否则后端启动失败。
+- 后端端口：**发布版是随机端口**（Rust 选好后经 `FM_PORT` 传给后端，前端经 `get_backend_url` 取得），不要在前端写死端口。只有**开发版固定端口 `17890`**，它出现在三处需同步：`apps/server/src/config.ts`(`DEFAULT_PORT`)、`src-tauri/src/lib.rs`(`DEV_BACKEND_PORT`)、`apps/desktop/src/api/backend.ts`(`DEV_BASE`)，另外根 `package.json` 的 `dev` 脚本里 wait-on 地址也要一致。CSP 已放宽为 `http://127.0.0.1:*`，无需随端口修改。
+- `src-tauri/Cargo.toml` 的 `custom-protocol` feature 必须保持为 default：直接 `cargo build --release` 时靠它内嵌前端资源，缺了它 release 版会去连 devUrl（ERR_CONNECTION_REFUSED）。`tauri dev` 用 `--no-default-features` 关闭它，`tauri build` 自动开启。

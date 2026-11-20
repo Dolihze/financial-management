@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
 import { useRoute } from 'vue-router';
-import { api } from '@/api';
+import { api, resolveBackendBase, setBaseUrl, waitBackendReady } from '@/api';
 import { useBaseStore } from '@/stores/base';
 
 const route = useRoute();
@@ -9,27 +9,33 @@ const base = useBaseStore();
 
 const ready = ref(false);
 const failed = ref(false);
+const failMessage = ref('后端服务未能启动，请重启应用');
 
-/** 等待本地后端（sidecar）就绪，最多重试约 15 秒 */
-async function waitForBackend(): Promise<boolean> {
-  for (let i = 0; i < 50; i++) {
-    try {
-      if ((await api.health()).ok) return true;
-    } catch {
-      /* 后端尚未启动 */
-    }
-    await new Promise((r) => setTimeout(r, 300));
-  }
-  return false;
-}
-
+/**
+ * 启动流程：
+ * 1. 向 Tauri 取后端地址（发布版端口是随机的）
+ * 2. 等 Rust 发出 backend-ready 事件（端口可连接）
+ * 3. 再用 /api/health 确认 HTTP 层真的可用（端口通不等于 Fastify 已完成路由注册）
+ */
 async function boot() {
   failed.value = false;
   ready.value = false;
-  if (await waitForBackend()) {
+  try {
+    setBaseUrl(await resolveBackendBase());
+    if (!(await waitBackendReady())) throw new Error('等待后端启动超时，请检查后端日志');
+    // 端口就绪后 HTTP 层几乎立刻可用，这里只做短重试兜底
+    for (let i = 0; ; i++) {
+      try {
+        if ((await api.health()).ok) break;
+      } catch (e) {
+        if (i >= 10) throw e;
+      }
+      await new Promise((r) => setTimeout(r, 300));
+    }
     await base.loadAll();
     ready.value = true;
-  } else {
+  } catch (e) {
+    failMessage.value = e instanceof Error ? e.message : String(e);
     failed.value = true;
   }
 }
@@ -60,7 +66,7 @@ const menus = [
         <b>{{ route.meta.title }}</b>
       </el-header>
       <el-main>
-        <el-result v-if="failed" icon="error" title="无法连接本地服务" sub-title="后端服务未能启动，请重启应用">
+        <el-result v-if="failed" icon="error" title="无法连接本地服务" :sub-title="failMessage">
           <template #extra><el-button type="primary" @click="boot">重试</el-button></template>
         </el-result>
         <div v-else-if="!ready" v-loading="true" style="height: 300px" element-loading-text="正在启动本地服务..." />

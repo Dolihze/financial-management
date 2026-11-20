@@ -23,9 +23,9 @@ financial-management/
 
 ```
 ┌─────────────── Tauri 窗口 (WebView2) ───────────────┐
-│  Vue3 + Element Plus  ──HTTP──▶  127.0.0.1:17890    │
+│  Vue3 + Element Plus  ──HTTP──▶  127.0.0.1:<端口>   │
 └─────────────────────────────────────┬───────────────┘
-        Tauri(Rust) 启动/关闭 sidecar │
+        Tauri(Rust) 启动/关闭 sidecar │  端口：开发固定 17890，发布随机
                           ┌───────────▼───────────┐
                           │ Node.js + Fastify      │
                           │ SQLite (WAL)           │
@@ -33,6 +33,7 @@ financial-management/
 ```
 
 - 前端只通过 `src/api/` 访问后端，**后期联网只需修改 `api/http.ts` 的 baseUrl 并加 token**，页面代码无需改动。
+- **端口**：开发版固定 `17890`（`npm run dev` 的 wait-on、后端都依赖它）；发布版由 Rust 向系统申请空闲端口，通过环境变量 `FM_PORT` 传给后端，前端用 Tauri 命令 `get_backend_url` 获取，因此不会与其它软件抢端口。
 - 后端仅监听 `127.0.0.1`，不暴露到局域网。
 - 数据库位置：开发时 `%APPDATA%\financial-management\finance.db`；发布后在 Tauri 应用数据目录。
 
@@ -71,8 +72,17 @@ npm run tauri:build          # 生成 NSIS 安装包
 ```
 
 > `npm run dev` 的启动顺序：先起后端 → 等 `/api/health` 就绪 → 再起 Tauri（其 `beforeDevCommand` 会启动 vite）。
-> `tauri dev` 为 debug 构建，Rust 侧**不会**启动 sidecar，后端由 `npm run dev` 统一管理；`tauri build`（release）才会启动随包分发的后端。
-> 端口 17890（后端）/ 1420（前端）被占用时会启动失败，请先关掉旧的开发进程。
+> `tauri dev` 为 debug 构建，Rust 侧**不会**启动 sidecar，只会探测 `npm run dev` 启动的后端是否就绪；`tauri build`（release）才会启动随包分发的后端。
+> 开发版端口 17890（后端）/ 1420（前端）被占用时会启动失败，请先关掉旧的开发进程；发布版不受影响（端口随机）。
+
+### 进程生命周期（`src-tauri/src/lib.rs`）
+
+- **Job Object（Windows）**：应用启动时把自己放入带 `KILL_ON_JOB_CLOSE` 的 Job，派生的后端 sidecar 自动继承。应用无论正常退出、崩溃、被任务管理器强杀还是被 `tauri dev` 重编译杀掉，系统都会一并终止后端，不会残留进程占用端口。
+- **随机端口（发布版）**：`pick_port()` 绑定 `127.0.0.1:0` 取空闲端口，窗口创建前就已确定；开发版固定 `DEV_BACKEND_PORT = 17890`。
+- **就绪通知**：Rust 后台线程每 100ms 探测端口（最长 60 秒），不阻塞窗口创建；就绪后先写状态再发 `backend-ready` 事件（payload 为 bool）。前端 `api/backend.ts` 监听事件，并用 `is_backend_ready` 命令补查，防止错过事件。窗口因此立即出现，等待期间显示"正在启动本地服务"。
+- **启动流程**（`App.vue`）：`get_backend_url` 取地址 → 等 `backend-ready` → `/api/health` 短重试确认 HTTP 层可用 → 加载数据。失败时界面显示真实原因而非固定文案。
+- **双重保障**：除 Job Object 外，正常退出时仍主动 `kill`，且后端监听 stdin 关闭自行退出（`FM_EXIT_ON_STDIN_CLOSE=1`）。
+- **注意**：Windows 下 Tauri 的 `resource_dir()` 返回 `\\?\E:\...` 扩展路径，Node 无法解析（报 `EISDIR: lstat 'E:'`），传给后端前必须经 `to_plain_path()` 去掉前缀。
 
 ## API 概览
 

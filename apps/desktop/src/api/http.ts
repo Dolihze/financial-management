@@ -1,11 +1,13 @@
 /**
  * HTTP 客户端。后端地址集中在此处管理：
- * - 本地模式：Tauri 启动的 sidecar，监听 127.0.0.1:17890
+ * - 本地模式：启动时由 App.vue 调用 setBaseUrl(await resolveBackendBase())，
+ *   开发版为固定端口，发布版为 Tauri 随机选取的端口（见 ./backend.ts）
  * - 联网模式（后期）：把 baseUrl 指向云端服务并附带 token 即可
  */
-const DEFAULT_BASE = 'http://127.0.0.1:17890';
+import { DEV_BASE } from './backend';
 
-let baseUrl: string = import.meta.env.VITE_API_BASE ?? DEFAULT_BASE;
+// 初始值仅用于模块加载到 setBaseUrl 之间；发布版真实端口在启动时才确定
+let baseUrl: string = DEV_BASE;
 let authToken: string | null = null;
 
 export const setBaseUrl = (url: string): void => {

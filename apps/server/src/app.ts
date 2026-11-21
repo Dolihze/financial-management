@@ -9,12 +9,14 @@ import { registerCategoryRoutes } from './routes/categories';
 import { registerCounterpartyRoutes } from './routes/counterparties';
 import { registerImportRoutes } from './routes/imports';
 import { registerOverviewRoutes } from './routes/overview';
+import { registerProjectRoutes } from './routes/projects';
 import { registerTransactionRoutes } from './routes/transactions';
 import { AccountService } from './services/accountService';
 import { CategoryService } from './services/categoryService';
 import { CounterpartyService } from './services/counterpartyService';
 import { ImportService } from './services/importService';
 import { OverviewService } from './services/overviewService';
+import { ProjectService } from './services/projectService';
 import { TransactionService } from './services/transactionService';
 import { AppError } from './utils';
 
@@ -25,6 +27,7 @@ export interface Services {
   transactions: TransactionService;
   imports: ImportService;
   overview: OverviewService;
+  projects: ProjectService;
 }
 
 export interface BuiltApp {
@@ -41,7 +44,8 @@ export async function buildApp(config: AppConfig, opts: { logger?: boolean } = {
     counterparties: new CounterpartyService(db, config.deviceId),
     transactions: new TransactionService(db, config.deviceId),
     imports: new ImportService(db, config.deviceId),
-    overview: new OverviewService(db, config.deviceId)
+    overview: new OverviewService(db, config.deviceId),
+    projects: new ProjectService(db, config.deviceId)
   };
   services.categories.seedDefaults();
 
@@ -70,6 +74,7 @@ export async function buildApp(config: AppConfig, opts: { logger?: boolean } = {
   registerTransactionRoutes(app, services);
   registerImportRoutes(app, services);
   registerOverviewRoutes(app, services);
+  registerProjectRoutes(app, services);
 
   app.addHook('onClose', async () => {
     db.close();

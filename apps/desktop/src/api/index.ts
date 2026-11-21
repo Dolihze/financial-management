@@ -7,6 +7,8 @@ import type {
   ImportBatch,
   ImportPreviewResult,
   OverviewSummary,
+  Project,
+  ProjectStatus,
   Transaction,
   TransactionType
 } from '@fm/shared';
@@ -59,6 +61,13 @@ export const api = {
     create: (body: { name: string }) => post<Counterparty>('/api/counterparties', body),
     update: (id: string, body: { name: string }) => patch<Counterparty>(`/api/counterparties/${id}`, body),
     remove: (id: string) => del<{ unlinkedTransactions: number }>(`/api/counterparties/${id}`)
+  },
+
+  projects: {
+    list: () => get<Project[]>('/api/projects'),
+    get: (id: string) => get<Project>(`/api/projects/${id}`),
+    create: (body: { name: string; designNo?: string; contractNo?: string; status?: ProjectStatus }) =>
+      post<Project>('/api/projects', body)
   },
 
   transactions: {

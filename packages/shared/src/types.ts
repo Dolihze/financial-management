@@ -125,6 +125,26 @@ export interface Counterparty {
   usageCount?: number;
 }
 
+export const PROJECT_STATUSES = ['unsettled', 'settled'] as const;
+export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
+
+export const PROJECT_STATUS_LABELS: Record<ProjectStatus, string> = {
+  unsettled: '未结算',
+  settled: '已结算'
+};
+
+export interface Project {
+  id: string;
+  /** 设计编号 */
+  designNo: string;
+  /** 合同编号 */
+  contractNo: string;
+  name: string;
+  status: ProjectStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface OverviewSummary {
   totalBalance: number;
   accounts: Array<Pick<Account, 'id' | 'name' | 'type' | 'balance'>>;

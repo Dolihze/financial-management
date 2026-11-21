@@ -256,5 +256,24 @@ export const migrations: Migration[] = [
       ALTER TABLE account ADD COLUMN bank_name  TEXT NOT NULL DEFAULT '';
       ALTER TABLE account ADD COLUMN account_no TEXT NOT NULL DEFAULT '';
     `
+  },
+  {
+    version: 7,
+    name: 'project',
+    sql: `
+      -- 项目主数据：不物理删除，只归档
+      CREATE TABLE project (
+        id          TEXT PRIMARY KEY,
+        design_no   TEXT NOT NULL DEFAULT '',
+        contract_no TEXT NOT NULL DEFAULT '',
+        name        TEXT NOT NULL,
+        status      TEXT NOT NULL DEFAULT 'unsettled' CHECK (status IN ('unsettled','settled')),
+        archived    INTEGER NOT NULL DEFAULT 0,
+        created_at  TEXT NOT NULL,
+        updated_at  TEXT NOT NULL,
+        device_id   TEXT NOT NULL
+      );
+      CREATE INDEX idx_project_created ON project(created_at);
+    `
   }
 ];

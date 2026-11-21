@@ -62,6 +62,28 @@ describe('账户类型与字段', () => {
   });
 });
 
+describe('项目管理', () => {
+  it('创建项目、列表、详情；状态默认未结算，名称必填，不存在返回 404', async () => {
+    const a = await post('/api/projects', { name: '办公楼装修', designNo: 'D-001', contractNo: 'C-001' });
+    expect(a.statusCode).toBe(201);
+    expect(a.json()).toMatchObject({ name: '办公楼装修', designNo: 'D-001', contractNo: 'C-001', status: 'unsettled' });
+
+    const b = await post('/api/projects', { name: '展厅设计', status: 'settled' });
+    expect(b.statusCode).toBe(201);
+    expect(b.json()).toMatchObject({ designNo: '', contractNo: '', status: 'settled' });
+
+    const list = (await ctx.app.inject({ url: '/api/projects' })).json() as Array<{ name: string }>;
+    expect(list.map((p) => p.name).sort()).toEqual(['办公楼装修', '展厅设计']);
+
+    const id = (a.json() as { id: string }).id;
+    expect((await ctx.app.inject({ url: `/api/projects/${id}` })).json()).toMatchObject({ id, name: '办公楼装修' });
+    expect((await ctx.app.inject({ url: '/api/projects/nope' })).statusCode).toBe(404);
+
+    expect((await post('/api/projects', { name: '  ' })).statusCode).toBe(400);
+    expect((await post('/api/projects', { name: 'x', status: 'bad' })).statusCode).toBe(400);
+  });
+});
+
 describe('账户类型限制', () => {
   it('只允许银行账户/支付宝/微信，已移除的类型返回 400', async () => {
     for (const type of ['cash', 'receivable', 'payable', 'other']) {

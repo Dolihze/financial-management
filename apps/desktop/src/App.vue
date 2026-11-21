@@ -44,6 +44,7 @@ onMounted(boot);
 
 const menus = [
   { path: '/overview', title: '总览', icon: 'DataBoard' },
+  { path: '/projects', title: '项目管理', icon: 'Briefcase' },
   { path: '/transactions', title: '记账流水', icon: 'Tickets' },
   { path: '/accounts', title: '账户管理', icon: 'Wallet' },
   { path: '/import', title: 'Excel 导入', icon: 'Upload' }
@@ -54,7 +55,7 @@ const menus = [
   <el-container style="height: 100%">
     <el-aside width="200px" style="background: #1f2d3d">
       <div style="color: #fff; font-size: 18px; font-weight: 600; padding: 20px 16px">财务管理</div>
-      <el-menu :default-active="route.path" router background-color="#1f2d3d" text-color="#bfcbd9" active-text-color="#409eff">
+      <el-menu :default-active="(route.meta.menu as string | undefined) ?? route.path" router background-color="#1f2d3d" text-color="#bfcbd9" active-text-color="#409eff">
         <el-menu-item v-for="m in menus" :key="m.path" :index="m.path">
           <el-icon><component :is="m.icon" /></el-icon>
           <span>{{ m.title }}</span>

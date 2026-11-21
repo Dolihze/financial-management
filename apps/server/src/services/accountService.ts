@@ -1,4 +1,4 @@
-import type { Account, AccountType } from '@fm/shared';
+import type { Account, AccountType, ActiveAccountType } from '@fm/shared';
 import type { Db } from '../db/database';
 import { AppError, newId, nowIso } from '../utils';
 import { writeAudit } from './audit';
@@ -9,6 +9,8 @@ interface AccountRow {
   type: AccountType;
   currency: string;
   opening_balance: number;
+  bank_name: string;
+  account_no: string;
   balance: number;
   note: string;
   archived: number;
@@ -33,6 +35,8 @@ const toAccount = (r: AccountRow): Account => ({
   type: r.type,
   currency: r.currency,
   openingBalance: r.opening_balance,
+  bankName: r.bank_name,
+  accountNo: r.account_no,
   balance: r.balance,
   note: r.note,
   archived: r.archived === 1,
@@ -42,10 +46,13 @@ const toAccount = (r: AccountRow): Account => ({
 
 export interface CreateAccountInput {
   name: string;
-  type: AccountType;
+  type: ActiveAccountType;
   openingBalance?: number;
   currency?: string;
   note?: string;
+  /** 开户银行、银行卡号：仅银行账户有效，其他类型会被忽略（存空串） */
+  bankName?: string;
+  accountNo?: string;
 }
 
 export class AccountService {
@@ -71,14 +78,23 @@ export class AccountService {
     if (dup) throw new AppError(`账户名称已存在: ${input.name}`, 409, 'DUPLICATE');
     const id = newId();
     const now = nowIso();
+    const isBank = input.type === 'bank';
+    const bankName = isBank ? (input.bankName ?? '') : '';
+    const accountNo = isBank ? (input.accountNo ?? '') : '';
+    if (isBank && (!bankName || !accountNo)) {
+      throw new AppError('银行账户必须填写开户银行和银行卡号', 400, 'VALIDATION');
+    }
     this.db.transaction(() => {
       this.db
         .prepare(
-          `INSERT INTO account (id,name,type,currency,opening_balance,note,archived,created_at,updated_at,device_id)
-           VALUES (?,?,?,?,?,?,0,?,?,?)`
+          `INSERT INTO account (id,name,type,currency,opening_balance,bank_name,account_no,note,archived,created_at,updated_at,device_id)
+           VALUES (?,?,?,?,?,?,?,?,0,?,?,?)`
         )
-        .run(id, input.name, input.type, input.currency ?? 'CNY', input.openingBalance ?? 0, input.note ?? '', now, now, this.deviceId);
-      writeAudit(this.db, this.deviceId, 'account', id, 'create', input);
+        .run(
+          id, input.name, input.type, input.currency ?? 'CNY', input.openingBalance ?? 0,
+          bankName, accountNo, input.note ?? '', now, now, this.deviceId
+        );
+      writeAudit(this.db, this.deviceId, 'account', id, 'create', { ...input, bankName, accountNo });
     })();
     return this.get(id);
   }
@@ -89,6 +105,7 @@ export class AccountService {
       this.db
         .prepare('UPDATE account SET name = ?, type = ?, note = ?, updated_at = ? WHERE id = ?')
         .run(patch.name ?? current.name, patch.type ?? current.type, patch.note ?? current.note, nowIso(), id);
+      // 注意：此处不处理 bank_name/account_no，类型变更后银行信息保持不变
       writeAudit(this.db, this.deviceId, 'account', id, 'update', patch);
     })();
     return this.get(id);

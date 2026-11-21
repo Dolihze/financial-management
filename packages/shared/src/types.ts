@@ -1,7 +1,11 @@
 /** 前后端共享的领域类型。金额字段一律为「整数分」。 */
 
-export const ACCOUNT_TYPES = ['cash', 'bank', 'alipay', 'wechat', 'receivable', 'payable', 'other'] as const;
-export type AccountType = (typeof ACCOUNT_TYPES)[number];
+/** 允许新建/选择的账户类型 */
+export const ACCOUNT_TYPES = ['bank', 'alipay', 'wechat'] as const;
+/** 历史数据中可能存在的已停用类型（不再允许新建，仅用于读取/展示旧账户） */
+export const LEGACY_ACCOUNT_TYPES = ['cash', 'receivable', 'payable', 'other'] as const;
+export type ActiveAccountType = (typeof ACCOUNT_TYPES)[number];
+export type AccountType = ActiveAccountType | (typeof LEGACY_ACCOUNT_TYPES)[number];
 
 export const ACCOUNT_TYPE_LABELS: Record<AccountType, string> = {
   cash: '现金',
@@ -47,6 +51,10 @@ export interface Account {
   currency: string;
   /** 期初余额（分） */
   openingBalance: number;
+  /** 开户银行（仅银行账户使用，其他类型为空串） */
+  bankName: string;
+  /** 银行卡号（仅银行账户使用，其他类型为空串） */
+  accountNo: string;
   /** 当前余额（分）= 期初 + 所有未作废分录之和，由后端实时计算 */
   balance: number;
   note: string;

@@ -247,5 +247,14 @@ export const migrations: Migration[] = [
       -- 4) 被移除分类归档（保留行，不物理删除）
       UPDATE category SET archived = 1 WHERE kind = 'expense' AND builtin = 0 AND archived = 0;
     `
+  },
+  {
+    version: 6,
+    name: 'account_bank_info',
+    sql: `
+      -- 银行账户的开户银行、银行账号（其他类型账户留空）
+      ALTER TABLE account ADD COLUMN bank_name  TEXT NOT NULL DEFAULT '';
+      ALTER TABLE account ADD COLUMN account_no TEXT NOT NULL DEFAULT '';
+    `
   }
 ];

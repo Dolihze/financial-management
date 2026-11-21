@@ -18,7 +18,7 @@
  */
 import { existsSync, rmSync } from 'node:fs';
 import { basename } from 'node:path';
-import type { AccountType, CreateTransactionInput } from '@fm/shared';
+import type { ActiveAccountType, CreateTransactionInput } from '@fm/shared';
 import { getDemoDbPath } from '../src/config';
 import { openDatabase } from '../src/db/database';
 import { AccountService } from '../src/services/accountService';
@@ -91,13 +91,12 @@ function makeRng(seed: number) {
 // ---------------------------------------------------------------------------
 // 素材
 // ---------------------------------------------------------------------------
-const ACCOUNTS: Array<{ name: string; type: AccountType; opening: number; note: string }> = [
-  { name: '招商银行基本户', type: 'bank', opening: 80_000_000, note: '主结算账户，尾号 8826' },
-  { name: '工商银行一般户', type: 'bank', opening: 12_000_000, note: '工资代发、社保扣缴' },
-  { name: '现金（备用金）', type: 'cash', opening: 500_000, note: '前台保管' },
+const ACCOUNTS: Array<{ name: string; type: ActiveAccountType; opening: number; note: string; bankName?: string; accountNo?: string }> = [
+  { name: '招商银行基本户', type: 'bank', opening: 80_000_000, note: '主结算账户，尾号 8826', bankName: '招商银行杭州分行', accountNo: '571900000010888826' },
+  { name: '工商银行一般户', type: 'bank', opening: 12_000_000, note: '工资代发、社保扣缴', bankName: '工商银行杭州西湖支行', accountNo: '1202020000000123456' },
+
   { name: '支付宝企业账户', type: 'alipay', opening: 2_000_000, note: '线上收款' },
-  { name: '微信商户号', type: 'wechat', opening: 800_000, note: '小程序收款' },
-  { name: '客户应收款', type: 'receivable', opening: 0, note: '赊销客户挂账' }
+  { name: '微信商户号', type: 'wechat', opening: 800_000, note: '小程序收款' }
 ];
 
 const CUSTOMERS = ['杭州云岚科技', '深圳启明电子', '上海瑞丰贸易', '北京远景咨询', '成都锦程物流', '苏州恒达制造', '广州博雅文化', '武汉楚天实业', '南京金陵软件', '宁波海润进出口'];
@@ -140,7 +139,7 @@ const TEMPLATES: Template[] = [
   {
     kind: 'income', category: '其他收入', weight: 2, range: [100, 3_000],
     make: () => ['废品处理收入', '回收站'],
-    accounts: [['现金（备用金）', 1]]
+    accounts: [['支付宝企业账户', 1]]
   },
   {
     kind: 'expense', category: '其他支出', weight: 22, range: [2_000, 120_000],
@@ -150,12 +149,12 @@ const TEMPLATES: Template[] = [
   {
     kind: 'expense', category: '经营费', weight: 12, range: [30, 2_800],
     make: (r) => { const s = r.pick(['得力办公直营', '京东企业购']); return [r.pick(['打印纸与耗材', '办公椅采购', '文具用品', '饮用水与茶歇', '保洁用品']), s]; },
-    accounts: [['现金（备用金）', 4], ['支付宝企业账户', 3], ['招商银行基本户', 1]]
+    accounts: [['支付宝企业账户', 4], ['微信商户号', 3], ['招商银行基本户', 1]]
   },
   {
     kind: 'expense', category: '差旅费', weight: 8, range: [200, 6_500],
     make: (r) => { const p = r.pick(STAFF); return [`${p}${r.pick(CITIES)}出差${r.pick(['机票', '高铁票', '住宿费', '餐补', '打车费'])}`, p]; },
-    accounts: [['招商银行基本户', 3], ['现金（备用金）', 2], ['支付宝企业账户', 2]]
+    accounts: [['招商银行基本户', 3], ['微信商户号', 2], ['支付宝企业账户', 2]]
   },
   {
     kind: 'expense', category: '经营费', weight: 5, range: [800, 30_000],
@@ -165,7 +164,7 @@ const TEMPLATES: Template[] = [
   {
     kind: 'expense', category: '其他支出', weight: 4, range: [50, 5_000],
     make: (r) => [r.pick(['快递费', '汽车加油', '团建活动', '维修费', '会务费']), r.pick(['顺丰速运', '中石化', '本地商户'])],
-    accounts: [['现金（备用金）', 3], ['微信商户号', 2], ['招商银行基本户', 1]]
+    accounts: [['微信商户号', 3], ['支付宝企业账户', 2], ['招商银行基本户', 1]]
   }
 ];
 
@@ -217,7 +216,7 @@ async function main() {
   // 1) 账户
   const accId = new Map<string, string>();
   for (const a of ACCOUNTS) {
-    accId.set(a.name, accounts.create({ name: a.name, type: a.type, openingBalance: a.opening, note: a.note }).id);
+    accId.set(a.name, accounts.create({ name: a.name, type: a.type, openingBalance: a.opening, bankName: a.bankName, accountNo: a.accountNo, note: a.note }).id);
   }
   const catId = new Map(categories.list().map((c) => [`${c.kind}:${c.name}`, c.id] as const));
   const A = (name: string) => accId.get(name)!;
@@ -342,7 +341,7 @@ async function main() {
   }
 
   // 5) 归档一个零余额的旧账户，演示"归档"（不影响总览）
-  const old = accounts.create({ name: '原中国银行账户（已销户）', type: 'bank', openingBalance: 0, note: '2024 年销户' });
+  const old = accounts.create({ name: '原中国银行账户（已销户）', type: 'bank', bankName: '中国银行杭州分行', accountNo: '368900000099001122', openingBalance: 0, note: '2024 年销户' });
   accounts.archive(old.id);
 
   // 6) 一个"已撤销"的导入批次：生成真实 Excel -> 提交 -> 撤销，演示导入历史
@@ -358,7 +357,7 @@ async function main() {
   for (const a of list) console.log(`  ${a.name.padEnd(14, '　')} ${(a.balance / 100).toFixed(2).padStart(14)} 元`);
   const total = list.reduce((s, a) => s + a.balance, 0);
   console.log(`  ${'合计'.padEnd(14, '　')} ${(total / 100).toFixed(2).padStart(14)} 元`);
-  const negative = list.filter((a) => a.balance < 0 && a.type !== 'payable');
+  const negative = list.filter((a) => a.balance < 0);
   if (negative.length) console.log(`\n提示：${negative.map((a) => a.name).join('、')} 余额为负，可换 --seed 重新生成`);
   console.log('\n预览：');
   console.log(`  $env:FM_DB_PATH="${opt.db}"; npm run dev`);

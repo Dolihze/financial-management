@@ -1,17 +1,21 @@
 <script setup lang="ts">
-import { ACCOUNT_TYPES, ACCOUNT_TYPE_LABELS, type AccountType } from '@fm/shared';
+import { ACCOUNT_TYPES, ACCOUNT_TYPE_LABELS, type AccountType, type ActiveAccountType } from '@fm/shared';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { reactive, ref } from 'vue';
+import { computed, reactive, ref } from 'vue';
 import { api } from '@/api';
 import { useBaseStore } from '@/stores/base';
 import { errorMessage, formatMoney, toCents } from '@/utils/format';
 
 const base = useBaseStore();
 const dialog = ref(false);
-const form = reactive({ name: '', type: 'bank' as AccountType, opening: '0', note: '' });
+const form = reactive({ type: 'bank' as ActiveAccountType, name: '', bankName: '', accountNo: '', opening: '0', note: '' });
+const isBank = computed(() => form.type === 'bank');
+const canSubmit = computed(
+  () => !!form.name.trim() && (!isBank.value || (!!form.bankName.trim() && !!form.accountNo.trim()))
+);
 
 function openDialog() {
-  Object.assign(form, { name: '', type: 'bank', opening: '0', note: '' });
+  Object.assign(form, { type: 'bank', name: '', bankName: '', accountNo: '', opening: '0', note: '' });
   dialog.value = true;
 }
 
@@ -21,6 +25,7 @@ async function submit() {
       name: form.name,
       type: form.type,
       openingBalance: toCents(form.opening || '0'),
+      ...(isBank.value ? { bankName: form.bankName, accountNo: form.accountNo } : {}),
       note: form.note
     });
     dialog.value = false;
@@ -56,6 +61,8 @@ async function archive(id: string, name: string) {
       <el-table-column label="类型" width="120">
         <template #default="{ row }">{{ ACCOUNT_TYPE_LABELS[row.type as AccountType] }}</template>
       </el-table-column>
+      <el-table-column prop="bankName" label="开户银行" />
+      <el-table-column prop="accountNo" label="银行卡号" />
       <el-table-column label="期初余额" align="right" width="160">
         <template #default="{ row }">{{ formatMoney(row.openingBalance) }}</template>
       </el-table-column>
@@ -70,18 +77,22 @@ async function archive(id: string, name: string) {
 
     <el-dialog v-model="dialog" title="新增账户" width="460px">
       <el-form :model="form" label-width="90px">
-        <el-form-item label="账户名称"><el-input v-model="form.name" placeholder="如：招商银行基本户" /></el-form-item>
         <el-form-item label="账户类型">
           <el-select v-model="form.type" style="width: 100%">
             <el-option v-for="t in ACCOUNT_TYPES" :key="t" :value="t" :label="ACCOUNT_TYPE_LABELS[t]" />
           </el-select>
         </el-form-item>
-        <el-form-item label="期初余额"><el-input v-model="form.opening" placeholder="元，如 10000.00" /></el-form-item>
+        <el-form-item label="账户名称"><el-input v-model="form.name" /></el-form-item>
+        <template v-if="isBank">
+          <el-form-item label="开户银行"><el-input v-model="form.bankName" /></el-form-item>
+          <el-form-item label="银行卡号"><el-input v-model="form.accountNo" /></el-form-item>
+        </template>
+        <el-form-item label="余额"><el-input v-model="form.opening" placeholder="元，如 10000.00" /></el-form-item>
         <el-form-item label="备注"><el-input v-model="form.note" /></el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="dialog = false">取消</el-button>
-        <el-button type="primary" :disabled="!form.name.trim()" @click="submit">确定</el-button>
+        <el-button type="primary" :disabled="!canSubmit" @click="submit">确定</el-button>
       </template>
     </el-dialog>
   </div>

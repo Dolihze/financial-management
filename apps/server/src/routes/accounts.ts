@@ -8,6 +8,8 @@ const createSchema = z.object({
   type: z.enum(ACCOUNT_TYPES),
   openingBalance: z.number().int().default(0),
   currency: z.string().default('CNY'),
+  bankName: z.string().trim().max(100).default(''),
+  accountNo: z.string().trim().max(50).default(''),
   note: z.string().max(200).default('')
 });
 

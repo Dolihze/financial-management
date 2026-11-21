@@ -16,7 +16,7 @@ async function post(url: string, payload: unknown) {
 }
 
 async function makeAccount(name: string, openingBalance = 0) {
-  const res = await post('/api/accounts', { name, type: 'bank', openingBalance });
+  const res = await post('/api/accounts', { name, type: 'bank', bankName: '测试银行', accountNo: '6222000011112222', openingBalance });
   expect(res.statusCode).toBe(201);
   return res.json() as { id: string };
 }
@@ -40,6 +40,35 @@ function multipart(file: Buffer, filename = 'a.xlsx') {
     headers: { 'content-type': `multipart/form-data; boundary=${boundary}` }
   };
 }
+
+describe('账户类型与字段', () => {
+  it('银行账户保存开户银行和银行卡号，缺少时返回 400', async () => {
+    const ok = await post('/api/accounts', { name: '招行', type: 'bank', bankName: '招商银行', accountNo: '6225880000008826', openingBalance: 1000, note: '主户' });
+    expect(ok.statusCode).toBe(201);
+    expect(ok.json()).toMatchObject({ type: 'bank', bankName: '招商银行', accountNo: '6225880000008826', openingBalance: 1000, balance: 1000, note: '主户' });
+
+    expect((await post('/api/accounts', { name: '缺银行', type: 'bank', accountNo: '123' })).statusCode).toBe(400);
+    expect((await post('/api/accounts', { name: '缺账号', type: 'bank', bankName: '招商银行' })).statusCode).toBe(400);
+  });
+
+  it('支付宝/微信账户只需名称、余额、备注，银行信息被忽略', async () => {
+    const ali = await post('/api/accounts', { name: '支付宝企业', type: 'alipay', openingBalance: 500, note: '线上', bankName: '不应保存', accountNo: '999' });
+    expect(ali.statusCode).toBe(201);
+    expect(ali.json()).toMatchObject({ type: 'alipay', bankName: '', accountNo: '', balance: 500, note: '线上' });
+
+    const wx = await post('/api/accounts', { name: '微信商户', type: 'wechat' });
+    expect(wx.statusCode).toBe(201);
+    expect(wx.json()).toMatchObject({ type: 'wechat', bankName: '', accountNo: '', balance: 0 });
+  });
+});
+
+describe('账户类型限制', () => {
+  it('只允许银行账户/支付宝/微信，已移除的类型返回 400', async () => {
+    for (const type of ['cash', 'receivable', 'payable', 'other']) {
+      expect((await post('/api/accounts', { name: `旧-${type}`, type })).statusCode).toBe(400);
+    }
+  });
+});
 
 describe('账户与余额', () => {
   it('余额 = 期初 + 流水；借款(借出)减少余额，贷款(借入)增加余额，且不计入收支统计', async () => {

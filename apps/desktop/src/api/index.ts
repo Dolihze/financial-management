@@ -1,6 +1,6 @@
 import type {
   Account,
-  AccountType,
+  ActiveAccountType,
   Category,
   Counterparty,
   CreateTransactionInput,
@@ -33,9 +33,16 @@ export const api = {
 
   accounts: {
     list: () => get<Account[]>('/api/accounts'),
-    create: (body: { name: string; type: AccountType; openingBalance: number; note?: string }) =>
+    create: (body: {
+      name: string;
+      type: ActiveAccountType;
+      openingBalance: number;
+      bankName?: string;
+      accountNo?: string;
+      note?: string;
+    }) =>
       post<Account>('/api/accounts', body),
-    update: (id: string, body: Partial<{ name: string; type: AccountType; note: string }>) =>
+    update: (id: string, body: Partial<{ name: string; type: ActiveAccountType; note: string }>) =>
       patch<Account>(`/api/accounts/${id}`, body),
     archive: (id: string) => post<Account>(`/api/accounts/${id}/archive`)
   },

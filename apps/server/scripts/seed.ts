@@ -5,6 +5,7 @@
  *   npm run seed -w @fm/server                 # 写入演示库 demo.db（已存在则报错，不覆盖）
  *   npm run seed -w @fm/server -- --reset      # 删除旧的 demo.db 后重新生成
  *   npm run seed -w @fm/server -- --count=3000 --months=24 --seed=7
+ *   默认：50 条流水（含固定月度支出）、时间跨度 3 个月
  *
  * 预览演示库（会在 demo.db 不存在时自动调用本脚本）：
  *   npm run dev:demo
@@ -24,7 +25,7 @@ import { openDatabase } from '../src/db/database';
 import { AccountService } from '../src/services/accountService';
 import { CategoryService } from '../src/services/categoryService';
 import { CounterpartyService } from '../src/services/counterpartyService';
-import { ImportService } from '../src/services/importService';
+
 import { TransactionService } from '../src/services/transactionService';
 
 // ---------------------------------------------------------------------------
@@ -51,8 +52,8 @@ function parseArgs(argv: string[]): Options {
   };
   return {
     reset: Boolean(flag('reset')),
-    count: num('count', 300),
-    months: num('months', 12),
+    count: num('count', 50),
+    months: num('months', 3),
     seed: num('seed', 20260101),
     db: value('db', getDemoDbPath())
   };
@@ -206,7 +207,7 @@ async function main() {
   const categories = new CategoryService(db, deviceId);
   const counterparties = new CounterpartyService(db, deviceId);
   const txs = new TransactionService(db, deviceId);
-  const imports = new ImportService(db, deviceId);
+
   categories.seedDefaults();
   // 默认只有「其他收入」；演示库额外新增几个用户自定义收入分类
   for (const name of ['主营业务收入', '其他业务收入', '利息收入']) categories.create({ name, kind: 'income' });
@@ -333,7 +334,7 @@ async function main() {
   });
   const expenseVoidReasons = ['重复录入', '金额录错', '供应商退款冲回'];
   const incomeVoidReasons = ['重复录入', '客户退款冲回', '对方未实际付款'];
-  const voidCount = Math.min(6, Math.floor(voidable.length / 30));
+  const voidCount = Math.min(6, Math.max(2, Math.floor(voidable.length / 30)), voidable.length);
   for (let i = 0; i < voidCount; i++) {
     const id = voidable[Math.floor(((i + 1) * voidable.length) / (voidCount + 1))]!;
     const src = ensured[created.indexOf(id)]!;
@@ -344,15 +345,11 @@ async function main() {
   const old = accounts.create({ name: '原中国银行账户（已销户）', type: 'bank', bankName: '中国银行杭州分行', accountNo: '368900000099001122', openingBalance: 0, note: '2024 年销户' });
   accounts.archive(old.id);
 
-  // 6) 一个"已撤销"的导入批次：生成真实 Excel -> 提交 -> 撤销，演示导入历史
-  const wb = await buildSampleWorkbook(r, A('招商银行基本户'), accounts);
-  imports.revert((await imports.commit(wb, '2026年Q3银行流水.xlsx', { skipDuplicates: true })).id);
-
   // 汇总
   const list = accounts.list();
   const all = txs.list({ includeVoided: true, limit: 1 });
   console.log(`\n演示库: ${opt.db}`);
-  console.log(`种子=${opt.seed}  时间跨度=${opt.months} 个月  流水=${all.total} 笔（含 ${voidCount} 笔手工作废、1 个已撤销导入批次）\n`);
+  console.log(`种子=${opt.seed}  时间跨度=${opt.months} 个月  流水=${all.total} 笔（含 ${voidCount} 笔手工作废）\n`);
   console.log('账户余额：');
   for (const a of list) console.log(`  ${a.name.padEnd(14, '　')} ${(a.balance / 100).toFixed(2).padStart(14)} 元`);
   const total = list.reduce((s, a) => s + a.balance, 0);
@@ -363,24 +360,6 @@ async function main() {
   console.log(`  $env:FM_DB_PATH="${opt.db}"; npm run dev`);
 
   db.close();
-}
-
-/** 生成一份只含收入/支出的 Excel（用于演示导入历史），所有账户必须已存在 */
-async function buildSampleWorkbook(r: ReturnType<typeof makeRng>, _bankId: string, _accounts: AccountService): Promise<Buffer> {
-  const ExcelJS = (await import('exceljs')).default;
-  const wb = new ExcelJS.Workbook();
-  const ws = wb.addWorksheet('流水导入');
-  ws.addRow(['日期', '类型', '金额', '账户', '分类', '往来单位', '备注']);
-  for (let i = 0; i < 12; i++) {
-    const d = fmt(addDays(new Date(), -r.int(200, 330)));
-    const income = r.next() < 0.5;
-    ws.addRow([
-      d, income ? '收入' : '支出', yuanToCents(r, 800, 40_000) / 100,
-      '招商银行基本户', income ? '主营业务收入' : '其他支出',
-      income ? r.pick(CUSTOMERS) : r.pick(SUPPLIERS), '银行流水导入'
-    ]);
-  }
-  return Buffer.from(await wb.xlsx.writeBuffer());
 }
 
 main().catch((e) => {

@@ -125,24 +125,66 @@ export interface Counterparty {
   usageCount?: number;
 }
 
-export const PROJECT_STATUSES = ['unsettled', 'settled'] as const;
-export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
-
-export const PROJECT_STATUS_LABELS: Record<ProjectStatus, string> = {
-  unsettled: '未结算',
-  settled: '已结算'
-};
-
+/** 项目：仅通过 Excel 导入维护，项目名称唯一（导入时的匹配键），合同编号可重复。金额字段一律为「整数分」。 */
 export interface Project {
   id: string;
-  /** 设计编号 */
-  designNo: string;
-  /** 合同编号 */
+  /** 合同编号（非唯一，同一合同下可有多个项目；可为空） */
   contractNo: string;
+  /** 批次号：Excel 中写作「第15批」，这里存数字 15；未填写为 null */
+  batchNo: number | null;
+  /** 区域 */
+  region: string;
   name: string;
-  status: ProjectStatus;
+  /** 合同价（分） */
+  contractPrice: number;
+  /** 企信实收（分） */
+  qxReceived: number;
+  /** 企信支付下家分包费（分） */
+  qxSubcontractFee: number;
+  /** 陈沛（分） */
+  chenPei: number;
+  /** 企信利润（分） */
+  qxProfit: number;
+  /** 企信是否收到钱 */
+  qxMoneyReceived: boolean;
+  /** 支付下家 */
+  paidSubcontractor: boolean;
+  /** 支付陈沛 */
+  paidChenPei: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+/** 项目 Excel 导入表头（第 1 行）。项目名称为「合计」的行与重复表头的说明行会被忽略。 */
+export const PROJECT_IMPORT_HEADERS = [
+  '合同编号',
+  '批次',
+  '区域',
+  '项目名称',
+  '合同价',
+  '企信实收',
+  '企信支付下家分包费',
+  '陈沛',
+  '企信利润',
+  '企信是否收到钱',
+  '支付下家',
+  '支付陈沛'
+] as const;
+
+export interface ProjectImportPreview {
+  /** 数据行数（不含表头和合计行；空行不计） */
+  total: number;
+  /** 项目名称不存在，将新增 */
+  toCreate: number;
+  /** 项目名称已存在，将更新 */
+  toUpdate: number;
+  errors: ImportRowError[];
+}
+
+export interface ProjectImportResult {
+  total: number;
+  created: number;
+  updated: number;
 }
 
 export interface OverviewSummary {

@@ -8,7 +8,8 @@ import type {
   ImportPreviewResult,
   OverviewSummary,
   Project,
-  ProjectStatus,
+  ProjectImportPreview,
+  ProjectImportResult,
   Transaction,
   TransactionType
 } from '@fm/shared';
@@ -66,8 +67,9 @@ export const api = {
   projects: {
     list: () => get<Project[]>('/api/projects'),
     get: (id: string) => get<Project>(`/api/projects/${id}`),
-    create: (body: { name: string; designNo?: string; contractNo?: string; status?: ProjectStatus }) =>
-      post<Project>('/api/projects', body)
+    importTemplateUrl: () => `${getBaseUrl()}/api/projects/import/template`,
+    importPreview: (file: File) => upload<ProjectImportPreview>('/api/projects/import/preview', file),
+    importCommit: (file: File) => upload<ProjectImportResult>('/api/projects/import/commit', file)
   },
 
   transactions: {

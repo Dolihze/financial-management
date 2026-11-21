@@ -275,5 +275,85 @@ export const migrations: Migration[] = [
       );
       CREATE INDEX idx_project_created ON project(created_at);
     `
+  },
+  {
+    version: 8,
+    name: 'project_excel_fields',
+    rebuildsTables: true,
+    sql: `
+      -- 项目改为仅由 Excel 导入维护：字段换成导入表头；合同编号作为唯一键（导入时存在则更新）。
+      -- 金额一律整数分；三个「是否」字段存 0/1。重建表以移除 design_no / status，并保留旧数据。
+      CREATE TABLE project_new (
+        id                  TEXT PRIMARY KEY,
+        contract_no         TEXT NOT NULL,
+        batch               TEXT NOT NULL DEFAULT '',
+        region              TEXT NOT NULL DEFAULT '',
+        name                TEXT NOT NULL,
+        contract_price      INTEGER NOT NULL DEFAULT 0,
+        qx_received         INTEGER NOT NULL DEFAULT 0,
+        qx_subcontract_fee  INTEGER NOT NULL DEFAULT 0,
+        chen_pei            INTEGER NOT NULL DEFAULT 0,
+        qx_profit           INTEGER NOT NULL DEFAULT 0,
+        qx_money_received   INTEGER NOT NULL DEFAULT 0 CHECK (qx_money_received IN (0,1)),
+        paid_subcontractor  INTEGER NOT NULL DEFAULT 0 CHECK (paid_subcontractor IN (0,1)),
+        paid_chen_pei       INTEGER NOT NULL DEFAULT 0 CHECK (paid_chen_pei IN (0,1)),
+        archived            INTEGER NOT NULL DEFAULT 0,
+        created_at          TEXT NOT NULL,
+        updated_at          TEXT NOT NULL,
+        device_id           TEXT NOT NULL
+      );
+      INSERT INTO project_new (id, contract_no, name, archived, created_at, updated_at, device_id)
+        SELECT id,
+               CASE WHEN contract_no = '' THEN 'LEGACY-' || id ELSE contract_no END,
+               name, archived, created_at, updated_at, device_id
+        FROM project;
+      DROP TABLE project;
+      ALTER TABLE project_new RENAME TO project;
+      CREATE UNIQUE INDEX uq_project_contract_no ON project(contract_no) WHERE archived = 0;
+      CREATE INDEX idx_project_created ON project(created_at);
+    `
+  },
+  {
+    version: 9,
+    name: 'project_name_unique',
+    sql: `
+      -- 修正：合同编号不是唯一键（同一合同下可有多个项目），项目名称才是。
+      -- 导入时以项目名称匹配：已存在则更新，否则新增。合同编号允许重复，也允许为空。
+      DROP INDEX IF EXISTS uq_project_contract_no;
+      CREATE INDEX idx_project_contract_no ON project(contract_no);
+
+      -- v8 为空合同编号的旧行补的 LEGACY- 占位值不再需要（合同编号可为空），还原为空串
+      UPDATE project SET contract_no = '' WHERE contract_no LIKE 'LEGACY-%';
+
+      -- 旧数据里若有未归档的重名项目，保留最早的一条，其余归档（不物理删除），
+      -- 否则无法建立唯一索引；同时记审计
+      INSERT INTO audit_log (id, entity, entity_id, action, payload, device_id, created_at)
+        SELECT lower(hex(randomblob(16))), 'project', p.id, 'archive_duplicate_name',
+               json_object('name', p.name), 'migration', strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        FROM project p
+        WHERE p.archived = 0
+          AND p.rowid > (SELECT MIN(q.rowid) FROM project q WHERE q.archived = 0 AND q.name = p.name);
+      UPDATE project SET archived = 1
+        WHERE archived = 0
+          AND rowid > (SELECT MIN(q.rowid) FROM project q WHERE q.archived = 0 AND q.name = project.name);
+
+      CREATE UNIQUE INDEX uq_project_name ON project(name) WHERE archived = 0;
+    `
+  },
+  {
+    version: 10,
+    name: 'project_batch_no',
+    sql: `
+      -- 批次由文本（如「第15批」）改为批次号（整数 15）；无法解析出数字的为 NULL。
+      -- 旧值只在「第N批」/「N」这两种规范形态下才转换，其余一律置空，不做猜测。
+      ALTER TABLE project ADD COLUMN batch_no INTEGER;
+      UPDATE project SET batch_no = CAST(trim(batch) AS INTEGER)
+        WHERE trim(batch) GLOB '[0-9]*' AND trim(batch) NOT GLOB '*[^0-9]*';
+      UPDATE project SET batch_no = CAST(substr(trim(batch), 2, length(trim(batch)) - 2) AS INTEGER)
+        WHERE batch_no IS NULL
+          AND trim(batch) GLOB '第[0-9]*批'
+          AND substr(trim(batch), 2, length(trim(batch)) - 2) NOT GLOB '*[^0-9]*';
+      ALTER TABLE project DROP COLUMN batch;
+    `
   }
 ];

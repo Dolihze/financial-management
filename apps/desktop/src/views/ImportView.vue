@@ -3,6 +3,7 @@ import type { ImportBatch, ImportPreviewResult } from '@fm/shared';
 import { ElMessage, ElMessageBox, type UploadFile } from 'element-plus';
 import { onMounted, ref } from 'vue';
 import { api } from '@/api';
+import ProjectImportPanel from '@/components/ProjectImportPanel.vue';
 import { useBaseStore } from '@/stores/base';
 import { errorMessage } from '@/utils/format';
 
@@ -12,6 +13,7 @@ const preview = ref<ImportPreviewResult | null>(null);
 const skipDuplicates = ref(true);
 const busy = ref(false);
 const batches = ref<ImportBatch[]>([]);
+const tab = ref<'project' | 'tx'>('project');
 
 async function loadBatches() {
   batches.value = await api.imports.list();
@@ -62,6 +64,11 @@ onMounted(loadBatches);
 </script>
 
 <template>
+  <el-tabs v-model="tab">
+    <el-tab-pane label="项目导入" name="project">
+      <ProjectImportPanel />
+    </el-tab-pane>
+    <el-tab-pane label="流水导入" name="tx">
   <div>
     <el-card shadow="never" header="导入流水" style="margin-bottom: 16px">
       <el-steps :active="preview ? 2 : 1" simple style="margin-bottom: 16px">
@@ -116,4 +123,6 @@ onMounted(loadBatches);
       </el-table>
     </el-card>
   </div>
+    </el-tab-pane>
+  </el-tabs>
 </template>

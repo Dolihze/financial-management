@@ -226,6 +226,100 @@ describe('迁移 v5：支出分类收敛为 7 个内置默认项', () => {
     db.close();
   });
 
+  it('v8：项目表改为 Excel 字段，旧项目数据保留，合同编号仅在未归档项目中唯一', () => {
+    const db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    migrateTo(db, 7);
+    const ins = db.prepare(
+      `INSERT INTO project (id,design_no,contract_no,name,status,archived,created_at,updated_at,device_id) VALUES (?,?,?,?,?,?,?,?,'d')`
+    );
+    ins.run('p1', 'D-1', 'HT-1', '有合同号', 'settled', 0, 't1', 't1');
+    ins.run('p2', 'D-2', '', '无合同号A', 'unsettled', 0, 't2', 't2');
+    ins.run('p3', 'D-3', '', '无合同号B', 'unsettled', 0, 't3', 't3');
+    ins.run('p4', 'D-4', 'HT-1', '已归档同号', 'unsettled', 1, 't4', 't4');
+
+    migrateTo(db, 8, 7);
+
+    const cols = (db.pragma('table_info(project)') as Array<{ name: string }>).map((c) => c.name);
+    expect(cols).not.toContain('design_no');
+    expect(cols).not.toContain('status');
+    expect(cols).toEqual(expect.arrayContaining(['contract_no', 'batch', 'region', 'contract_price', 'qx_received', 'paid_chen_pei']));
+
+    const rows = db.prepare('SELECT id, contract_no, name, contract_price, qx_money_received FROM project ORDER BY id').all() as Array<{
+      id: string; contract_no: string; name: string; contract_price: number; qx_money_received: number;
+    }>;
+    expect(rows.map((r) => r.id)).toEqual(['p1', 'p2', 'p3', 'p4']); // 一行不丢
+    expect(rows[0]).toMatchObject({ contract_no: 'HT-1', name: '有合同号', contract_price: 0, qx_money_received: 0 });
+    // 空合同编号的旧行补成互不相同的占位值，唯一索引不会冲突
+    expect(rows[1]!.contract_no).toBe('LEGACY-p2');
+    expect(rows[2]!.contract_no).toBe('LEGACY-p3');
+
+    const insert = db.prepare(
+      `INSERT INTO project (id,contract_no,name,archived,created_at,updated_at,device_id) VALUES (?,?,?,0,'t','t','d')`
+    );
+    expect(() => insert.run('p5', 'HT-1', '重复')).toThrow(/UNIQUE/); // 未归档的合同编号唯一
+    expect(db.pragma('foreign_key_check')).toEqual([]);
+    db.close();
+  });
+
+  it('v9：合同编号改为非唯一，项目名称唯一；LEGACY 占位还原为空；重名旧项目只保留最早一条', () => {
+    const db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    migrateTo(db, 8);
+    const ins = db.prepare(
+      `INSERT INTO project (id,contract_no,name,archived,created_at,updated_at,device_id) VALUES (?,?,?,?,'t','t','d')`
+    );
+    ins.run('p1', 'HT-1', '甲', 0);
+    ins.run('p2', 'LEGACY-p2', '乙', 0);
+    ins.run('p3', 'HT-3', '甲', 0); // 与 p1 重名（v8 之前名称无唯一约束），应被归档
+    ins.run('p4', 'HT-4', '甲', 1); // 已归档的同名项目不受影响
+    expect(() => ins.run('x', 'HT-1', '丙', 0)).toThrow(/UNIQUE/); // v8：合同编号唯一
+
+    migrateTo(db, 9, 8);
+
+    const rows = db.prepare('SELECT id, contract_no, archived FROM project ORDER BY id').all() as Array<{ id: string; contract_no: string; archived: number }>;
+    expect(rows).toEqual([
+      { id: 'p1', contract_no: 'HT-1', archived: 0 },
+      { id: 'p2', contract_no: '', archived: 0 }, // LEGACY 占位还原
+      { id: 'p3', contract_no: 'HT-3', archived: 1 }, // 重名被归档，不物理删除
+      { id: 'p4', contract_no: 'HT-4', archived: 1 }
+    ]);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE action='archive_duplicate_name' AND entity_id='p3'").get()).toEqual({ n: 1 });
+
+    // 合同编号现在可以重复、可以为空；项目名称（未归档）唯一
+    expect(() => ins.run('p5', 'HT-1', '丙', 0)).not.toThrow();
+    expect(() => ins.run('p6', 'HT-1', '丁', 0)).not.toThrow();
+    expect(() => ins.run('p7', '', '戊', 0)).not.toThrow();
+    expect(() => ins.run('p8', '', '戊', 0)).toThrow(/UNIQUE/);
+    db.close();
+  });
+  it('v10：批次文本转为批次号（第15批 -> 15），无法确定的置空，旧列被移除', () => {
+    const db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    migrateTo(db, 9);
+    const ins = db.prepare(
+      `INSERT INTO project (id,contract_no,batch,name,archived,created_at,updated_at,device_id) VALUES (?,?,?,?,0,'t','t','d')`
+    );
+    ins.run('a', '', '第15批', 'a');
+    ins.run('b', '', '第14批', 'b');
+    ins.run('c', '', '', 'c');
+    ins.run('d', '', '7', 'd');
+    ins.run('e', '', ' 第 3 批 ', 'e'); // 含中间空白：不属于规范形态，不猜测，置空
+    ins.run('f', '', '第一批', 'f');
+    ins.run('g', '', '第15批次', 'g');
+
+    migrateTo(db, 10, 9);
+
+    const cols = (db.pragma('table_info(project)') as Array<{ name: string }>).map((c) => c.name);
+    expect(cols).toContain('batch_no');
+    expect(cols).not.toContain('batch');
+    const got = Object.fromEntries(
+      (db.prepare('SELECT id, batch_no FROM project').all() as Array<{ id: string; batch_no: number | null }>).map((r) => [r.id, r.batch_no])
+    );
+    expect(got).toEqual({ a: 15, b: 14, c: null, d: 7, e: null, f: null, g: null });
+    db.close();
+  });
+
   it('runMigrations 可从空库一路迁移到最新版本', () => {
     const db = new Database(':memory:');
     db.pragma('foreign_keys = ON');

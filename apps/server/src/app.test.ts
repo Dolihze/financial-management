@@ -62,25 +62,176 @@ describe('账户类型与字段', () => {
   });
 });
 
-describe('项目管理', () => {
-  it('创建项目、列表、详情；状态默认未结算，名称必填，不存在返回 404', async () => {
-    const a = await post('/api/projects', { name: '办公楼装修', designNo: 'D-001', contractNo: 'C-001' });
-    expect(a.statusCode).toBe(201);
-    expect(a.json()).toMatchObject({ name: '办公楼装修', designNo: 'D-001', contractNo: 'C-001', status: 'unsettled' });
+const PROJECT_HEADERS = ['合同编号', '批次', '区域', '项目名称', '合同价', '企信实收', '企信支付下家分包费', '陈沛', '企信利润', '企信是否收到钱', '支付下家', '支付陈沛'];
 
-    const b = await post('/api/projects', { name: '展厅设计', status: 'settled' });
-    expect(b.statusCode).toBe(201);
-    expect(b.json()).toMatchObject({ designNo: '', contractNo: '', status: 'settled' });
+/** 项目导入 Excel：第 1 行表头，第 2 行合计（项目名称为「合计」），之后为数据 */
+async function projectXlsx(rows: unknown[][], headers: string[] = PROJECT_HEADERS): Promise<Buffer> {
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet('s');
+  ws.addRow(headers);
+  // 合计行按表头名放置（项目名称 = 合计，金额列填数字），不依赖列顺序
+  const sum: Record<string, unknown> = { 项目名称: '合计', 合同价: 999999, 企信实收: 999999, 企信支付下家分包费: 999999, 陈沛: 999999, 企信利润: 999999 };
+  ws.addRow(headers.map((h) => sum[h] ?? ''));
+  rows.forEach((r) => ws.addRow(r));
+  return Buffer.from(await wb.xlsx.writeBuffer());
+}
 
-    const list = (await ctx.app.inject({ url: '/api/projects' })).json() as Array<{ name: string }>;
-    expect(list.map((p) => p.name).sort()).toEqual(['办公楼装修', '展厅设计']);
+describe('项目管理（Excel 导入）', () => {
+  const importUrl = (action: 'preview' | 'commit') => `/api/projects/import/${action}`;
 
-    const id = (a.json() as { id: string }).id;
-    expect((await ctx.app.inject({ url: `/api/projects/${id}` })).json()).toMatchObject({ id, name: '办公楼装修' });
+  it('忽略合计行；金额转整数分；是否字段仅「是」为真，其他一律为否', async () => {
+    const m = multipart(
+      await projectXlsx([
+        ['HT-001', '第15批', '华东', '办公楼装修', 1000000.5, '800,000', 400000, 50000, 200000, '是', '是', '否'],
+        ['HT-002', 15, '华南', '展厅设计', 500000, 200000, 200000, 50000, 100000, '否', '已付', ''],
+        ['HT-003', '', '', '仓库改造', null, null, null, null, null, 'yes', '是 ', '√']
+      ])
+    );
+    const preview = (await ctx.app.inject({ method: 'POST', url: importUrl('preview'), ...m })).json() as Record<string, unknown>;
+    expect(preview).toMatchObject({ total: 3, toCreate: 3, toUpdate: 0, errors: [] });
+
+    const commit = await ctx.app.inject({ method: 'POST', url: importUrl('commit'), ...m });
+    expect(commit.statusCode).toBe(201);
+    expect(commit.json()).toEqual({ total: 3, created: 3, updated: 0 });
+
+    const list = (await ctx.app.inject({ url: '/api/projects' })).json() as Array<Record<string, unknown>>;
+    expect(list).toHaveLength(3); // 合计行没有被导入
+    const by = (no: string) => list.find((p) => p.contractNo === no)!;
+    expect(by('HT-001')).toMatchObject({
+      batchNo: 15, region: '华东', name: '办公楼装修',
+      contractPrice: 100_000_050, qxReceived: 80_000_000, qxSubcontractFee: 40_000_000, chenPei: 5_000_000, qxProfit: 20_000_000,
+      qxMoneyReceived: true, paidSubcontractor: true, paidChenPei: false
+    });
+    expect(by('HT-002')).toMatchObject({ qxMoneyReceived: false, paidSubcontractor: false, paidChenPei: false });
+    // 空金额按 0；「yes」「√」等非「是」内容按否；「是 」去掉空白后为是
+    expect(by('HT-003')).toMatchObject({
+      contractPrice: 0, qxReceived: 0, qxProfit: 0, qxMoneyReceived: false, paidSubcontractor: true, paidChenPei: false
+    });
+
+    const id = by('HT-001').id as string;
+    expect((await ctx.app.inject({ url: `/api/projects/${id}` })).json()).toMatchObject({ id, contractNo: 'HT-001' });
     expect((await ctx.app.inject({ url: '/api/projects/nope' })).statusCode).toBe(404);
+  });
 
-    expect((await post('/api/projects', { name: '  ' })).statusCode).toBe(400);
-    expect((await post('/api/projects', { name: 'x', status: 'bad' })).statusCode).toBe(400);
+  it('以项目名称为唯一键：同名则更新（含合同编号），不同名则新增，合同编号可重复', async () => {
+    await ctx.app.inject({
+      method: 'POST', url: importUrl('commit'),
+      ...multipart(await projectXlsx([['HT-001', '第14批', '华东', '项目甲', 100, 0, 0, 0, 0, '否', '否', '否']]))
+    });
+    const m2 = multipart(
+      await projectXlsx([
+        ['HT-009', ' 第 15 批 ', '华北', '项目甲', 200, 150, 0, 0, 50, '是', '否', '否'], // 同名 -> 更新，合同编号随之更新
+        ['HT-001', '', '', '项目乙', 300, 0, 0, 0, 0, '否', '否', '否'], // 合同编号与库里已有的相同，但名称不同 -> 新增
+        ['HT-001', '', '', '项目丙', 400, 0, 0, 0, 0, '否', '否', '否'], // 同文件内合同编号重复 -> 允许
+        ['', '', '', '项目丁', 500, 0, 0, 0, 0, '否', '否', '否'] // 合同编号为空 -> 允许
+      ])
+    );
+    expect((await ctx.app.inject({ method: 'POST', url: importUrl('preview'), ...m2 })).json()).toMatchObject({
+      total: 4, toCreate: 3, toUpdate: 1, errors: []
+    });
+    const res = await ctx.app.inject({ method: 'POST', url: importUrl('commit'), ...m2 });
+    expect(res.json()).toEqual({ total: 4, created: 3, updated: 1 });
+
+    const list = (await ctx.app.inject({ url: '/api/projects' })).json() as Array<Record<string, unknown>>;
+    expect(list).toHaveLength(4);
+    const by = (name: string) => list.find((p) => p.name === name)!;
+    expect(by('项目甲')).toMatchObject({
+      contractNo: 'HT-009', batchNo: 15, region: '华北', contractPrice: 20_000, qxReceived: 15_000, qxMoneyReceived: true
+    });
+    expect(by('项目乙').contractNo).toBe('HT-001');
+    expect(by('项目丙').contractNo).toBe('HT-001');
+    expect(by('项目丁').contractNo).toBe('');
+  });
+
+  it('同一文件内项目名称重复属于错误；其他错误行同样报告，整批不入库', async () => {
+    const m = multipart(
+      await projectXlsx([
+        ['HT-001', '', '', '正常项目', 100, 0, 0, 0, 0, '是', '是', '是'], // Excel 第 3 行
+        ['HT-002', '', '', '', 100, 0, 0, 0, 0, '', '', ''], // 第 4 行：缺项目名称
+        ['HT-003', '', '', '金额非法', 'abc', 0, 0, 0, 0, '', '', ''], // 第 5 行
+        ['HT-004', '', '', '正常项目', 100, 0, 0, 0, 0, '', '', ''] // 第 6 行：项目名称与第 3 行重复
+      ])
+    );
+    const preview = (await ctx.app.inject({ method: 'POST', url: importUrl('preview'), ...m })).json() as {
+      errors: Array<{ row: number; message: string }>;
+    };
+    expect(preview.errors.map((e) => e.row)).toEqual([4, 5, 6]);
+    expect(preview.errors[0]!.message).toContain('项目名称不能为空');
+    expect(preview.errors[2]!.message).toContain('项目名称「正常项目」与第 3 行重复');
+    expect((await ctx.app.inject({ method: 'POST', url: importUrl('commit'), ...m })).statusCode).toBe(422);
+    expect((await ctx.app.inject({ url: '/api/projects' })).json()).toEqual([]);
+  });
+
+  it('批次：「第15批」记为批次号 15；数字、带空白同样识别；留空为 null；其他写法报错', async () => {
+    const m = multipart(
+      await projectXlsx([
+        ['', '第15批', '', '甲', 0, 0, 0, 0, 0, '', '', ''],
+        ['', 16, '', '乙', 0, 0, 0, 0, 0, '', '', ''],
+        ['', '第 7 批', '', '丙', 0, 0, 0, 0, 0, '', '', ''],
+        ['', '', '', '丁', 0, 0, 0, 0, 0, '', '', '']
+      ])
+    );
+    expect((await ctx.app.inject({ method: 'POST', url: importUrl('commit'), ...m })).statusCode).toBe(201);
+    const list = (await ctx.app.inject({ url: '/api/projects' })).json() as Array<{ name: string; batchNo: number | null }>;
+    const no = (name: string) => list.find((p) => p.name === name)!.batchNo;
+    expect([no('甲'), no('乙'), no('丙'), no('丁')]).toEqual([15, 16, 7, null]);
+
+    const bad = multipart(
+      await projectXlsx([
+        ['', '第十五批', '', '戊', 0, 0, 0, 0, 0, '', '', ''],
+        ['', '第15期', '', '己', 0, 0, 0, 0, 0, '', '', ''],
+        ['', '15.5', '', '庚', 0, 0, 0, 0, 0, '', '', '']
+      ])
+    );
+    const preview = (await ctx.app.inject({ method: 'POST', url: importUrl('preview'), ...bad })).json() as {
+      errors: Array<{ row: number; message: string }>;
+    };
+    expect(preview.errors.map((e) => e.row)).toEqual([3, 4, 5]);
+    expect(preview.errors[0]!.message).toContain('批次格式无法识别');
+  });
+
+  it('兼容「表头 + 说明行 + 合计行 + 数据」的三行表头结构：说明行与合计行都被忽略，行号对应 Excel 实际行', async () => {
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('s');
+    ws.addRow(PROJECT_HEADERS); // 第 1 行：表头
+    ws.addRow(['', '', '', '项目名称', '合同价', '', '', '', '', '', '', '']); // 第 2 行：重复表头的说明行
+    ws.addRow(['', '', '', '合计', 300, 0, 0, 0, 0, '', '', '']); // 第 3 行：合计
+    ws.addRow(['HT-1', '第14批', '陇南', '真实项目一', 100, 0, 0, 0, 0, '√', '账清', '']); // 第 4 行
+    ws.addRow(['HT-1', '第15批', '陇南', '真实项目二', 200, 0, 0, 0, 0, '', '', '']); // 第 5 行
+    ws.addRow(['HT-1', '第15批', '陇南', '', 0, 0, 0, 0, 0, '', '', '']); // 第 6 行：缺项目名称
+    const m = multipart(Buffer.from(await wb.xlsx.writeBuffer()));
+
+    const preview = (await ctx.app.inject({ method: 'POST', url: importUrl('preview'), ...m })).json() as {
+      total: number; errors: Array<{ row: number }>;
+    };
+    expect(preview.total).toBe(3); // 只统计真实数据行
+    expect(preview.errors.map((e) => e.row)).toEqual([6]);
+  });
+
+it('缺少表头返回 422；按表头名定位列，列顺序可以不同；空行不计', async () => {
+    const lacking = multipart(await projectXlsx([], PROJECT_HEADERS.filter((h) => h !== '陈沛')));
+    const res = await ctx.app.inject({ method: 'POST', url: importUrl('preview'), ...lacking });
+    expect(res.statusCode).toBe(422);
+    expect(res.json()).toMatchObject({ message: expect.stringContaining('陈沛') });
+
+    const reordered = ['项目名称', '合同编号', ...PROJECT_HEADERS.filter((h) => h !== '项目名称' && h !== '合同编号')];
+    const m = multipart(await projectXlsx([['乱序项目', 'HT-009', '', '', 100, 0, 0, 0, 0, '', '', ''], [], [null]], reordered));
+    expect((await ctx.app.inject({ method: 'POST', url: importUrl('commit'), ...m })).json()).toEqual({ total: 1, created: 1, updated: 0 });
+    expect(((await ctx.app.inject({ url: '/api/projects' })).json() as Array<{ contractNo: string; name: string }>)[0]).toMatchObject({
+      contractNo: 'HT-009', name: '乱序项目'
+    });
+  });
+
+  it('不再提供手工新增项目接口；可下载导入模板', async () => {
+    expect((await post('/api/projects', { name: 'x' })).statusCode).toBe(404);
+    const tpl = await ctx.app.inject({ url: '/api/projects/import/template' });
+    expect(tpl.statusCode).toBe(200);
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(tpl.rawPayload as unknown as ArrayBuffer);
+    expect(wb.worksheets[0]!.getRow(1).values).toEqual([undefined, ...PROJECT_HEADERS]);
+    // 模板本身必须能被导入
+    const m = multipart(Buffer.from(tpl.rawPayload));
+    expect((await ctx.app.inject({ method: 'POST', url: importUrl('commit'), ...m })).json()).toMatchObject({ created: 2 });
   });
 });
 

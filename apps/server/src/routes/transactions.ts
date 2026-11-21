@@ -8,13 +8,10 @@ const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, '日期格式应为 Y
 const createSchema = z.object({
   occurredOn: dateSchema,
   type: z.enum(TRANSACTION_TYPES),
-  summary: z.string().trim().min(1).max(200),
   amount: z.number().int().positive(),
   accountId: z.string().optional(),
-  fromAccountId: z.string().optional(),
-  toAccountId: z.string().optional(),
   categoryId: z.string().nullable().optional(),
-  counterparty: z.string().max(100).optional(),
+  counterpartyId: z.string().nullable().optional(),
   note: z.string().max(500).optional()
 });
 
@@ -22,6 +19,7 @@ const querySchema = z.object({
   accountId: z.string().optional(),
   type: z.enum(TRANSACTION_TYPES).optional(),
   categoryId: z.string().optional(),
+  counterpartyId: z.string().optional(),
   from: dateSchema.optional(),
   to: dateSchema.optional(),
   keyword: z.string().optional(),

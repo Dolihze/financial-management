@@ -76,6 +76,10 @@ export async function patch<T>(path: string, body: unknown): Promise<T> {
   );
 }
 
+export async function del<T>(path: string): Promise<T> {
+  return handle<T>(await fetch(baseUrl + path, { method: 'DELETE', headers: headers() }));
+}
+
 export async function upload<T>(path: string, file: File, query?: Record<string, string>): Promise<T> {
   const form = new FormData();
   form.append('file', file);

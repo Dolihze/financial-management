@@ -5,18 +5,21 @@ import type { Db } from '../db/database';
 import { AppError, newId, nowIso } from '../utils';
 import { writeAudit } from './audit';
 import { CategoryService } from './categoryService';
+import { CounterpartyService } from './counterpartyService';
 import { makeFingerprint, TransactionService } from './transactionService';
 
 /**
  * 导入模板列（第一行为表头）：
- * 日期 | 类型(收入/支出) | 金额 | 摘要 | 账户 | 分类 | 往来单位 | 备注
- * 转账请用界面手工录入，避免导入时账户配对歧义。
+ * 日期 | 类型(收入/支出) | 金额 | 账户 | 分类 | 往来单位 | 备注
+ * 借款/贷款请用界面手工录入。
  */
-export const IMPORT_HEADERS = ['日期', '类型', '金额', '摘要', '账户', '分类', '往来单位', '备注'] as const;
+export const IMPORT_HEADERS = ['日期', '类型', '金额', '账户', '分类', '往来单位', '备注'] as const;
 
 interface ParsedRow {
   row: number;
   input: CreateTransactionInput;
+  /** Excel 中的往来单位名称；预览不写库，提交时再解析/自动创建主数据 */
+  counterpartyName: string;
   fingerprint: string;
 }
 
@@ -51,13 +54,15 @@ function normalizeDate(v: ExcelJS.CellValue): string {
 export class ImportService {
   private readonly txService: TransactionService;
   private readonly categories: CategoryService;
+  private readonly counterparties: CounterpartyService;
 
   constructor(
     private readonly db: Db,
     private readonly deviceId: string
   ) {
     this.txService = new TransactionService(db, deviceId);
-    this.categories = new CategoryService(db);
+    this.categories = new CategoryService(db, deviceId);
+    this.counterparties = new CounterpartyService(db, deviceId);
   }
 
   /** 生成导入模板 */
@@ -65,8 +70,8 @@ export class ImportService {
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet('流水导入');
     ws.addRow([...IMPORT_HEADERS]);
-    ws.addRow(['2026-01-15', '收入', 10000.5, '客户回款', '招商银行基本户', '主营业务收入', 'XX公司', '']);
-    ws.addRow(['2026-01-16', '支出', 2300, '办公用品采购', '现金', '办公费', '京东', '']);
+    ws.addRow(['2026-01-15', '收入', 10000.5, '招商银行基本户', '其他收入', 'XX公司', '客户回款']);
+    ws.addRow(['2026-01-16', '支出', 2300, '现金', '经营费', '京东', '办公用品采购']);
     ws.getRow(1).font = { bold: true };
     ws.columns.forEach((c) => (c.width = 16));
     return Buffer.from(await wb.xlsx.writeBuffer());
@@ -105,29 +110,36 @@ export class ImportService {
         if (!type) throw new Error(`类型必须是「收入」或「支出」，当前: ${typeText || '(空)'}`);
         const amount = toCents(cellText(cells[2] ?? null));
         if (amount <= 0) throw new Error('金额必须大于 0');
-        const summary = cellText(cells[3] ?? null);
-        if (!summary) throw new Error('摘要不能为空');
-        const accountName = cellText(cells[4] ?? null);
+        const accountName = cellText(cells[3] ?? null);
         const accountId = accountByName.get(accountName);
         if (!accountId) throw new Error(`账户不存在: ${accountName || '(空)'}，请先在系统中创建`);
-        const categoryName = cellText(cells[5] ?? null);
+        const categoryName = cellText(cells[4] ?? null);
         let categoryId: string | null = null;
         if (categoryName) {
           const cat = this.categories.findByName(type, categoryName);
           if (!cat) throw new Error(`分类不存在: ${categoryName}`);
           categoryId = cat.id;
         }
+        const counterpartyName = cellText(cells[5] ?? null);
+        if (counterpartyName.length > 100) throw new Error('往来单位名称不能超过 100 个字符');
+        if (counterpartyName && !this.counterparties.findByName(counterpartyName)) {
+          const archived = this.db.prepare('SELECT 1 FROM counterparty WHERE name = ?').get(counterpartyName);
+          if (archived) throw new Error(`往来单位「${counterpartyName}」已被删除，名称不可复用，请换一个名称`);
+        }
         const input: CreateTransactionInput = {
           occurredOn,
           type,
-          summary,
           amount,
           accountId,
           categoryId,
-          counterparty: cellText(cells[6] ?? null),
-          note: cellText(cells[7] ?? null)
+          note: cellText(cells[6] ?? null)
         };
-        rows.push({ row: rowNumber, input, fingerprint: makeFingerprint({ occurredOn, type, amount, summary, accountKey: accountId }) });
+        rows.push({
+          row: rowNumber,
+          input,
+          counterpartyName,
+          fingerprint: makeFingerprint({ occurredOn, type, amount, counterparty: counterpartyName, accountKey: accountId })
+        });
       } catch (e) {
         errors.push({ row: rowNumber, message: e instanceof Error ? e.message : String(e) });
       }
@@ -173,8 +185,17 @@ export class ImportService {
           'INSERT INTO import_batch (id,file_name,file_hash,row_count,imported_count,status,created_at) VALUES (?,?,?,?,?,?,?)'
         )
         .run(batchId, fileName, fileHash, total, toInsert.length, 'committed', nowIso());
+      const cpIds = new Map<string, string>(); // 本批次内同名只创建一次
       for (const r of toInsert) {
-        this.txService.insertWithinTx(r.input, { importBatchId: batchId, fingerprint: r.fingerprint });
+        let counterpartyId: string | null = null;
+        if (r.counterpartyName) {
+          counterpartyId = cpIds.get(r.counterpartyName) ?? null;
+          if (!counterpartyId) {
+            counterpartyId = (this.counterparties.findByName(r.counterpartyName) ?? this.counterparties.create({ name: r.counterpartyName })).id;
+            cpIds.set(r.counterpartyName, counterpartyId);
+          }
+        }
+        this.txService.insertWithinTx({ ...r.input, counterpartyId }, { importBatchId: batchId, fingerprint: r.fingerprint });
       }
       writeAudit(this.db, this.deviceId, 'import_batch', batchId, 'commit', { fileName, imported: toInsert.length });
     })();

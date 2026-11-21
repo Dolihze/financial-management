@@ -13,13 +13,29 @@ export const ACCOUNT_TYPE_LABELS: Record<AccountType, string> = {
   other: '其他'
 };
 
-export const TRANSACTION_TYPES = ['income', 'expense', 'transfer'] as const;
+/**
+ * 交易类型：
+ * - income 收入：入账账户 +amt
+ * - expense 支出：出账账户 -amt
+ * - borrow 借款：把钱借出去，出账账户 -amt
+ * - loan 贷款：向外借入资金，入账账户 +amt
+ */
+export const TRANSACTION_TYPES = ['income', 'expense', 'borrow', 'loan'] as const;
 export type TransactionType = (typeof TRANSACTION_TYPES)[number];
 
 export const TRANSACTION_TYPE_LABELS: Record<TransactionType, string> = {
   income: '收入',
   expense: '支出',
-  transfer: '转账'
+  borrow: '借款',
+  loan: '贷款'
+};
+
+/** 该类型的资金方向：true=流入账户，false=流出账户 */
+export const TRANSACTION_TYPE_IS_INFLOW: Record<TransactionType, boolean> = {
+  income: true,
+  expense: false,
+  borrow: false,
+  loan: true
 };
 
 export type TransactionStatus = 'normal' | 'voided';
@@ -45,6 +61,10 @@ export interface Category {
   /** income / expense */
   kind: 'income' | 'expense';
   parentId: string | null;
+  /** 内置分类（如「其他收入」）：不可编辑 */
+  builtin: boolean;
+  /** 被多少笔流水使用（仅列表接口返回，含已作废流水） */
+  usageCount?: number;
 }
 
 export interface TransactionLine {
@@ -60,9 +80,13 @@ export interface Transaction {
   /** 业务发生日期 YYYY-MM-DD */
   occurredOn: string;
   type: TransactionType;
+  /** 历史数据遗留的摘要（已从录入中移除，新交易恒为空串） */
   summary: string;
   categoryId: string | null;
   categoryName?: string | null;
+  /** 关联的往来单位（主数据）；单位被删除后为 null，但 counterparty 名称快照仍保留 */
+  counterpartyId: string | null;
+  /** 往来单位名称快照 */
   counterparty: string;
   note: string;
   status: TransactionStatus;
@@ -72,20 +96,25 @@ export interface Transaction {
   updatedAt: string;
 }
 
-/** 创建交易的入参：收入/支出只需一个账户，转账需要 from/to */
+/** 创建交易的入参：每笔交易只涉及一个账户 */
 export interface CreateTransactionInput {
   occurredOn: string;
   type: TransactionType;
-  summary: string;
   /** 金额（分），必须 > 0 */
   amount: number;
-  /** 收入：入账账户；支出：出账账户 */
+  /** 收入/贷款：入账账户；支出/借款：出账账户 */
   accountId?: string;
-  fromAccountId?: string;
-  toAccountId?: string;
   categoryId?: string | null;
-  counterparty?: string;
+  /** 往来单位（主数据 id） */
+  counterpartyId?: string | null;
   note?: string;
+}
+
+export interface Counterparty {
+  id: string;
+  name: string;
+  /** 被多少笔流水关联（仅列表接口返回，含已作废流水） */
+  usageCount?: number;
 }
 
 export interface OverviewSummary {

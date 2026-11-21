@@ -2,6 +2,7 @@ import type {
   Account,
   AccountType,
   Category,
+  Counterparty,
   CreateTransactionInput,
   ImportBatch,
   ImportPreviewResult,
@@ -9,7 +10,7 @@ import type {
   Transaction,
   TransactionType
 } from '@fm/shared';
-import { get, getBaseUrl, patch, post, upload } from './http';
+import { del, get, getBaseUrl, patch, post, upload } from './http';
 
 export { resolveBackendBase, waitBackendReady } from './backend';
 export { setBaseUrl } from './http';
@@ -18,6 +19,7 @@ export interface TransactionFilter {
   accountId?: string;
   type?: TransactionType;
   categoryId?: string;
+  counterpartyId?: string;
   from?: string;
   to?: string;
   keyword?: string;
@@ -40,7 +42,16 @@ export const api = {
 
   categories: {
     list: () => get<Category[]>('/api/categories'),
-    create: (body: { name: string; kind: 'income' | 'expense' }) => post<Category>('/api/categories', body)
+    create: (body: { name: string; kind: 'income' | 'expense' }) => post<Category>('/api/categories', body),
+    update: (id: string, body: { name: string }) => patch<Category>(`/api/categories/${id}`, body),
+    remove: (id: string) => del<{ movedTransactions: number }>(`/api/categories/${id}`)
+  },
+
+  counterparties: {
+    list: () => get<Counterparty[]>('/api/counterparties'),
+    create: (body: { name: string }) => post<Counterparty>('/api/counterparties', body),
+    update: (id: string, body: { name: string }) => patch<Counterparty>(`/api/counterparties/${id}`, body),
+    remove: (id: string) => del<{ unlinkedTransactions: number }>(`/api/counterparties/${id}`)
   },
 
   transactions: {
@@ -55,7 +66,7 @@ export const api = {
 
   overview: {
     summary: () => get<OverviewSummary>('/api/overview'),
-    integrity: () => get<{ ok: boolean; brokenTransfers: string[] }>('/api/overview/integrity')
+    integrity: () => get<{ ok: boolean; brokenTransactions: string[] }>('/api/overview/integrity')
   },
 
   imports: {

@@ -71,7 +71,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div v-if="data">
-    <el-alert v-if="!integrityOk" type="error" show-icon :closable="false" title="数据完整性检查未通过：存在分录不平衡的转账，请联系管理员" style="margin-bottom: 16px" />
+    <el-alert v-if="!integrityOk" type="error" show-icon :closable="false" title="数据完整性检查未通过：存在分录异常的交易，请联系管理员" style="margin-bottom: 16px" />
 
     <el-row :gutter="16" style="margin-bottom: 16px">
       <el-col :span="8">

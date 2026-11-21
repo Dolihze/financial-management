@@ -11,6 +11,7 @@ interface TxRow {
   summary: string;
   category_id: string | null;
   category_name: string | null;
+  counterparty_id: string | null;
   counterparty: string;
   note: string;
   status: 'normal' | 'voided';
@@ -31,6 +32,7 @@ export interface TransactionQuery {
   accountId?: string;
   type?: TransactionType;
   categoryId?: string;
+  counterpartyId?: string;
   from?: string;
   to?: string;
   keyword?: string;
@@ -39,20 +41,23 @@ export interface TransactionQuery {
   offset?: number;
 }
 
-/** 导入去重指纹：日期 + 类型 + 金额 + 摘要 + 账户 */
+/** 导入去重指纹：日期 + 类型 + 金额 + 往来单位 + 账户 */
 export function makeFingerprint(parts: {
   occurredOn: string;
   type: string;
   amount: number;
-  summary: string;
+  counterparty: string;
   accountKey: string;
 }): string {
   return createHash('sha1')
-    .update([parts.occurredOn, parts.type, parts.amount, parts.summary.trim(), parts.accountKey].join('|'))
+    .update([parts.occurredOn, parts.type, parts.amount, parts.counterparty.trim(), parts.accountKey].join('|'))
     .digest('hex');
 }
 
-/** 将业务入参展开为分录。收入=入账户 +amt；支出=出账户 -amt；转账=一进一出。 */
+/**
+ * 将业务入参展开为分录（均为与「外部」的往来，单账户单分录）。
+ * 收入/贷款（借入）=入账户 +amt；支出/借款（借出）=出账户 -amt。
+ */
 export function buildLines(input: CreateTransactionInput): Array<{ accountId: string; amount: number }> {
   if (!Number.isInteger(input.amount) || input.amount <= 0) {
     throw new AppError('金额必须为大于 0 的整数分');
@@ -64,13 +69,12 @@ export function buildLines(input: CreateTransactionInput): Array<{ accountId: st
     case 'expense':
       if (!input.accountId) throw new AppError('支出必须指定出账账户');
       return [{ accountId: input.accountId, amount: -input.amount }];
-    case 'transfer':
-      if (!input.fromAccountId || !input.toAccountId) throw new AppError('转账必须指定转出和转入账户');
-      if (input.fromAccountId === input.toAccountId) throw new AppError('转出和转入账户不能相同');
-      return [
-        { accountId: input.fromAccountId, amount: -input.amount },
-        { accountId: input.toAccountId, amount: input.amount }
-      ];
+    case 'borrow':
+      if (!input.accountId) throw new AppError('借款必须指定出账账户');
+      return [{ accountId: input.accountId, amount: -input.amount }];
+    case 'loan':
+      if (!input.accountId) throw new AppError('贷款必须指定入账账户');
+      return [{ accountId: input.accountId, amount: input.amount }];
     default:
       throw new AppError('未知的交易类型');
   }
@@ -85,13 +89,8 @@ export class TransactionService {
   /** 在已有事务内插入一笔交易（导入批量调用复用） */
   insertWithinTx(input: CreateTransactionInput, extra: { importBatchId?: string; fingerprint?: string } = {}): string {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(input.occurredOn)) throw new AppError('日期格式应为 YYYY-MM-DD');
-    if (!input.summary?.trim()) throw new AppError('摘要不能为空');
 
     const lines = buildLines(input);
-    // 复式约束：收入/支出是与「外部」的往来，仅转账要求分录和为 0
-    if (input.type === 'transfer' && lines.reduce((s, l) => s + l.amount, 0) !== 0) {
-      throw new AppError('转账分录之和必须为 0');
-    }
 
     const accountIds = lines.map((l) => l.accountId);
     for (const aid of accountIds) {
@@ -100,20 +99,31 @@ export class TransactionService {
       if (acc.archived === 1) throw new AppError('账户已归档，不能记账');
     }
 
+    // 往来单位：必须是存在且未删除的主数据；同时写入名称快照
+    let counterpartyName = '';
+    if (input.counterpartyId) {
+      const cp = this.db.prepare('SELECT name FROM counterparty WHERE id = ? AND archived = 0').get(input.counterpartyId) as
+        | { name: string }
+        | undefined;
+      if (!cp) throw new AppError('往来单位不存在或已删除', 404, 'NOT_FOUND');
+      counterpartyName = cp.name;
+    }
+
     const id = newId();
     const now = nowIso();
     this.db
       .prepare(
-        `INSERT INTO tx (id,occurred_on,type,summary,category_id,counterparty,note,status,import_batch_id,fingerprint,created_at,updated_at,version,device_id)
-         VALUES (?,?,?,?,?,?,?,'normal',?,?,?,?,1,?)`
+        `INSERT INTO tx (id,occurred_on,type,summary,category_id,counterparty_id,counterparty,note,status,import_batch_id,fingerprint,created_at,updated_at,version,device_id)
+         VALUES (?,?,?,?,?,?,?,?,'normal',?,?,?,?,1,?)`
       )
       .run(
         id,
         input.occurredOn,
         input.type,
-        input.summary.trim(),
+        '', // summary 列保留（历史数据），新交易不再录入
         input.categoryId ?? null,
-        input.counterparty ?? '',
+        input.counterpartyId ?? null,
+        counterpartyName,
         input.note ?? '',
         extra.importBatchId ?? null,
         extra.fingerprint ?? null,
@@ -153,6 +163,10 @@ export class TransactionService {
     if (q.categoryId) {
       where.push('t.category_id = ?');
       params.push(q.categoryId);
+    }
+    if (q.counterpartyId) {
+      where.push('t.counterparty_id = ?');
+      params.push(q.counterpartyId);
     }
     if (q.from) {
       where.push('t.occurred_on >= ?');
@@ -218,6 +232,7 @@ export class TransactionService {
       summary: r.summary,
       categoryId: r.category_id,
       categoryName: r.category_name,
+      counterpartyId: r.counterparty_id,
       counterparty: r.counterparty,
       note: r.note,
       status: r.status,

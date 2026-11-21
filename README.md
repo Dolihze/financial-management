@@ -41,7 +41,7 @@ financial-management/
 
 1. **金额一律为整数分**（`number`，如 12.34 元 = `1234`），禁止浮点。转换只用 `@fm/shared` 的 `toCents/fromCents`。
 2. **余额不单独存储**：`余额 = 期初 + 所有未作废分录之和`，实时推导。
-3. **交易 = 若干分录**：收入 = 入账账户 `+amt`；支出 = 出账账户 `-amt`；转账 = 一进一出（和为 0）。
+3. **交易 = 若干分录**：收入 / 贷款（借入）= 入账账户 `+amt`；支出 / 借款（借出）= 出账账户 `-amt`；每笔交易只涉及一个账户。
 4. **不物理删除**：交易只能「作废」，账户只能「归档」（且余额须为 0）；所有变更写入 `audit_log`。
 5. **主键全部 UUID**，并带 `device_id / updated_at / version`，为后期多端同步预留。
 6. **Excel 导入**：预览 → 提交，整批单事务；文件哈希防重复导入；行指纹防重复流水；可整批撤销。
@@ -99,7 +99,8 @@ npm run tauri:build          # 生成 NSIS 安装包
 | GET/POST | `/api/accounts` | 账户列表（含实时余额）/ 新建 |
 | PATCH | `/api/accounts/:id` | 修改名称/类型/备注 |
 | POST | `/api/accounts/:id/archive` | 归档（余额须为 0） |
-| GET/POST | `/api/categories` | 分类 |
+| GET/POST/PATCH/DELETE | `/api/categories` | 分类（PATCH 重命名；DELETE 为归档式删除，已使用的流水改挂兜底分类（收入=「其他收入」，支出=「其他支出」）；内置的默认分类不可编辑/删除：收入「其他收入」，支出「工资薪酬/社保/差旅费/房租水电/经营费/员工报销/其他支出」） |
+| GET/POST/PATCH/DELETE | `/api/counterparties` | 往来单位（流水通过 `counterpartyId` 关联；PATCH 重命名并同步流水名称；DELETE 为归档式删除，流水解除关联但保留名称快照） |
 | GET/POST | `/api/transactions` | 流水查询（账户/类型/日期/关键字）/ 记账 |
 | POST | `/api/transactions/:id/void` | 作废 |
 | GET | `/api/overview` | 总览：总余额、各账户、本月收支、趋势、分类 |
@@ -110,7 +111,7 @@ npm run tauri:build          # 生成 NSIS 安装包
 
 ## 路线图
 
-- [x] 单机版骨架：账户、记账、转账、总览、Excel 导入、作废/撤销、审计日志
+- [x] 单机版骨架：账户、记账（收入/支出/借款/贷款）、总览、Excel 导入、作废/撤销、审计日志
 - [ ] 数据备份/恢复（SQLite 在线备份）、本地数据库加密
 - [ ] 对账（银行流水核对）、附件（发票/回单）、报表导出（Excel/PDF）
 - [ ] 用户/角色/权限
@@ -120,4 +121,4 @@ npm run tauri:build          # 生成 NSIS 安装包
 ## 已知待办 / 注意
 
 - 应用图标为占位图（`src-tauri/icons/`），发布前请替换（`npx tauri icon <png>` 可生成全套）。
-- 导入模板仅支持收入/支出；转账请手工录入，避免账户配对歧义。
+- 导入模板仅支持收入/支出；借款/贷款请手工录入。

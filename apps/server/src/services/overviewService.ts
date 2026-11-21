@@ -58,14 +58,20 @@ export class OverviewService {
     };
   }
 
-  /** 对账校验：所有未作废转账的分录之和必须为 0，否则说明数据被破坏 */
-  integrityCheck(): { ok: boolean; brokenTransfers: string[] } {
+  /**
+   * 对账校验：每笔交易必须恰有一条分录，且方向与类型一致
+   * （收入/贷款为流入 > 0，支出/借款为流出 < 0），否则说明数据被破坏。
+   */
+  integrityCheck(): { ok: boolean; brokenTransactions: string[] } {
     const rows = this.db
       .prepare(
-        `SELECT t.id FROM tx t JOIN tx_line l ON l.tx_id = t.id
-         WHERE t.type='transfer' GROUP BY t.id HAVING SUM(l.amount) <> 0`
+        `SELECT t.id FROM tx t LEFT JOIN tx_line l ON l.tx_id = t.id
+         GROUP BY t.id
+         HAVING COUNT(l.id) <> 1
+             OR (t.type IN ('income','loan')   AND SUM(l.amount) <= 0)
+             OR (t.type IN ('expense','borrow') AND SUM(l.amount) >= 0)`
       )
       .all() as Array<{ id: string }>;
-    return { ok: rows.length === 0, brokenTransfers: rows.map((r) => r.id) };
+    return { ok: rows.length === 0, brokenTransactions: rows.map((r) => r.id) };
   }
 }

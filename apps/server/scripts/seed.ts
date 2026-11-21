@@ -11,7 +11,7 @@
  *
  * 设计要点：
  * - 走服务层（AccountService / TransactionService），不直接写 SQL：数据与真实使用一致，
- *   有审计日志，转账分录平衡，余额由流水推导。
+ *   有审计日志，余额由流水推导。
  * - 固定随机种子：同样参数每次生成完全相同的数据，便于复现问题。
  * - 金额一律整数分，不使用浮点做金额运算。
  * - 安全：拒绝写入默认的真实数据库（finance.db），只允许写 demo 库或显式指定的库。
@@ -23,6 +23,7 @@ import { getDemoDbPath } from '../src/config';
 import { openDatabase } from '../src/db/database';
 import { AccountService } from '../src/services/accountService';
 import { CategoryService } from '../src/services/categoryService';
+import { CounterpartyService } from '../src/services/counterpartyService';
 import { ImportService } from '../src/services/importService';
 import { TransactionService } from '../src/services/transactionService';
 
@@ -104,8 +105,8 @@ const SUPPLIERS = ['东莞精工五金', '宁波鑫达包装', '佛山永盛材�
 const STAFF = ['张伟', '王芳', '李娜', '刘洋', '陈静', '杨磊', '赵敏', '黄涛'];
 const CITIES = ['上海', '深圳', '北京', '成都', '杭州', '西安'];
 
-/** 固定月度支出的摘要特征，用于在作废环节排除它们 */
-const FIXED_SUMMARY = /(办公室房租|员工工资|社保公积金|增值税及附加|云服务器费用)$/;
+/** 固定月度支出（房租/工资等），作废环节需要排除它们；入库后摘要已移除，故按对象引用标记 */
+const fixedPlanned = new WeakSet<CreateTransactionInput>();
 
 type Kind = 'income' | 'expense';
 interface Template {
@@ -142,12 +143,12 @@ const TEMPLATES: Template[] = [
     accounts: [['现金（备用金）', 1]]
   },
   {
-    kind: 'expense', category: '采购成本', weight: 22, range: [2_000, 120_000],
+    kind: 'expense', category: '其他支出', weight: 22, range: [2_000, 120_000],
     make: (r) => { const s = r.pick(SUPPLIERS.slice(0, 4)); return [`${s}采购原材料`, s]; },
     accounts: [['招商银行基本户', 9], ['工商银行一般户', 1]]
   },
   {
-    kind: 'expense', category: '办公费', weight: 12, range: [30, 2_800],
+    kind: 'expense', category: '经营费', weight: 12, range: [30, 2_800],
     make: (r) => { const s = r.pick(['得力办公直营', '京东企业购']); return [r.pick(['打印纸与耗材', '办公椅采购', '文具用品', '饮用水与茶歇', '保洁用品']), s]; },
     accounts: [['现金（备用金）', 4], ['支付宝企业账户', 3], ['招商银行基本户', 1]]
   },
@@ -157,7 +158,7 @@ const TEMPLATES: Template[] = [
     accounts: [['招商银行基本户', 3], ['现金（备用金）', 2], ['支付宝企业账户', 2]]
   },
   {
-    kind: 'expense', category: '营销推广', weight: 5, range: [800, 30_000],
+    kind: 'expense', category: '经营费', weight: 5, range: [800, 30_000],
     make: (r) => [r.pick(['信息流广告投放', '展会摊位费', '宣传物料制作', '短视频代运营']), r.pick(['巨量引擎', '会展中心', '广告公司'])],
     accounts: [['支付宝企业账户', 3], ['招商银行基本户', 2]]
   },
@@ -203,10 +204,13 @@ async function main() {
   const deviceId = 'seed';
   const db = openDatabase(opt.db);
   const accounts = new AccountService(db, deviceId);
-  const categories = new CategoryService(db);
+  const categories = new CategoryService(db, deviceId);
+  const counterparties = new CounterpartyService(db, deviceId);
   const txs = new TransactionService(db, deviceId);
   const imports = new ImportService(db, deviceId);
   categories.seedDefaults();
+  // 默认只有「其他收入」；演示库额外新增几个用户自定义收入分类
+  for (const name of ['主营业务收入', '其他业务收入', '利息收入']) categories.create({ name, kind: 'income' });
 
   const r = makeRng(opt.seed);
 
@@ -217,6 +221,13 @@ async function main() {
   }
   const catId = new Map(categories.list().map((c) => [`${c.kind}:${c.name}`, c.id] as const));
   const A = (name: string) => accId.get(name)!;
+  // 往来单位按名称取，不存在则经服务层创建（保证有审计日志）
+  const cpIds = new Map<string, string>();
+  const CP = (name: string) => {
+    let id = cpIds.get(name);
+    if (!id) cpIds.set(name, (id = counterparties.create({ name }).id));
+    return id;
+  };
 
   // 2) 流水：开始日期 = 今天往前 months 个月
   const today = new Date();
@@ -225,32 +236,34 @@ async function main() {
 
   const planned: CreateTransactionInput[] = [];
 
-  // 2a) 固定的月度支出：房租、工资、社保、税费、云服务（让总览趋势有规律）
+  // 2a) 固定的月度支出：房租、工资、社保、税费(其他支出)、云服务（让总览趋势有规律）
   for (let i = 0; i < opt.months; i++) {
     const ym = new Date(start.getFullYear(), start.getMonth() + i, 1);
     const y = ym.getFullYear();
     const m = ym.getMonth();
     const day = (d: number) => fmt(new Date(y, m, Math.min(d, lastDayOf(y, m))));
     const notFuture = (s: string) => s <= fmt(today);
-    const fixed: Array<{ d: number; summary: string; who: string; cat: string; yuan: number; acc: string }> = [
-      { d: 1, summary: `${m + 1}月办公室房租`, who: '链家地产', cat: '房租水电', yuan: 18_000, acc: '招商银行基本户' },
-      { d: 10, summary: `${m + 1}月员工工资`, who: '全体员工', cat: '工资薪酬', yuan: 52_000 + r.int(-3, 3) * 1_000, acc: '工商银行一般户' },
-      { d: 12, summary: `${m + 1}月社保公积金`, who: '社保局', cat: '工资薪酬', yuan: 14_800, acc: '工商银行一般户' },
-      { d: 15, summary: `${m + 1}月增值税及附加`, who: '税务局', cat: '税费', yuan: 6_000 + r.int(0, 12) * 500, acc: '招商银行基本户' },
-      { d: 20, summary: `${m + 1}月云服务器费用`, who: '阿里云', cat: '办公费', yuan: 1_280 + r.int(0, 8) * 10, acc: '支付宝企业账户' }
+    const fixed: Array<{ d: number; who: string; cat: string; yuan: number; acc: string }> = [
+      { d: 1, who: '链家地产', cat: '房租水电', yuan: 18_000, acc: '招商银行基本户' },
+      { d: 10, who: '全体员工', cat: '工资薪酬', yuan: 52_000 + r.int(-3, 3) * 1_000, acc: '工商银行一般户' },
+      { d: 12, who: '社保局', cat: '社保', yuan: 14_800, acc: '工商银行一般户' },
+      { d: 15, who: '税务局', cat: '其他支出', yuan: 6_000 + r.int(0, 12) * 500, acc: '招商银行基本户' },
+      { d: 20, who: '阿里云', cat: '经营费', yuan: 1_280 + r.int(0, 8) * 10, acc: '支付宝企业账户' }
     ];
     for (const f of fixed) {
       if (!notFuture(day(f.d))) continue;
-      planned.push({
-        occurredOn: day(f.d), type: 'expense', summary: f.summary, amount: f.yuan * 100,
-        accountId: A(f.acc), categoryId: catId.get(`expense:${f.cat}`) ?? null, counterparty: f.who
-      });
+      const tx: CreateTransactionInput = {
+        occurredOn: day(f.d), type: 'expense', amount: f.yuan * 100,
+        accountId: A(f.acc), categoryId: catId.get(`expense:${f.cat}`) ?? null, counterpartyId: CP(f.who)
+      };
+      fixedPlanned.add(tx);
+      planned.push(tx);
     }
   }
 
   // 2b) 随机的日常收支
   const randomCount = Math.max(0, opt.count - planned.length);
-  const transferShare = 0.07;
+  const loanShare = 0.07; // 借款/贷款占随机流水的比例
   const incomeTemplates = TEMPLATES.filter((t) => t.kind === 'income');
   const expenseTemplates = TEMPLATES.filter((t) => t.kind === 'expense');
   // 收入占比略低于支出，但单笔更大，整体让现金流为正
@@ -261,53 +274,48 @@ async function main() {
 
   for (let i = 0; i < randomCount; i++) {
     const date = fmt(addDays(start, r.int(0, spanDays)));
-    if (r.next() < transferShare) {
-      // 转账：取现 / 内部调拨 / 平台提现，保证转出账户不同于转入账户
-      const route = r.pick([
-        ['招商银行基本户', '现金（备用金）', '取现补充备用金'],
-        ['招商银行基本户', '工商银行一般户', '调拨工资专户'],
-        ['支付宝企业账户', '招商银行基本户', '支付宝余额提现'],
-        ['微信商户号', '招商银行基本户', '微信商户号提现']
+    if (r.next() < loanShare) {
+      // 借款（借出，出账）/ 贷款（借入，入账）
+      const flow = r.pick([
+        ['borrow', '招商银行基本户', '员工'],
+        ['borrow', '招商银行基本户', '合作方'],
+        ['loan', '招商银行基本户', '招商银行'],
+        ['loan', '工商银行一般户', '股东']
       ] as const);
       planned.push({
-        occurredOn: date, type: 'transfer', summary: route[2], amount: yuanToCents(r, 500, 30_000),
-        fromAccountId: A(route[0]), toAccountId: A(route[1])
+        occurredOn: date, type: flow[0], amount: yuanToCents(r, 500, 30_000),
+        accountId: A(flow[1]), counterpartyId: CP(flow[2])
       });
       continue;
     }
     const t = pickTemplate();
-    const [summary, who] = t.make(r);
+    const [, who] = t.make(r); // 模板仍返回摘要以保持随机序列不变，但摘要已不再入库
     planned.push({
-      occurredOn: date, type: t.kind, summary, amount: yuanToCents(r, t.range[0], t.range[1]),
-      accountId: A(r.weighted(t.accounts)), categoryId: catId.get(`${t.kind}:${t.category}`) ?? null, counterparty: who
+      occurredOn: date, type: t.kind, amount: yuanToCents(r, t.range[0], t.range[1]),
+      accountId: A(r.weighted(t.accounts)), categoryId: catId.get(`${t.kind}:${t.category}`) ?? null, counterpartyId: CP(who)
     });
   }
 
   // 按日期排序后入账，让 created_at 与业务日期大致同序，列表更自然
   planned.sort((a, b) => a.occurredOn.localeCompare(b.occurredOn));
 
-  // 保护：避免个别账户（如现金）被随机支出刷成大额负数，先试算，不足则补一笔转账
+  // 保护：避免个别账户（如现金）被随机支出刷成大额负数，先试算，不足则补一笔「贷款」（借入资金）
   const running = new Map(ACCOUNTS.map((a) => [a.name, a.opening] as const));
   const idToName = new Map([...accId].map(([n, id]) => [id, n] as const));
   const ensured: CreateTransactionInput[] = [];
   for (const p of planned) {
-    const deltas: Array<[string, number]> =
-      p.type === 'transfer'
-        ? [[idToName.get(p.fromAccountId!)!, -p.amount], [idToName.get(p.toAccountId!)!, p.amount]]
-        : [[idToName.get(p.accountId!)!, p.type === 'income' ? p.amount : -p.amount]];
-    for (const [name, delta] of deltas) {
-      if (delta < 0 && (running.get(name) ?? 0) + delta < 0 && name !== '招商银行基本户') {
-        const topUp = Math.ceil((-(running.get(name)! + delta) + 200_000) / 10_000) * 10_000;
-        ensured.push({
-          occurredOn: p.occurredOn, type: 'transfer', summary: name === '现金（备用金）' ? '取现补充备用金' : `向${name}拨付资金`,
-          amount: topUp, fromAccountId: A('招商银行基本户'), toAccountId: A(name)
-        });
-        running.set('招商银行基本户', running.get('招商银行基本户')! - topUp);
-        running.set(name, running.get(name)! + topUp);
-      }
+    const name = idToName.get(p.accountId!)!;
+    const delta = p.type === 'income' || p.type === 'loan' ? p.amount : -p.amount;
+    if (delta < 0 && (running.get(name) ?? 0) + delta < 0 && name !== '招商银行基本户') {
+      const topUp = Math.ceil((-(running.get(name)! + delta) + 200_000) / 10_000) * 10_000;
+      ensured.push({
+        occurredOn: p.occurredOn, type: 'loan',
+        amount: topUp, accountId: A(name), counterpartyId: CP('股东')
+      });
+      running.set(name, running.get(name)! + topUp);
     }
     ensured.push(p);
-    for (const [name, delta] of deltas) running.set(name, (running.get(name) ?? 0) + delta);
+    running.set(name, (running.get(name) ?? 0) + delta);
   }
 
   // 3) 入库（整批一个事务，速度快且要么全成功）
@@ -318,10 +326,11 @@ async function main() {
 
   // 4) 几笔作废（演示"作废不删除"）。
   //    只挑随机产生的日常收支：固定的月度支出（房租/工资/社保/税费/云服务）作废后该月会缺项，数据不自洽；
-  //    转账作废也不在这里演示。原因按收入/支出区分，保证"原因"与交易本身讲得通。
+  //    借款/贷款作废也不在这里演示（用于防透支的补充贷款作废会让余额变负）。
+  //    原因按收入/支出区分，保证"原因"与交易本身讲得通。
   const voidable = created.filter((_, i) => {
     const p = ensured[i]!;
-    return p.type !== 'transfer' && !FIXED_SUMMARY.test(p.summary);
+    return (p.type === 'income' || p.type === 'expense') && !fixedPlanned.has(p);
   });
   const expenseVoidReasons = ['重复录入', '金额录错', '供应商退款冲回'];
   const incomeVoidReasons = ['重复录入', '客户退款冲回', '对方未实际付款'];
@@ -362,14 +371,14 @@ async function buildSampleWorkbook(r: ReturnType<typeof makeRng>, _bankId: strin
   const ExcelJS = (await import('exceljs')).default;
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet('流水导入');
-  ws.addRow(['日期', '类型', '金额', '摘要', '账户', '分类', '往来单位', '备注']);
+  ws.addRow(['日期', '类型', '金额', '账户', '分类', '往来单位', '备注']);
   for (let i = 0; i < 12; i++) {
     const d = fmt(addDays(new Date(), -r.int(200, 330)));
     const income = r.next() < 0.5;
     ws.addRow([
       d, income ? '收入' : '支出', yuanToCents(r, 800, 40_000) / 100,
-      income ? `${r.pick(CUSTOMERS)}回款（导入）` : `${r.pick(SUPPLIERS)}付款（导入）`,
-      '招商银行基本户', income ? '主营业务收入' : '采购成本', '', '银行流水导入'
+      '招商银行基本户', income ? '主营业务收入' : '其他支出',
+      income ? r.pick(CUSTOMERS) : r.pick(SUPPLIERS), '银行流水导入'
     ]);
   }
   return Buffer.from(await wb.xlsx.writeBuffer());

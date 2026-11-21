@@ -77,7 +77,7 @@ onMounted(loadBatches);
         </el-upload>
         <span v-if="file">{{ file.name }}</span>
       </div>
-      <el-text type="info" size="small">注意：账户和分类必须在系统中已存在；转账请使用「记账流水」手工录入。</el-text>
+      <el-text type="info" size="small">注意：账户和分类必须在系统中已存在；借款/贷款请使用「记账流水」手工录入。</el-text>
 
       <div v-if="preview" v-loading="busy" style="margin-top: 16px">
         <el-descriptions :column="4" border>

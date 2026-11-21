@@ -6,11 +6,13 @@ import type { AppConfig } from './config';
 import { openDatabase, type Db } from './db/database';
 import { registerAccountRoutes } from './routes/accounts';
 import { registerCategoryRoutes } from './routes/categories';
+import { registerCounterpartyRoutes } from './routes/counterparties';
 import { registerImportRoutes } from './routes/imports';
 import { registerOverviewRoutes } from './routes/overview';
 import { registerTransactionRoutes } from './routes/transactions';
 import { AccountService } from './services/accountService';
 import { CategoryService } from './services/categoryService';
+import { CounterpartyService } from './services/counterpartyService';
 import { ImportService } from './services/importService';
 import { OverviewService } from './services/overviewService';
 import { TransactionService } from './services/transactionService';
@@ -19,6 +21,7 @@ import { AppError } from './utils';
 export interface Services {
   accounts: AccountService;
   categories: CategoryService;
+  counterparties: CounterpartyService;
   transactions: TransactionService;
   imports: ImportService;
   overview: OverviewService;
@@ -34,7 +37,8 @@ export async function buildApp(config: AppConfig, opts: { logger?: boolean } = {
   const db = openDatabase(config.dbPath);
   const services: Services = {
     accounts: new AccountService(db, config.deviceId),
-    categories: new CategoryService(db),
+    categories: new CategoryService(db, config.deviceId),
+    counterparties: new CounterpartyService(db, config.deviceId),
     transactions: new TransactionService(db, config.deviceId),
     imports: new ImportService(db, config.deviceId),
     overview: new OverviewService(db, config.deviceId)
@@ -62,6 +66,7 @@ export async function buildApp(config: AppConfig, opts: { logger?: boolean } = {
 
   registerAccountRoutes(app, services);
   registerCategoryRoutes(app, services);
+  registerCounterpartyRoutes(app, services);
   registerTransactionRoutes(app, services);
   registerImportRoutes(app, services);
   registerOverviewRoutes(app, services);

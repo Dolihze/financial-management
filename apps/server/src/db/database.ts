@@ -31,9 +31,18 @@ export function runMigrations(db: Db): void {
   const insert = db.prepare('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)');
   for (const m of [...migrations].sort((a, b) => a.version - b.version)) {
     if (applied.has(m.version)) continue;
-    db.transaction(() => {
-      db.exec(m.sql);
-      insert.run(m.version, m.name, new Date().toISOString());
-    })();
+    // 重建表需要在事务外关闭外键（事务内 PRAGMA foreign_keys 无效），完成后恢复并校验
+    if (m.rebuildsTables) db.pragma('foreign_keys = OFF');
+    try {
+      db.transaction(() => {
+        db.exec(m.sql);
+        if (m.rebuildsTables && (db.pragma('foreign_key_check') as unknown[]).length > 0) {
+          throw new Error(`迁移 ${m.version} 后外键校验失败`);
+        }
+        insert.run(m.version, m.name, new Date().toISOString());
+      })();
+    } finally {
+      if (m.rebuildsTables) db.pragma('foreign_keys = ON');
+    }
   }
 }

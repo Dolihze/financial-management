@@ -17,6 +17,7 @@
     "dev:web": "npm run dev -w @fm/desktop",
     "tauri:dev": "npm run tauri -w @fm/desktop -- dev",
     "tauri:build": "npm run tauri -w @fm/desktop -- build",
+    "package": "npm run bundle -w @fm/server && npm run tauri:build",
     "build:server": "npm run build -w @fm/server",
     "build:web": "npm run build -w @fm/desktop",
     "test": "npm run test -w @fm/shared && npm run test -w @fm/server",

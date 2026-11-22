@@ -18,7 +18,8 @@
 - 开发统一入口：`npm run dev`（后端 + 前端 + Tauri 桌面窗口一起启动，关窗口即全部退出）
 - 单独启动：`npm run dev:server` / `npm run dev:web` / `npm run tauri:dev`（需后端已运行）
 - 前端构建验证：`npm run build:web`
-- 打包后端 sidecar：`npm run bundle -w @fm/server`
+- 一键打包安装包：`npm run package`（= 打包后端 sidecar + `tauri build`，产物在 `apps/desktop/src-tauri/target/release/bundle/nsis/`）
+- 单独打包后端 sidecar：`npm run bundle -w @fm/server`
 - 演示假数据：`npm run dev:demo`（demo.db 不存在时自动生成并用它启动，真实库 `finance.db` 不受影响）；只生成用 `npm run seed -w @fm/server`（脚本拒绝写 `finance.db`；必须走服务层造数据，不要直接写 SQL）
 - 演示库路径规则同时存在于 `apps/server/src/config.ts`(`getDemoDbPath`) 和根 `scripts/dev-demo.mjs`，修改时两处同步。`dev:demo` 只通过子进程环境变量设置 `FM_DB_PATH`，不修改任何文件。
 

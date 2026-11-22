@@ -74,9 +74,11 @@ npm run dev:demo -- --reset --count=3000 --months=24 --seed=7
 npm run seed -w @fm/server                # 已存在 demo.db 则报错，不覆盖
 npm run seed -w @fm/server -- --reset
 
-# 打包发布
-npm run bundle -w @fm/server # 先打包后端 sidecar
-npm run tauri:build          # 生成 NSIS 安装包
+# 打包发布（一条命令，产物在 apps/desktop/src-tauri/target/release/bundle/nsis/）
+npm run package
+# 等价于分步执行：
+#   npm run bundle -w @fm/server   先打包后端 sidecar
+#   npm run tauri:build            生成 NSIS 安装包
 ```
 
 > `npm run dev` 的启动顺序：先起后端 → 等 `/api/health` 就绪 → 再起 Tauri（其 `beforeDevCommand` 会启动 vite）。

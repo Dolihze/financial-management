@@ -520,6 +520,35 @@ describe('账户类型限制', () => {
   });
 });
 
+describe('流水盈亏统计', () => {
+  it('按与列表相同的筛选条件统计全部命中数据（不受分页影响）：盈亏 = 收入 − 支出，借贷与作废不计入', async () => {
+    const a = await makeAccount('甲');
+    const b = await makeAccount('乙');
+    await post('/api/transactions', { occurredOn: '2026-11-01', type: 'income', amount: 100_000, accountId: a.id });
+    await post('/api/transactions', { occurredOn: '2026-11-02', type: 'income', amount: 50_050, accountId: b.id });
+    await post('/api/transactions', { occurredOn: '2026-11-03', type: 'expense', amount: 30_025, accountId: a.id });
+    await post('/api/transactions', { occurredOn: '2026-12-01', type: 'expense', amount: 200_000, accountId: a.id });
+    await post('/api/transactions', { occurredOn: '2026-11-04', type: 'loan', amount: 900_000, accountId: a.id });
+    await post('/api/transactions', { occurredOn: '2026-11-05', type: 'borrow', amount: 700_000, accountId: a.id });
+    const voided = (await post('/api/transactions', { occurredOn: '2026-11-06', type: 'income', amount: 12_345, accountId: a.id })).json() as { id: string };
+    await post(`/api/transactions/${voided.id}/void`, { reason: '测试' });
+
+    const get = async (qs = '') => (await ctx.app.inject({ url: `/api/transactions/summary${qs}` })).json() as { income: number; expense: number; profit: number; count: number };
+
+    expect(await get()).toEqual({ income: 150_050, expense: 230_025, profit: -79_975, count: 4 });
+    // 分页参数不影响统计
+    expect(await get('?limit=1&offset=2')).toMatchObject({ income: 150_050, expense: 230_025 });
+    // 勾选「显示已作废」也不把作废流水计入盈亏
+    expect(await get('?includeVoided=true')).toMatchObject({ income: 150_050, profit: -79_975 });
+    // 日期、账户、类型筛选
+    expect(await get('?from=2026-11-01&to=2026-11-30')).toEqual({ income: 150_050, expense: 30_025, profit: 120_025, count: 3 });
+    expect(await get(`?accountId=${b.id}`)).toEqual({ income: 50_050, expense: 0, profit: 50_050, count: 1 });
+    expect(await get('?type=expense')).toEqual({ income: 0, expense: 230_025, profit: -230_025, count: 2 });
+    expect(await get('?type=loan')).toEqual({ income: 0, expense: 0, profit: 0, count: 0 });
+    // 没有命中数据
+    expect(await get('?from=2030-01-01')).toEqual({ income: 0, expense: 0, profit: 0, count: 0 });
+  });
+});
 describe('账户与余额', () => {
   it('余额 = 期初 + 流水；借款(借出)减少余额，贷款(借入)增加余额，且不计入收支统计', async () => {
     const a = await makeAccount('银行A', 100_000);

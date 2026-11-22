@@ -32,6 +32,13 @@ export interface TransactionFilter {
   offset?: number;
 }
 
+export interface TransactionSummary {
+  income: number;
+  expense: number;
+  profit: number;
+  count: number;
+}
+
 export const api = {
   health: () => get<{ ok: boolean }>('/api/health'),
 
@@ -80,6 +87,14 @@ export const api = {
     list: (filter: TransactionFilter = {}) =>
       get<{ items: Transaction[]; total: number }>('/api/transactions', {
         ...filter,
+        includeVoided: filter.includeVoided ? 'true' : undefined
+      }),
+    /** 与 list 同样的筛选条件（忽略分页）下的收入/支出/盈亏合计，单位：分 */
+    summary: (filter: TransactionFilter = {}) =>
+      get<TransactionSummary>('/api/transactions/summary', {
+        ...filter,
+        limit: undefined,
+        offset: undefined,
         includeVoided: filter.includeVoided ? 'true' : undefined
       }),
     create: (body: CreateTransactionInput) => post<Transaction>('/api/transactions', body),

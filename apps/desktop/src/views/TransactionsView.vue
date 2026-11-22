@@ -9,7 +9,7 @@ import {
 } from '@fm/shared';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { computed, onMounted, reactive, ref } from 'vue';
-import { api } from '@/api';
+import { api, type TransactionSummary } from '@/api';
 import NameManagerDialog from '@/components/NameManagerDialog.vue';
 import { useBaseStore } from '@/stores/base';
 import { errorMessage, formatMoney, toCents, today } from '@/utils/format';
@@ -28,22 +28,31 @@ const page = reactive({ current: 1, size: 20, total: 0 });
 const items = ref<Transaction[]>([]);
 const loading = ref(false);
 
+/** 当前筛选条件下（全部页）的收入/支出/盈亏合计，由服务端统计 */
+const summary = ref<TransactionSummary>({ income: 0, expense: 0, profit: 0, count: 0 });
+
+function currentFilter() {
+  return {
+    accountId: filter.accountId || undefined,
+    type: filter.type || undefined,
+    categoryId: filter.categoryId || undefined,
+    counterpartyId: filter.counterpartyId || undefined,
+    from: filter.range?.[0],
+    to: filter.range?.[1],
+    includeVoided: filter.includeVoided
+  };
+}
+
 async function load() {
   loading.value = true;
   try {
-    const res = await api.transactions.list({
-      accountId: filter.accountId || undefined,
-      type: filter.type || undefined,
-      categoryId: filter.categoryId || undefined,
-      counterpartyId: filter.counterpartyId || undefined,
-      from: filter.range?.[0],
-      to: filter.range?.[1],
-      includeVoided: filter.includeVoided,
-      limit: page.size,
-      offset: (page.current - 1) * page.size
-    });
+    const [res, sum] = await Promise.all([
+      api.transactions.list({ ...currentFilter(), limit: page.size, offset: (page.current - 1) * page.size }),
+      api.transactions.summary(currentFilter())
+    ]);
     items.value = res.items;
     page.total = res.total;
+    summary.value = sum;
   } catch (e) {
     ElMessage.error(errorMessage(e));
   } finally {
@@ -204,6 +213,15 @@ onMounted(load);
       <el-checkbox v-model="filter.includeVoided" @change="search">显示已作废</el-checkbox>
     </div>
 
+    <div class="summary-bar">
+      <span class="summary-count">共 {{ page.total }} 笔{{ filter.includeVoided ? '（统计不含已作废）' : '' }}</span>
+      <span class="summary-item"><span class="summary-label">收入</span><b class="tx-income">{{ formatMoney(summary.income) }}</b></span>
+      <span class="summary-item"><span class="summary-label">支出</span><b class="tx-expense">{{ formatMoney(summary.expense) }}</b></span>
+      <span class="summary-item">
+        <span class="summary-label">盈亏</span>
+        <b :class="summary.profit > 0 ? 'tx-income' : summary.profit < 0 ? 'tx-expense' : ''">{{ formatMoney(summary.profit) }}</b>
+      </span>
+    </div>
     <el-table :data="items" v-loading="loading" border>
       <el-table-column prop="occurredOn" label="日期" width="110" />
       <el-table-column label="类型" width="80">
@@ -294,6 +312,24 @@ onMounted(load);
 </template>
 
 <style scoped>
+.summary-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 28px;
+  margin-bottom: 12px;
+  padding: 10px 16px;
+  background: #fff;
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 4px;
+}
+.summary-count,
+.summary-label {
+  color: var(--el-text-color-secondary);
+}
+.summary-label {
+  margin-right: 8px;
+}
 /* 收入红、支出绿 */
 .tx-income {
   color: #f56c6c;

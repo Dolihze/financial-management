@@ -152,7 +152,8 @@ export class TransactionService {
     return this.hydrate([row])[0]!;
   }
 
-  list(q: TransactionQuery = {}): { items: Transaction[]; total: number } {
+  /** 列表与统计共用的筛选条件 */
+  private buildFilter(q: TransactionQuery): { whereSql: string; params: unknown[] } {
     const where: string[] = [];
     const params: unknown[] = [];
     if (!q.includeVoided) where.push("t.status = 'normal'");
@@ -185,7 +186,11 @@ export class TransactionService {
       where.push('EXISTS (SELECT 1 FROM tx_line l WHERE l.tx_id = t.id AND l.account_id = ?)');
       params.push(q.accountId);
     }
-    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    return { whereSql: where.length ? `WHERE ${where.join(' AND ')}` : '', params };
+  }
+
+  list(q: TransactionQuery = {}): { items: Transaction[]; total: number } {
+    const { whereSql, params } = this.buildFilter(q);
     const total = (this.db.prepare(`SELECT COUNT(*) AS c FROM tx t ${whereSql}`).get(...params) as { c: number }).c;
     const rows = this.db
       .prepare(
@@ -196,6 +201,25 @@ export class TransactionService {
     return { items: this.hydrate(rows), total };
   }
 
+  /**
+   * 按与 list 相同的筛选条件统计盈亏（忽略分页）：
+   * 收入合计、支出合计（正数）、盈亏 = 收入 − 支出。只统计未作废的收入/支出；借款/贷款是资金往来，不计入盈亏。
+   */
+  summary(q: TransactionQuery = {}): { income: number; expense: number; profit: number; count: number } {
+    const { whereSql, params } = this.buildFilter({ ...q, includeVoided: false });
+    const extra = whereSql ? `${whereSql} AND` : 'WHERE';
+    const row = this.db
+      .prepare(
+        `SELECT
+           COALESCE(SUM(CASE WHEN t.type = 'income'  THEN l.amount END), 0) AS income,
+           COALESCE(SUM(CASE WHEN t.type = 'expense' THEN -l.amount END), 0) AS expense,
+           COUNT(DISTINCT t.id) AS count
+         FROM tx t JOIN tx_line l ON l.tx_id = t.id
+         ${extra} t.type IN ('income', 'expense')`
+      )
+      .get(...params) as { income: number; expense: number; count: number };
+    return { income: row.income, expense: row.expense, profit: row.income - row.expense, count: row.count };
+  }
   /** 作废交易（不物理删除）。分录保留，仅不再计入余额。 */
   void(id: string, reason = ''): Transaction {
     const tx = this.get(id);

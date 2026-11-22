@@ -34,6 +34,12 @@ export function registerTransactionRoutes(app: FastifyInstance, { transactions }
     return transactions.list({ ...q, includeVoided: q.includeVoided === 'true' });
   });
 
+  // 与列表相同的筛选条件，返回全部命中数据（不分页）的盈亏统计
+  app.get('/api/transactions/summary', async (req) => {
+    const q = querySchema.parse(req.query);
+    return transactions.summary({ ...q, includeVoided: q.includeVoided === 'true' });
+  });
+
   app.get('/api/transactions/:id', async (req) => transactions.get((req.params as { id: string }).id));
 
   app.post('/api/transactions', async (req, reply) =>

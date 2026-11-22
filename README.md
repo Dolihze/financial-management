@@ -91,6 +91,7 @@ npm run package
 - **随机端口（发布版）**：`pick_port()` 绑定 `127.0.0.1:0` 取空闲端口，窗口创建前就已确定；开发版固定 `DEV_BACKEND_PORT = 17890`。
 - **就绪通知**：Rust 后台线程每 100ms 探测端口（最长 60 秒），不阻塞窗口创建；就绪后先写状态再发 `backend-ready` 事件（payload 为 bool）。前端 `api/backend.ts` 监听事件，并用 `is_backend_ready` 命令补查，防止错过事件。窗口因此立即出现，等待期间显示"正在启动本地服务"。
 - **启动流程**（`App.vue`）：`get_backend_url` 取地址 → 等 `backend-ready` → `/api/health` 短重试确认 HTTP 层可用 → 加载数据。失败时界面显示真实原因而非固定文案。
+- **后端日志（发布版）**：sidecar 的输出和启动步骤（数据目录、脚本路径、端口、退出码）写入 `<数据目录>/logs/backend.log`（Windows：`%APPDATA%\com.company.financial-management\logs\`），超过 2MB 在下次启动时轮转为 `backend.old.log`。启动失败（脚本缺失、进程提前退出、端口连不上等）时 Rust 立即记录原因并通知前端，不再傻等 60 秒；失败页会显示真实原因、日志路径和「打开日志位置」按钮。排查用户现场问题时让对方发这个日志文件即可。
 - **双重保障**：除 Job Object 外，正常退出时仍主动 `kill`，且后端监听 stdin 关闭自行退出（`FM_EXIT_ON_STDIN_CLOSE=1`）。
 - **注意**：Windows 下 Tauri 的 `resource_dir()` 返回 `\\?\E:\...` 扩展路径，Node 无法解析（报 `EISDIR: lstat 'E:'`），传给后端前必须经 `to_plain_path()` 去掉前缀。
 

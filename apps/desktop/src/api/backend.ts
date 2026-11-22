@@ -29,6 +29,31 @@ export async function resolveBackendBase(): Promise<string> {
   return invoke<string>('get_backend_url');
 }
 
+/** 后端启动失败的真实原因（Rust 侧记录；没有失败或不在 Tauri 里时为 null） */
+export async function getBackendError(): Promise<string | null> {
+  if (!isTauri()) return null;
+  try {
+    return await invoke<string | null>('get_backend_error');
+  } catch {
+    return null;
+  }
+}
+
+/** 后端日志文件路径（开发版或不在 Tauri 里时为 null） */
+export async function getLogPath(): Promise<string | null> {
+  if (!isTauri()) return null;
+  try {
+    return await invoke<string | null>('get_log_path');
+  } catch {
+    return null;
+  }
+}
+
+/** 在资源管理器中定位日志文件 */
+export async function revealLog(): Promise<void> {
+  await invoke('reveal_log');
+}
+
 /**
  * 等待后端就绪。
  * @returns true=就绪；false=Rust 侧超时或本函数超时

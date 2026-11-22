@@ -40,3 +40,11 @@ body {
   justify-content: flex-end;
   gap: 6px;
 }
+
+/* 启动失败页：日志文件路径 */
+.log-path {
+  margin-top: 12px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  word-break: break-all;
+}

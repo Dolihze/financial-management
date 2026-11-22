@@ -17,7 +17,7 @@ import type {
 } from '@fm/shared';
 import { del, get, getBaseUrl, patch, post, upload } from './http';
 
-export { resolveBackendBase, waitBackendReady } from './backend';
+export { getBackendError, getLogPath, resolveBackendBase, revealLog, waitBackendReady } from './backend';
 export { setBaseUrl } from './http';
 
 export interface TransactionFilter {

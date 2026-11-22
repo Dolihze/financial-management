@@ -30,7 +30,7 @@
     "icon": ["icons/icon.ico"],
     "externalBin": ["binaries/node"],
     "resources": {
-      "server-dist/**/*": "server-dist/"
+      "server-dist/": "server-dist/"
     },
     "windows": {
       "nsis": {

@@ -1,7 +1,8 @@
 <script setup lang="ts">
+import { ElMessage } from 'element-plus';
 import { onMounted, ref } from 'vue';
 import { useRoute } from 'vue-router';
-import { api, resolveBackendBase, setBaseUrl, waitBackendReady } from '@/api';
+import { api, getBackendError, getLogPath, resolveBackendBase, revealLog, setBaseUrl, waitBackendReady } from '@/api';
 import { useBaseStore } from '@/stores/base';
 
 const route = useRoute();
@@ -10,6 +11,16 @@ const base = useBaseStore();
 const ready = ref(false);
 const failed = ref(false);
 const failMessage = ref('后端服务未能启动，请重启应用');
+/** 后端日志文件路径（发布版才有），失败页展示给用户，方便把日志发给开发者 */
+const logPath = ref<string | null>(null);
+
+async function openLog() {
+  try {
+    await revealLog();
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : String(e));
+  }
+}
 
 /**
  * 启动流程：
@@ -22,7 +33,10 @@ async function boot() {
   ready.value = false;
   try {
     setBaseUrl(await resolveBackendBase());
-    if (!(await waitBackendReady())) throw new Error('等待后端启动超时，请检查后端日志');
+    if (!(await waitBackendReady())) {
+      // 优先显示 Rust 侧记录的真实原因（进程提前退出、文件缺失、端口被拦截等）
+      throw new Error((await getBackendError()) ?? '等待后端启动超时，请检查后端日志');
+    }
     // 端口就绪后 HTTP 层几乎立刻可用，这里只做短重试兜底
     for (let i = 0; ; i++) {
       try {
@@ -36,6 +50,7 @@ async function boot() {
     ready.value = true;
   } catch (e) {
     failMessage.value = e instanceof Error ? e.message : String(e);
+    logPath.value = await getLogPath();
     failed.value = true;
   }
 }
@@ -68,7 +83,11 @@ const menus = [
       </el-header>
       <el-main>
         <el-result v-if="failed" icon="error" title="无法连接本地服务" :sub-title="failMessage">
-          <template #extra><el-button type="primary" @click="boot">重试</el-button></template>
+          <template #extra>
+            <el-button type="primary" @click="boot">重试</el-button>
+            <el-button v-if="logPath" @click="openLog">打开日志位置</el-button>
+            <div v-if="logPath" class="log-path">日志文件：{{ logPath }}</div>
+          </template>
         </el-result>
         <div v-else-if="!ready" v-loading="true" style="height: 300px" element-loading-text="正在启动本地服务..." />
         <router-view v-else />

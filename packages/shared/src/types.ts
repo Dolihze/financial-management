@@ -232,6 +232,25 @@ export interface OverviewSummary {
   expenseByCategory: Array<{ categoryId: string | null; categoryName: string; amount: number }>;
 }
 
+/** 指定时间段（含首尾日期）内的收支统计，只统计未作废的收入/支出；金额单位：分 */
+export interface PeriodSummary {
+  from: string | null;
+  to: string | null;
+  income: number;
+  expense: number;
+  /** 结余 = 收入 − 支出 */
+  profit: number;
+  /** 命中的收入/支出流水笔数 */
+  count: number;
+  /** 支出按分类（金额从大到小） */
+  expenseByCategory: Array<{ categoryId: string | null; categoryName: string; amount: number; count: number }>;
+  /** 收入按分类 */
+  incomeByCategory: Array<{ categoryId: string | null; categoryName: string; amount: number; count: number }>;
+  /** 支出按往来单位（钱付给了谁）；未填写往来单位的归为「未填写」 */
+  expenseByCounterparty: Array<{ name: string; amount: number; count: number }>;
+  /** 收入按往来单位（钱来自谁） */
+  incomeByCounterparty: Array<{ name: string; amount: number; count: number }>;
+}
 export interface ImportRowError {
   row: number;
   message: string;

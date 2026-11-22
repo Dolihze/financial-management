@@ -549,6 +549,70 @@ describe('流水盈亏统计', () => {
     expect(await get('?from=2030-01-01')).toEqual({ income: 0, expense: 0, profit: 0, count: 0 });
   });
 });
+describe('总览：指定时间段统计', () => {
+  it('统计时间段（含首尾）内的收入/支出及按分类、往来单位的去向；借贷与作废不计入', async () => {
+    const a = await makeAccount('甲');
+    const cats = (await ctx.app.inject({ url: '/api/categories' })).json() as Array<{ id: string; name: string; kind: string }>;
+    const exp1 = cats.find((c) => c.kind === 'expense')!;
+    const exp2 = cats.filter((c) => c.kind === 'expense')[1]!;
+    const inc1 = cats.find((c) => c.kind === 'income')!;
+    const tx = (body: object) => post('/api/transactions', { accountId: a.id, ...body });
+    await tx({ occurredOn: '2026-10-01', type: 'income', amount: 100_000, categoryId: inc1.id });
+    await tx({ occurredOn: '2026-10-31', type: 'expense', amount: 3_000, categoryId: exp1.id }); // 边界：含首尾
+    await tx({ occurredOn: '2026-11-01', type: 'expense', amount: 10_000, categoryId: exp1.id });
+    await tx({ occurredOn: '2026-11-15', type: 'expense', amount: 25_050, categoryId: exp2.id });
+    await tx({ occurredOn: '2026-11-30', type: 'expense', amount: 700, categoryId: exp2.id });
+    await tx({ occurredOn: '2026-11-20', type: 'income', amount: 80_000, categoryId: inc1.id });
+    await tx({ occurredOn: '2026-11-21', type: 'loan', amount: 900_000 });
+    await tx({ occurredOn: '2026-11-22', type: 'borrow', amount: 800_000 });
+    const voided = (await tx({ occurredOn: '2026-11-10', type: 'expense', amount: 999_999, categoryId: exp1.id })).json() as { id: string };
+    await post(`/api/transactions/${voided.id}/void`, { reason: '测试' });
+
+    type Period = {
+      income: number; expense: number; profit: number; count: number;
+      expenseByCategory: Array<{ categoryName: string; amount: number; count: number }>;
+      incomeByCategory: Array<{ categoryName: string; amount: number; count: number }>;
+      expenseByCounterparty: Array<{ name: string; amount: number; count: number }>;
+    };
+    const period = async (qs = '') => (await ctx.app.inject({ url: `/api/overview/period${qs}` })).json() as Period;
+
+    const nov = await period('?from=2026-11-01&to=2026-11-30');
+    expect(nov).toMatchObject({ income: 80_000, expense: 35_750, profit: 44_250, count: 4 });
+    expect(nov.expenseByCategory).toEqual([
+      { categoryId: exp2.id, categoryName: exp2.name, amount: 25_750, count: 2 },
+      { categoryId: exp1.id, categoryName: exp1.name, amount: 10_000, count: 1 }
+    ]);
+    expect(nov.incomeByCategory).toMatchObject([{ categoryName: inc1.name, amount: 80_000, count: 1 }]);
+    // 未填往来单位的流水归入「未填写」
+    expect(nov.expenseByCounterparty).toEqual([{ name: '未填写', amount: 35_750, count: 3 }]);
+
+    // 首尾日期都包含
+    expect(await period('?from=2026-10-31&to=2026-11-01')).toMatchObject({ expense: 13_000, income: 0, count: 2 });
+    // 只给一端 / 都不给 = 不限
+    expect(await period('?from=2026-11-15')).toMatchObject({ income: 80_000, expense: 25_750 });
+    expect(await period()).toMatchObject({ income: 180_000, expense: 38_750, profit: 141_250, count: 6 });
+    // 没有数据
+    expect(await period('?from=2030-01-01&to=2030-12-31')).toMatchObject({ income: 0, expense: 0, profit: 0, count: 0, expenseByCategory: [] });
+    // 参数校验
+    expect((await ctx.app.inject({ url: '/api/overview/period?from=2026-12-01&to=2026-11-01' })).statusCode).toBe(400);
+    expect((await ctx.app.inject({ url: '/api/overview/period?from=bad' })).statusCode).toBe(400);
+  });
+
+  it('按往来单位汇总支出去向', async () => {
+    const a = await makeAccount('甲');
+    const cp = (await post('/api/counterparties', { name: '阿里云' })).json() as { id: string };
+    await post('/api/transactions', { occurredOn: '2026-11-02', type: 'expense', amount: 1_000, accountId: a.id, counterpartyId: cp.id });
+    await post('/api/transactions', { occurredOn: '2026-11-03', type: 'expense', amount: 2_500, accountId: a.id, counterpartyId: cp.id });
+    await post('/api/transactions', { occurredOn: '2026-11-04', type: 'expense', amount: 400, accountId: a.id });
+    const res = (await ctx.app.inject({ url: '/api/overview/period?from=2026-11-01&to=2026-11-30' })).json() as {
+      expenseByCounterparty: Array<{ name: string; amount: number; count: number }>;
+    };
+    expect(res.expenseByCounterparty).toEqual([
+      { name: '阿里云', amount: 3_500, count: 2 },
+      { name: '未填写', amount: 400, count: 1 }
+    ]);
+  });
+});
 describe('账户与余额', () => {
   it('余额 = 期初 + 流水；借款(借出)减少余额，贷款(借入)增加余额，且不计入收支统计', async () => {
     const a = await makeAccount('银行A', 100_000);

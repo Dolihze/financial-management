@@ -7,6 +7,7 @@ import type {
   ImportBatch,
   ImportPreviewResult,
   OverviewSummary,
+  PeriodSummary,
   Project,
   ProjectImportPreview,
   ProjectImportResult,
@@ -103,6 +104,8 @@ export const api = {
 
   overview: {
     summary: () => get<OverviewSummary>('/api/overview'),
+    /** 指定时间段（含首尾，缺省一端不限）的收支统计与去向 */
+    period: (range: { from?: string; to?: string }) => get<PeriodSummary>('/api/overview/period', range),
     integrity: () => get<{ ok: boolean; brokenTransactions: string[] }>('/api/overview/integrity')
   },
 

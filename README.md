@@ -109,6 +109,8 @@ npm run tauri:build          # 生成 NSIS 安装包
 | POST | `/api/imports/preview` / `commit` | 预览 / 确认导入（multipart `file`） |
 | POST | `/api/imports/:id/revert` | 撤销整批导入 |
 | GET | `/api/projects` / `/api/projects/:id` | 项目列表 / 详情（项目只能通过 Excel 导入维护，无手工新增接口） |
+| PATCH | `/api/projects/:id` | 修改项目（详情页整体保存；名称不能与其他项目重名，重名返回 409）。同一事务内处理入账：「企信是否收到钱」否→是记**收入**（金额取企信实收），「支付下家」「支付陈沛」否→是记**支出**（金额取分包费/陈沛），需传 `postingAccountId` 和 `postingDate`（入账日期 YYYY-MM-DD，省略为服务器当天，非法日期 400）；是→否则作废对应流水（不物理删除）。已入账字段的金额不可直接改（409） |
+| POST | `/api/projects/:id/archive` | 「删除」项目：不物理删除，仅归档；已入账的项目不能删除（409），需先回退 |
 | GET | `/api/projects/import/template` | 下载项目导入模板 |
 | POST | `/api/projects/import/preview` / `commit` | 项目导入预览 / 确认（multipart `file`）；第 1 行表头，项目名称为「合计」的行与重复表头的说明行忽略，其余为数据；批次「第15批」记为批次号 15；以项目名称为唯一键：已存在则更新，否则新增（合同编号可重复） |
 

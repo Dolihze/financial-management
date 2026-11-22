@@ -151,8 +151,37 @@ export interface Project {
   paidSubcontractor: boolean;
   /** 支付陈沛 */
   paidChenPei: boolean;
+  /** 当前已入账（有对应有效流水）的字段；导入不会覆盖这些字段及其金额 */
+  postedKinds: ProjectPostingKind[];
   createdAt: string;
   updatedAt: string;
+}
+
+/** 项目三个「是/否」字段，对应的记账方向与金额列 */
+export const PROJECT_POSTING_KINDS = ['qx_received', 'paid_subcontractor', 'paid_chen_pei'] as const;
+export type ProjectPostingKind = (typeof PROJECT_POSTING_KINDS)[number];
+
+/** 修改项目的入参：金额为整数分。所有字段必填（详情页表单整体保存）。 */
+export interface UpdateProjectInput {
+  contractNo: string;
+  batchNo: number | null;
+  region: string;
+  name: string;
+  contractPrice: number;
+  qxReceived: number;
+  qxSubcontractFee: number;
+  chenPei: number;
+  qxProfit: number;
+  qxMoneyReceived: boolean;
+  paidSubcontractor: boolean;
+  paidChenPei: boolean;
+  /**
+   * 本次保存中从「否」切到「是」的字段需要入账：指定入账账户（收入、支出都记到这个账户）。
+   * 没有字段从否切到是时可省略。
+   */
+  postingAccountId?: string;
+  /** 入账日期 YYYY-MM-DD（流水的业务发生日期）；同一次保存里的多笔入账共用。省略时用服务器当天 */
+  postingDate?: string;
 }
 
 /** 项目 Excel 导入表头（第 1 行）。项目名称为「合计」的行与重复表头的说明行会被忽略。 */
@@ -178,6 +207,8 @@ export interface ProjectImportPreview {
   toCreate: number;
   /** 项目名称已存在，将更新 */
   toUpdate: number;
+  /** 其中有字段已入账、导入时不会被覆盖（该字段及其金额保持不变）的项目数 */
+  toUpdatePartially: number;
   errors: ImportRowError[];
 }
 
@@ -185,6 +216,8 @@ export interface ProjectImportResult {
   total: number;
   created: number;
   updated: number;
+  /** 因字段已入账而被保留（未被 Excel 覆盖）的项目数 */
+  skippedPosted: number;
 }
 
 export interface OverviewSummary {

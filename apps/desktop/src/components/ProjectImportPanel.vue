@@ -30,7 +30,8 @@ async function commit() {
   busy.value = true;
   try {
     const r = await api.projects.importCommit(file.value);
-    ElMessage.success(`导入成功：新增 ${r.created} 个，更新 ${r.updated} 个项目`);
+    const kept = r.skippedPosted ? `（其中 ${r.skippedPosted} 个项目因字段已入账，对应的「是」标记和金额保持不变）` : '';
+    ElMessage.success(`导入成功：新增 ${r.created} 个，更新 ${r.updated} 个项目${kept}`);
     file.value = null;
     preview.value = null;
     router.push({ name: 'projects' });
@@ -65,7 +66,12 @@ async function commit() {
       <el-descriptions :column="4" border>
         <el-descriptions-item label="数据行数">{{ preview.total }}</el-descriptions-item>
         <el-descriptions-item label="将新增">{{ preview.toCreate }}</el-descriptions-item>
-        <el-descriptions-item label="将更新（项目名称已存在）">{{ preview.toUpdate }}</el-descriptions-item>
+        <el-descriptions-item label="将更新（项目名称已存在）">
+          {{ preview.toUpdate }}
+          <el-text v-if="preview.toUpdatePartially" type="warning" size="small">
+            其中 {{ preview.toUpdatePartially }} 个项目有字段已入账，该字段的「是」标记和金额不会被覆盖
+          </el-text>
+        </el-descriptions-item>
         <el-descriptions-item label="错误行">
           <span :class="{ 'money-out': preview.errors.length }">{{ preview.errors.length }}</span>
         </el-descriptions-item>

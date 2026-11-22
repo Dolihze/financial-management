@@ -355,5 +355,25 @@ export const migrations: Migration[] = [
           AND substr(trim(batch), 2, length(trim(batch)) - 2) NOT GLOB '*[^0-9]*';
       ALTER TABLE project DROP COLUMN batch;
     `
+  },
+  {
+    version: 11,
+    name: 'project_posting',
+    sql: `
+      -- 项目「是」字段 <-> 记账流水 的关联：某字段当前已入账，对应哪一笔流水。
+      -- 同一项目同一字段同时最多一笔「有效」入账（回退=作废该流水并解除关联）。
+      -- kind: qx_received=企信是否收到钱(收入) / paid_subcontractor=支付下家(支出) / paid_chen_pei=支付陈沛(支出)
+      CREATE TABLE project_posting (
+        id          TEXT PRIMARY KEY,
+        project_id  TEXT NOT NULL REFERENCES project(id),
+        kind        TEXT NOT NULL CHECK (kind IN ('qx_received','paid_subcontractor','paid_chen_pei')),
+        tx_id       TEXT NOT NULL REFERENCES tx(id),
+        active      INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
+        created_at  TEXT NOT NULL,
+        reverted_at TEXT
+      );
+      CREATE UNIQUE INDEX uq_project_posting_active ON project_posting(project_id, kind) WHERE active = 1;
+      CREATE INDEX idx_project_posting_tx ON project_posting(tx_id);
+    `
   }
 ];

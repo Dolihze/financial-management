@@ -11,6 +11,7 @@ import type {
   ProjectImportPreview,
   ProjectImportResult,
   Transaction,
+  UpdateProjectInput,
   TransactionType
 } from '@fm/shared';
 import { del, get, getBaseUrl, patch, post, upload } from './http';
@@ -67,6 +68,9 @@ export const api = {
   projects: {
     list: () => get<Project[]>('/api/projects'),
     get: (id: string) => get<Project>(`/api/projects/${id}`),
+    update: (id: string, body: UpdateProjectInput) => patch<Project>(`/api/projects/${id}`, body),
+    /** 「删除」：后端只归档，不物理删除 */
+    archive: (id: string) => post<Project>(`/api/projects/${id}/archive`),
     importTemplateUrl: () => `${getBaseUrl()}/api/projects/import/template`,
     importPreview: (file: File) => upload<ProjectImportPreview>('/api/projects/import/preview', file),
     importCommit: (file: File) => upload<ProjectImportResult>('/api/projects/import/commit', file)

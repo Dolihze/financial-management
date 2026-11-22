@@ -5,11 +5,30 @@ import {
   type ImportRowError,
   type Project,
   type ProjectImportPreview,
-  type ProjectImportResult
+  type ProjectImportResult,
+  type ProjectPostingKind,
+  type UpdateProjectInput
 } from '@fm/shared';
 import type { Db } from '../db/database';
 import { AppError, newId, nowIso } from '../utils';
 import { writeAudit } from './audit';
+import { TransactionService } from './transactionService';
+
+/**
+ * 三个「是/否」字段 与 记账流水 的对应关系：
+ * - 企信是否收到钱 -> 收入，金额取「企信实收」
+ * - 支付下家       -> 支出，金额取「企信支付下家分包费」
+ * - 支付陈沛       -> 支出，金额取「陈沛」
+ */
+const POSTING_RULES: Record<
+  ProjectPostingKind,
+  { label: string; txType: 'income' | 'expense'; flag: 'qxMoneyReceived' | 'paidSubcontractor' | 'paidChenPei'; amount: 'qxReceived' | 'qxSubcontractFee' | 'chenPei' }
+> = {
+  qx_received: { label: '企信是否收到钱', txType: 'income', flag: 'qxMoneyReceived', amount: 'qxReceived' },
+  paid_subcontractor: { label: '支付下家', txType: 'expense', flag: 'paidSubcontractor', amount: 'qxSubcontractFee' },
+  paid_chen_pei: { label: '支付陈沛', txType: 'expense', flag: 'paidChenPei', amount: 'chenPei' }
+};
+const POSTING_KINDS = Object.keys(POSTING_RULES) as ProjectPostingKind[];
 
 interface ProjectRow {
   id: string;
@@ -29,7 +48,7 @@ interface ProjectRow {
   updated_at: string;
 }
 
-const toProject = (r: ProjectRow): Project => ({
+const toProject = (r: ProjectRow, postedKinds: ProjectPostingKind[] = []): Project => ({
   id: r.id,
   contractNo: r.contract_no,
   batchNo: r.batch_no,
@@ -43,6 +62,7 @@ const toProject = (r: ProjectRow): Project => ({
   qxMoneyReceived: r.qx_money_received === 1,
   paidSubcontractor: r.paid_subcontractor === 1,
   paidChenPei: r.paid_chen_pei === 1,
+  postedKinds,
   createdAt: r.created_at,
   updatedAt: r.updated_at
 });
@@ -113,22 +133,162 @@ function parseBatchNo(v: ExcelJS.CellValue): number | null {
 const parseYesNo = (v: ExcelJS.CellValue): boolean => cellText(v) === '是';
 
 export class ProjectService {
+  private readonly txService: TransactionService;
+
   constructor(
     private readonly db: Db,
     private readonly deviceId: string
-  ) {}
+  ) {
+    this.txService = new TransactionService(db, deviceId);
+  }
+
+  /** 各项目当前「有效入账」的字段（有对应未作废流水） */
+  private postedKindsOf(ids: string[]): Map<string, ProjectPostingKind[]> {
+    const map = new Map<string, ProjectPostingKind[]>();
+    if (ids.length === 0) return map;
+    const rows = this.db
+      .prepare(
+        `SELECT p.project_id AS projectId, p.kind AS kind FROM project_posting p
+         JOIN tx t ON t.id = p.tx_id AND t.status = 'normal'
+         WHERE p.active = 1 AND p.project_id IN (${ids.map(() => '?').join(',')})`
+      )
+      .all(...ids) as Array<{ projectId: string; kind: ProjectPostingKind }>;
+    for (const r of rows) map.set(r.projectId, [...(map.get(r.projectId) ?? []), r.kind]);
+    return map;
+  }
 
   list(): Project[] {
     const rows = this.db
       .prepare('SELECT * FROM project WHERE archived = 0 ORDER BY created_at DESC, rowid DESC')
       .all() as ProjectRow[];
-    return rows.map(toProject);
+    const posted = this.postedKindsOf(rows.map((r) => r.id));
+    return rows.map((r) => toProject(r, posted.get(r.id) ?? []));
   }
 
   get(id: string): Project {
     const row = this.db.prepare('SELECT * FROM project WHERE id = ? AND archived = 0').get(id) as ProjectRow | undefined;
     if (!row) throw new AppError('项目不存在', 404, 'NOT_FOUND');
-    return toProject(row);
+    return toProject(row, this.postedKindsOf([id]).get(id) ?? []);
+  }
+
+  /**
+   * 修改项目（详情页整体保存），并在同一个数据库事务内完成入账/回退：
+   * - 字段从「否」切到「是」：按规则生成一笔流水（需 postingAccountId），记录关联；
+   * - 字段从「是」切到「否」：作废之前生成的那笔流水（不物理删除），解除关联；
+   * - 字段保持「是」且已入账：对应金额不能直接修改（先切回「否」回退，再改金额再入账）；
+   * 任何一步失败整体回滚，项目与流水不会出现只改了一半。
+   * 项目名称是 Excel 导入的匹配键，不能与其他未归档项目重名。
+   */
+  update(id: string, input: UpdateProjectInput): Project {
+    const current = this.get(id);
+    const name = input.name.trim();
+    if (!name) throw new AppError('项目名称不能为空', 400, 'VALIDATION');
+    const clash = this.db.prepare('SELECT 1 FROM project WHERE name = ? AND archived = 0 AND id <> ?').get(name, id);
+    if (clash) throw new AppError(`项目名称「${name}」已存在，请换一个名称`, 409, 'DUPLICATE_NAME');
+
+    // 先算出需要入账/回退的字段并做业务校验（还没写库）
+    const toPost: ProjectPostingKind[] = [];
+    const toRevert: ProjectPostingKind[] = [];
+    for (const kind of POSTING_KINDS) {
+      const rule = POSTING_RULES[kind];
+      const wasYes = current[rule.flag];
+      const isYes = input[rule.flag];
+      const posted = current.postedKinds.includes(kind);
+      if (!wasYes && isYes) toPost.push(kind);
+      else if (wasYes && !isYes && posted) toRevert.push(kind);
+      else if (wasYes && isYes && posted && input[rule.amount] !== current[rule.amount]) {
+        throw new AppError(
+          `「${rule.label}」已入账，不能直接修改对应金额。请先切换为「否」回退入账，修改金额后再切换为「是」`,
+          409,
+          'POSTED_AMOUNT_LOCKED'
+        );
+      }
+      // wasYes && !isYes && !posted：历史标记（Excel 导入的「是」，没有流水），只改标记，不报错
+    }
+    for (const kind of toPost) {
+      const rule = POSTING_RULES[kind];
+      if (input[rule.amount] <= 0) throw new AppError(`「${rule.label}」切换为「是」需要入账，但对应金额必须大于 0`, 400, 'VALIDATION');
+    }
+    if (toPost.length > 0 && !input.postingAccountId) {
+      throw new AppError('切换为「是」会入账，请选择入账账户', 400, 'POSTING_ACCOUNT_REQUIRED');
+    }
+
+    this.db.transaction(() => {
+      this.db
+        .prepare(
+          `UPDATE project SET contract_no=?, batch_no=?, region=?, name=?, contract_price=?, qx_received=?, qx_subcontract_fee=?,
+                  chen_pei=?, qx_profit=?, qx_money_received=?, paid_subcontractor=?, paid_chen_pei=?, updated_at=? WHERE id=?`
+        )
+        .run(
+          input.contractNo.trim(), input.batchNo, input.region.trim(), name,
+          input.contractPrice, input.qxReceived, input.qxSubcontractFee, input.chenPei, input.qxProfit,
+          input.qxMoneyReceived ? 1 : 0, input.paidSubcontractor ? 1 : 0, input.paidChenPei ? 1 : 0,
+          nowIso(), id
+        );
+
+      const now = nowIso();
+      // 未指定时用服务器本地日期（不能用 toISOString，UTC 与本地时区会差一天）
+      const localToday = (() => {
+        const d = new Date();
+        const pad = (n: number) => String(n).padStart(2, '0');
+        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+      })();
+      const postingDate = input.postingDate ?? localToday;
+      const postings: Array<{ kind: ProjectPostingKind; action: 'post' | 'revert'; txId: string; amount: number; date?: string }> = [];
+
+      for (const kind of toRevert) {
+        const link = this.db
+          .prepare('SELECT id, tx_id AS txId FROM project_posting WHERE project_id = ? AND kind = ? AND active = 1')
+          .get(id, kind) as { id: string; txId: string };
+        // 作废流水（若已被手工作废则跳过，仍解除关联）
+        const tx = this.txService.get(link.txId);
+        const amount = Math.abs(tx.lines.reduce((s, l) => s + l.amount, 0));
+        if (tx.status === 'normal') this.txService.void(link.txId, `项目「${name}」${POSTING_RULES[kind].label}切换为否，回退入账`);
+        this.db.prepare('UPDATE project_posting SET active = 0, reverted_at = ? WHERE id = ?').run(now, link.id);
+        postings.push({ kind, action: 'revert', txId: link.txId, amount });
+      }
+
+      for (const kind of toPost) {
+        const rule = POSTING_RULES[kind];
+        const amount = input[rule.amount];
+        const txId = this.db.transaction(() =>
+          this.txService.insertWithinTx({
+            occurredOn: postingDate,
+            type: rule.txType,
+            amount,
+            accountId: input.postingAccountId,
+            note: `项目「${name}」${rule.label}${rule.txType === 'income' ? '（收入）' : '（支出）'}`
+          })
+        )();
+        this.db
+          .prepare('INSERT INTO project_posting (id, project_id, kind, tx_id, active, created_at) VALUES (?,?,?,?,1,?)')
+          .run(newId(), id, kind, txId, now);
+        postings.push({ kind, action: 'post', txId, amount, date: postingDate });
+      }
+
+      writeAudit(this.db, this.deviceId, 'project', id, 'update', {
+        before: current,
+        after: { ...input, name },
+        postings
+      });
+    })();
+    return this.get(id);
+  }
+  /**
+   * 「删除」项目：按规则不物理删除，只归档（列表与详情不再可见，名称可被新项目复用）。
+   * 已入账（有对应有效流水）的项目不能删除：否则流水会失去来源。需先把对应字段切回「否」回退入账。
+   */
+  archive(id: string): Project {
+    const current = this.get(id);
+    if (current.postedKinds.length > 0) {
+      const labels = current.postedKinds.map((k) => POSTING_RULES[k].label).join('、');
+      throw new AppError(`项目已入账（${labels}），不能直接删除。请先将这些字段切换为「否」回退入账后再删除`, 409, 'PROJECT_HAS_POSTINGS');
+    }
+    this.db.transaction(() => {
+      this.db.prepare('UPDATE project SET archived = 1, updated_at = ? WHERE id = ?').run(nowIso(), id);
+      writeAudit(this.db, this.deviceId, 'project', id, 'archive', { name: current.name, contractNo: current.contractNo });
+    })();
+    return current; // 返回被归档的项目（与其他接口一致，始终返回 JSON）
   }
 
   /** 生成导入模板：第 1 行表头，第 2 行合计（项目名称为「合计」，导入时忽略），之后为数据 */
@@ -213,31 +373,42 @@ export class ProjectService {
     return { rows, errors, total };
   }
 
-  /** 库中已存在（未归档）的项目名称 */
-  private existingNames(names: string[]): Set<string> {
-    const found = new Set<string>();
-    const stmt = this.db.prepare('SELECT 1 FROM project WHERE name = ? AND archived = 0');
-    for (const n of names) if (stmt.get(n)) found.add(n);
+  /** 库中已存在（未归档）的项目：名称 -> id 及其已入账字段 */
+  private existingByName(names: string[]): Map<string, { id: string; posted: ProjectPostingKind[] }> {
+    const found = new Map<string, { id: string; posted: ProjectPostingKind[] }>();
+    const stmt = this.db.prepare('SELECT id FROM project WHERE name = ? AND archived = 0');
+    for (const n of names) {
+      const hit = stmt.get(n) as { id: string } | undefined;
+      if (hit) found.set(n, { id: hit.id, posted: [] });
+    }
+    const posted = this.postedKindsOf([...found.values()].map((v) => v.id));
+    for (const v of found.values()) v.posted = posted.get(v.id) ?? [];
     return found;
   }
 
   /** 预览：不写库 */
   async preview(buffer: Buffer): Promise<ProjectImportPreview> {
     const { rows, errors, total } = await this.parse(buffer);
-    const existing = this.existingNames(rows.map((r) => r.name));
-    return { total, toCreate: rows.length - existing.size, toUpdate: existing.size, errors };
+    const existing = this.existingByName(rows.map((r) => r.name));
+    const partially = [...existing.values()].filter((v) => v.posted.length > 0).length;
+    return { total, toCreate: rows.length - existing.size, toUpdate: existing.size, toUpdatePartially: partially, errors };
   }
 
-  /** 确认导入：整批一个事务；有错误行时拒绝导入。以项目名称匹配：已存在则更新，否则新增。 */
+  /**
+   * 确认导入：整批一个事务；有错误行时拒绝导入。以项目名称匹配：已存在则更新，否则新增。
+   * 已入账（有对应有效流水）的字段，其「是」标记和对应金额不会被 Excel 覆盖，以保证流水与项目账实一致；
+   * 导入本身不生成任何流水（Excel 里的「是」只是标记）。
+   */
   async commit(buffer: Buffer, fileName: string): Promise<ProjectImportResult> {
     const { rows, errors, total } = await this.parse(buffer);
     if (errors.length > 0) throw new AppError(`存在 ${errors.length} 行错误，请修正后重新导入`, 422, 'IMPORT_INVALID');
 
     let created = 0;
     let updated = 0;
+    let skippedPosted = 0;
     const now = nowIso();
     this.db.transaction(() => {
-      const find = this.db.prepare('SELECT id FROM project WHERE name = ? AND archived = 0');
+      const existing = this.existingByName(rows.map((r) => r.name));
       const insert = this.db.prepare(
         `INSERT INTO project (id,contract_no,batch_no,region,name,contract_price,qx_received,qx_subcontract_fee,chen_pei,qx_profit,
                               qx_money_received,paid_subcontractor,paid_chen_pei,archived,created_at,updated_at,device_id)
@@ -247,23 +418,41 @@ export class ProjectService {
         `UPDATE project SET contract_no=?, batch_no=?, region=?, contract_price=?, qx_received=?, qx_subcontract_fee=?, chen_pei=?,
                 qx_profit=?, qx_money_received=?, paid_subcontractor=?, paid_chen_pei=?, updated_at=? WHERE id=?`
       );
+      const currentRow = this.db.prepare('SELECT * FROM project WHERE id = ?');
       for (const r of rows) {
-        // 金额列均为整数分；是/否存 0/1
-        const money = [r.contractPrice, r.qxReceived, r.qxSubcontractFee, r.chenPei, r.qxProfit] as const;
-        const flags = [r.qxMoneyReceived ? 1 : 0, r.paidSubcontractor ? 1 : 0, r.paidChenPei ? 1 : 0] as const;
-        const hit = find.get(r.name) as { id: string } | undefined;
+        const hit = existing.get(r.name);
         if (hit) {
+          // 已入账的字段保持库里的值（标记 + 金额），其余用 Excel 的值
+          const cur = currentRow.get(hit.id) as ProjectRow;
+          const keep = (kind: ProjectPostingKind) => hit.posted.includes(kind);
+          const money = [
+            r.contractPrice,
+            keep('qx_received') ? cur.qx_received : r.qxReceived,
+            keep('paid_subcontractor') ? cur.qx_subcontract_fee : r.qxSubcontractFee,
+            keep('paid_chen_pei') ? cur.chen_pei : r.chenPei,
+            r.qxProfit
+          ] as const;
+          const flags = [
+            keep('qx_received') ? 1 : r.qxMoneyReceived ? 1 : 0,
+            keep('paid_subcontractor') ? 1 : r.paidSubcontractor ? 1 : 0,
+            keep('paid_chen_pei') ? 1 : r.paidChenPei ? 1 : 0
+          ] as const;
           update.run(r.contractNo, r.batchNo, r.region, ...money, ...flags, now, hit.id);
-          writeAudit(this.db, this.deviceId, 'project', hit.id, 'import_update', { fileName, name: r.name, contractNo: r.contractNo });
+          writeAudit(this.db, this.deviceId, 'project', hit.id, 'import_update', {
+            fileName, name: r.name, contractNo: r.contractNo, keptPostedKinds: hit.posted
+          });
           updated += 1;
+          if (hit.posted.length > 0) skippedPosted += 1;
         } else {
           const id = newId();
+          const money = [r.contractPrice, r.qxReceived, r.qxSubcontractFee, r.chenPei, r.qxProfit] as const;
+          const flags = [r.qxMoneyReceived ? 1 : 0, r.paidSubcontractor ? 1 : 0, r.paidChenPei ? 1 : 0] as const;
           insert.run(id, r.contractNo, r.batchNo, r.region, r.name, ...money, ...flags, now, now, this.deviceId);
           writeAudit(this.db, this.deviceId, 'project', id, 'import_create', { fileName, name: r.name, contractNo: r.contractNo });
           created += 1;
         }
       }
     })();
-    return { total, created, updated };
+    return { total, created, updated, skippedPosted };
   }
 }

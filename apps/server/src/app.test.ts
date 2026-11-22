@@ -92,7 +92,7 @@ describe('项目管理（Excel 导入）', () => {
 
     const commit = await ctx.app.inject({ method: 'POST', url: importUrl('commit'), ...m });
     expect(commit.statusCode).toBe(201);
-    expect(commit.json()).toEqual({ total: 3, created: 3, updated: 0 });
+    expect(commit.json()).toEqual({ total: 3, created: 3, updated: 0, skippedPosted: 0 });
 
     const list = (await ctx.app.inject({ url: '/api/projects' })).json() as Array<Record<string, unknown>>;
     expect(list).toHaveLength(3); // 合计行没有被导入
@@ -130,7 +130,7 @@ describe('项目管理（Excel 导入）', () => {
       total: 4, toCreate: 3, toUpdate: 1, errors: []
     });
     const res = await ctx.app.inject({ method: 'POST', url: importUrl('commit'), ...m2 });
-    expect(res.json()).toEqual({ total: 4, created: 3, updated: 1 });
+    expect(res.json()).toEqual({ total: 4, created: 3, updated: 1, skippedPosted: 0 });
 
     const list = (await ctx.app.inject({ url: '/api/projects' })).json() as Array<Record<string, unknown>>;
     expect(list).toHaveLength(4);
@@ -216,9 +216,286 @@ it('缺少表头返回 422；按表头名定位列，列顺序可以不同；空
 
     const reordered = ['项目名称', '合同编号', ...PROJECT_HEADERS.filter((h) => h !== '项目名称' && h !== '合同编号')];
     const m = multipart(await projectXlsx([['乱序项目', 'HT-009', '', '', 100, 0, 0, 0, 0, '', '', ''], [], [null]], reordered));
-    expect((await ctx.app.inject({ method: 'POST', url: importUrl('commit'), ...m })).json()).toEqual({ total: 1, created: 1, updated: 0 });
+    expect((await ctx.app.inject({ method: 'POST', url: importUrl('commit'), ...m })).json()).toEqual({ total: 1, created: 1, updated: 0, skippedPosted: 0 });
     expect(((await ctx.app.inject({ url: '/api/projects' })).json() as Array<{ contractNo: string; name: string }>)[0]).toMatchObject({
       contractNo: 'HT-009', name: '乱序项目'
+    });
+  });
+
+  describe('详情页：修改与删除（归档）', () => {
+    const patch = (id: string, body: unknown) =>
+      ctx.app.inject({ method: 'PATCH', url: `/api/projects/${id}`, payload: body as object });
+    const baseBody = {
+      contractNo: 'HT-9', batchNo: 15, region: '陇南', name: '改名后的项目',
+      contractPrice: 1000, qxReceived: 800, qxSubcontractFee: 400, chenPei: 50, qxProfit: 200,
+      qxMoneyReceived: false, paidSubcontractor: false, paidChenPei: false // 不涉及入账；入账见下方「入账与回退」
+    };
+    const seed = async () => {
+      await ctx.app.inject({
+        method: 'POST', url: importUrl('commit'),
+        ...multipart(await projectXlsx([
+          ['HT-1', '第14批', '天水', '项目甲', 100, 0, 0, 0, 0, '否', '否', '否'],
+          ['HT-2', '第14批', '天水', '项目乙', 200, 0, 0, 0, 0, '否', '否', '否']
+        ]))
+      });
+      const list = (await ctx.app.inject({ url: '/api/projects' })).json() as Array<{ id: string; name: string }>;
+      return { a: list.find((p) => p.name === '项目甲')!.id, b: list.find((p) => p.name === '项目乙')!.id };
+    };
+
+    it('修改成功：所有字段保存，金额为整数分，写入审计日志', async () => {
+      const { a } = await seed();
+      const res = await patch(a, baseBody);
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject(baseBody);
+      expect((await ctx.app.inject({ url: `/api/projects/${a}` })).json()).toMatchObject(baseBody);
+      const audit = ctx.db.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE entity='project' AND entity_id=? AND action='update'").get(a);
+      expect(audit).toEqual({ n: 1 });
+    });
+
+    it('批次号可清空为 null；保留自己的名称不算重名', async () => {
+      const { a } = await seed();
+      const res = await patch(a, { ...baseBody, name: '项目甲', batchNo: null });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ name: '项目甲', batchNo: null });
+    });
+
+    it('与其他项目重名返回 409；校验失败返回 400；不存在返回 404', async () => {
+      const { a } = await seed();
+      const dup = await patch(a, { ...baseBody, name: '项目乙' });
+      expect(dup.statusCode).toBe(409);
+      expect(dup.json()).toMatchObject({ code: 'DUPLICATE_NAME' });
+      expect((await patch(a, { ...baseBody, name: '  ' })).statusCode).toBe(400);
+      expect((await patch(a, { ...baseBody, contractPrice: 10.5 })).statusCode).toBe(400); // 金额必须是整数分
+      expect((await patch(a, { ...baseBody, contractPrice: -1 })).statusCode).toBe(400);
+      expect((await patch(a, { ...baseBody, batchNo: 1.5 })).statusCode).toBe(400);
+      expect((await patch(a, { ...baseBody, qxMoneyReceived: 'yes' })).statusCode).toBe(400);
+      expect((await patch('nope', baseBody)).statusCode).toBe(404);
+      // 失败的修改不改动数据
+      expect((await ctx.app.inject({ url: `/api/projects/${a}` })).json()).toMatchObject({ name: '项目甲', contractPrice: 10_000 });
+    });
+
+    it('删除 = 归档：不物理删除，列表和详情不再可见，写审计；重复删除返回 404', async () => {
+      const { a, b } = await seed();
+      const archived = await post(`/api/projects/${a}/archive`, {});
+      expect(archived.statusCode).toBe(200);
+      expect(archived.json()).toMatchObject({ id: a, name: '项目甲' }); // 返回 JSON，前端 handle() 才能解析
+      expect((await ctx.app.inject({ url: `/api/projects/${a}` })).statusCode).toBe(404);
+      const names = ((await ctx.app.inject({ url: '/api/projects' })).json() as Array<{ name: string }>).map((p) => p.name);
+      expect(names).toEqual(['项目乙']);
+      expect(ctx.db.prepare('SELECT archived FROM project WHERE id=?').get(a)).toEqual({ archived: 1 }); // 数据还在
+      expect(ctx.db.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE entity_id=? AND action='archive'").get(a)).toEqual({ n: 1 });
+      expect((await post(`/api/projects/${a}/archive`, {})).statusCode).toBe(404);
+      expect((await ctx.app.inject({ url: `/api/projects/${b}` })).statusCode).toBe(200);
+    });
+
+    it('归档后名称可复用：再次导入同名项目会新增而不是更新已归档的', async () => {
+      const { a } = await seed();
+      await post(`/api/projects/${a}/archive`, {});
+      const m = multipart(await projectXlsx([['HT-1', '第15批', '天水', '项目甲', 300, 0, 0, 0, 0, '否', '否', '否']]));
+      expect((await ctx.app.inject({ method: 'POST', url: importUrl('commit'), ...m })).json()).toEqual({ total: 1, created: 1, updated: 0, skippedPosted: 0 });
+      const list = (await ctx.app.inject({ url: '/api/projects' })).json() as Array<{ id: string; name: string; contractPrice: number }>;
+      const again = list.find((p) => p.name === '项目甲')!;
+      expect(again.id).not.toBe(a);
+      expect(again.contractPrice).toBe(30_000);
+    });
+
+    it('手工修改会被再次导入的 Excel 覆盖（同名匹配）', async () => {
+      const { a } = await seed();
+      await patch(a, { ...baseBody, name: '项目甲', region: '手工改的区域', contractPrice: 999 });
+      const m = multipart(await projectXlsx([['HT-1', '第14批', '天水', '项目甲', 100, 0, 0, 0, 0, '否', '否', '否']]));
+      expect((await ctx.app.inject({ method: 'POST', url: importUrl('commit'), ...m })).json()).toMatchObject({ updated: 1 });
+      expect((await ctx.app.inject({ url: `/api/projects/${a}` })).json()).toMatchObject({ region: '天水', contractPrice: 10_000 });
+    });
+  });
+
+  describe('是/否 切换：入账与回退', () => {
+    const patch = (id: string, body: unknown) =>
+      ctx.app.inject({ method: 'PATCH', url: `/api/projects/${id}`, payload: body as object });
+    const full = (over: Record<string, unknown> = {}) => ({
+      contractNo: 'HT-1', batchNo: 15, region: '陇南', name: '入账项目',
+      contractPrice: 100_000, qxReceived: 80_000, qxSubcontractFee: 40_000, chenPei: 5_000, qxProfit: 35_000,
+      qxMoneyReceived: false, paidSubcontractor: false, paidChenPei: false,
+      ...over
+    });
+    const setup = async () => {
+      const acc = await makeAccount('入账账户', 1_000_000);
+      await ctx.app.inject({
+        method: 'POST', url: importUrl('commit'),
+        ...multipart(await projectXlsx([['HT-1', '第15批', '陇南', '入账项目', 1000, 800, 400, 50, 350, '否', '否', '否']]))
+      });
+      const list = (await ctx.app.inject({ url: '/api/projects' })).json() as Array<{ id: string }>;
+      return { acc: acc.id, id: list[0]!.id };
+    };
+    const balance = async (accId: string) => ((await ctx.app.inject({ url: `/api/accounts/${accId}` })).json() as { balance: number }).balance;
+    const txOf = async (accId: string) =>
+      ((await ctx.app.inject({ url: `/api/transactions?accountId=${accId}&includeVoided=true&limit=100` })).json() as {
+        items: Array<{ id: string; type: string; status: string; lines: Array<{ amount: number }>; note: string }>;
+      }).items;
+
+    it('否 -> 是：企信收到钱记收入、支付下家/陈沛记支出，金额取对应列，余额随之变化', async () => {
+      const { acc, id } = await setup();
+      const res = await patch(id, full({ qxMoneyReceived: true, paidSubcontractor: true, paidChenPei: true, postingAccountId: acc }));
+      expect(res.statusCode).toBe(200);
+      expect((res.json() as { postedKinds: string[] }).postedKinds.sort()).toEqual(['paid_chen_pei', 'paid_subcontractor', 'qx_received']);
+
+      const txs = await txOf(acc);
+      expect(txs).toHaveLength(3);
+      const sum = (type: string) => txs.filter((t) => t.type === type).map((t) => t.lines[0]!.amount).sort((a, b) => a - b);
+      expect(sum('income')).toEqual([80_000]); // 企信实收
+      expect(sum('expense')).toEqual([-40_000, -5_000]); // 分包费 + 陈沛，支出为负
+      expect(await balance(acc)).toBe(1_000_000 + 80_000 - 40_000 - 5_000);
+      expect(txs.every((t) => t.note.includes('入账项目'))).toBe(true);
+    });
+
+    it('是 -> 否：作废对应流水（不物理删除），余额回退，其他字段的流水不受影响', async () => {
+      const { acc, id } = await setup();
+      await patch(id, full({ qxMoneyReceived: true, paidSubcontractor: true, postingAccountId: acc }));
+      expect(await balance(acc)).toBe(1_000_000 + 80_000 - 40_000);
+
+      const res = await patch(id, full({ qxMoneyReceived: false, paidSubcontractor: true }));
+      expect(res.statusCode).toBe(200);
+      expect((res.json() as { postedKinds: string[] }).postedKinds).toEqual(['paid_subcontractor']);
+      expect(await balance(acc)).toBe(1_000_000 - 40_000); // 收入回退，支出保留
+
+      const txs = await txOf(acc);
+      expect(txs).toHaveLength(2); // 流水还在
+      expect(txs.find((t) => t.type === 'income')!.status).toBe('voided'); // 只是作废
+      expect(txs.find((t) => t.type === 'expense')!.status).toBe('normal');
+      const link = ctx.db.prepare("SELECT active, reverted_at AS r FROM project_posting WHERE project_id=? AND kind='qx_received'").get(id) as { active: number; r: string | null };
+      expect(link.active).toBe(0);
+      expect(link.r).not.toBeNull();
+    });
+
+    it('回退后可再次入账，且按当时的金额重新生成一笔新流水', async () => {
+      const { acc, id } = await setup();
+      await patch(id, full({ qxMoneyReceived: true, postingAccountId: acc }));
+      await patch(id, full({ qxMoneyReceived: false }));
+      await patch(id, full({ qxMoneyReceived: false, qxReceived: 90_000 })); // 回退后可以改金额
+      await patch(id, full({ qxMoneyReceived: true, qxReceived: 90_000, postingAccountId: acc }));
+      expect(await balance(acc)).toBe(1_000_000 + 90_000);
+      const txs = await txOf(acc);
+      expect(txs).toHaveLength(2);
+      expect(txs.filter((t) => t.status === 'normal').map((t) => t.lines[0]!.amount)).toEqual([90_000]);
+    });
+
+    it('缺少入账账户 / 金额为 0 / 账户已归档：拒绝，且项目与流水都不变（原子性）', async () => {
+      const { acc, id } = await setup();
+      const noAcc = await patch(id, full({ qxMoneyReceived: true, region: '不应保存' }));
+      expect(noAcc.statusCode).toBe(400);
+      expect(noAcc.json()).toMatchObject({ code: 'POSTING_ACCOUNT_REQUIRED' });
+
+      const zero = await patch(id, full({ qxMoneyReceived: true, qxReceived: 0, postingAccountId: acc }));
+      expect(zero.statusCode).toBe(400);
+
+      const bad = await patch(id, full({ qxMoneyReceived: true, postingAccountId: 'not-exist', region: '不应保存' }));
+      expect(bad.statusCode).toBe(404);
+
+      // 同时有两个字段入账，第二笔失败（账户不存在）：第一笔也必须回滚
+      expect((await txOf(acc))).toHaveLength(0);
+      const p = (await ctx.app.inject({ url: `/api/projects/${id}` })).json() as { region: string; qxMoneyReceived: boolean; postedKinds: string[] };
+      expect(p).toMatchObject({ region: '陇南', qxMoneyReceived: false, postedKinds: [] });
+      expect(ctx.db.prepare('SELECT COUNT(*) AS n FROM project_posting').get()).toEqual({ n: 0 });
+      expect(await balance(acc)).toBe(1_000_000);
+    });
+
+    it('已入账的字段不能直接改对应金额（409），未入账字段的金额照常可改', async () => {
+      const { acc, id } = await setup();
+      await patch(id, full({ qxMoneyReceived: true, postingAccountId: acc }));
+      const locked = await patch(id, full({ qxMoneyReceived: true, qxReceived: 99_999 }));
+      expect(locked.statusCode).toBe(409);
+      expect(locked.json()).toMatchObject({ code: 'POSTED_AMOUNT_LOCKED' });
+      // 其他金额（未入账）可以改
+      const ok = await patch(id, full({ qxMoneyReceived: true, qxSubcontractFee: 41_000, contractPrice: 123 }));
+      expect(ok.statusCode).toBe(200);
+      expect(await balance(acc)).toBe(1_000_000 + 80_000);
+    });
+
+    it('已入账的项目不能删除（409），回退后才能删除', async () => {
+      const { acc, id } = await setup();
+      await patch(id, full({ paidChenPei: true, postingAccountId: acc }));
+      const blocked = await post(`/api/projects/${id}/archive`, {});
+      expect(blocked.statusCode).toBe(409);
+      expect(blocked.json()).toMatchObject({ code: 'PROJECT_HAS_POSTINGS' });
+      await patch(id, full({ paidChenPei: false }));
+      expect((await post(`/api/projects/${id}/archive`, {})).statusCode).toBe(200);
+    });
+
+    it('历史「是」标记（Excel 导入、无流水）：切回否只改标记，不报错、不动账', async () => {
+      const acc = await makeAccount('历史账户', 500_000);
+      await ctx.app.inject({
+        method: 'POST', url: importUrl('commit'),
+        ...multipart(await projectXlsx([['HT-2', '第15批', '陇南', '历史项目', 1000, 800, 400, 50, 350, '是', '是', '否']]))
+      });
+      const proj = ((await ctx.app.inject({ url: '/api/projects' })).json() as Array<{ id: string; qxMoneyReceived: boolean; postedKinds: string[] }>)[0]!;
+      expect(proj.qxMoneyReceived).toBe(true);
+      expect(proj.postedKinds).toEqual([]); // 导入不记账
+      expect(await txOf(acc.id)).toHaveLength(0);
+      const res = await patch(proj.id, full({ name: '历史项目', qxMoneyReceived: false, paidSubcontractor: true }));
+      expect(res.statusCode).toBe(200);
+      expect(await txOf(acc.id)).toHaveLength(0);
+      expect(await balance(acc.id)).toBe(500_000);
+    });
+
+    it('再次导入：已入账字段的标记与金额不被覆盖，其余字段照常覆盖；导入不生成流水', async () => {
+      const { acc, id } = await setup();
+      await patch(id, full({ qxMoneyReceived: true, postingAccountId: acc }));
+      const m = multipart(await projectXlsx([['HT-NEW', '第16批', '天水', '入账项目', 2000, 1, 999, 77, 666, '否', '是', '否']]));
+      const pre = (await ctx.app.inject({ method: 'POST', url: importUrl('preview'), ...m })).json() as Record<string, unknown>;
+      expect(pre).toMatchObject({ toUpdate: 1, toUpdatePartially: 1 });
+      const res = await ctx.app.inject({ method: 'POST', url: importUrl('commit'), ...m });
+      expect(res.json()).toMatchObject({ updated: 1, skippedPosted: 1 });
+
+      const p = (await ctx.app.inject({ url: `/api/projects/${id}` })).json() as Record<string, unknown>;
+      expect(p).toMatchObject({
+        qxMoneyReceived: true, qxReceived: 80_000, // 已入账：标记与金额保持
+        contractNo: 'HT-NEW', region: '天水', contractPrice: 200_000, qxSubcontractFee: 99_900, chenPei: 7_700, // 其余被覆盖
+        paidSubcontractor: true // 未入账的字段按 Excel 覆盖，但只是标记
+      });
+      expect(await txOf(acc)).toHaveLength(1); // 导入没有新增流水
+      expect(await balance(acc)).toBe(1_000_000 + 80_000);
+    });
+
+    it('入账日期：流水的发生日期取 postingDate（多笔共用），省略时用当天；非法日期返回 400 且不入账', async () => {
+      const { acc, id } = await setup();
+      const res = await patch(id, full({ qxMoneyReceived: true, paidSubcontractor: true, postingAccountId: acc, postingDate: '2026-03-15' }));
+      expect(res.statusCode).toBe(200);
+      const txs = await txOf(acc);
+      expect(txs).toHaveLength(2);
+      const dates = ctx.db.prepare('SELECT occurred_on AS d FROM tx WHERE id IN (' + txs.map(() => '?').join(',') + ')').all(...txs.map((t) => t.id)) as Array<{ d: string }>;
+      expect(dates.map((r) => r.d)).toEqual(['2026-03-15', '2026-03-15']);
+      const audit = JSON.parse((ctx.db.prepare("SELECT payload FROM audit_log WHERE entity_id=? AND action='update' ORDER BY rowid DESC LIMIT 1").get(id) as { payload: string }).payload) as {
+        postings: Array<{ date?: string }>;
+      };
+      expect(audit.postings.map((x) => x.date)).toEqual(['2026-03-15', '2026-03-15']);
+
+      // 再入账一笔、不传日期：用服务器当天（本地日期）
+      const d = new Date();
+      const pad = (n: number) => String(n).padStart(2, '0');
+      const localToday = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+      await patch(id, full({ qxMoneyReceived: true, paidSubcontractor: true, paidChenPei: true, postingAccountId: acc }));
+      const row = ctx.db.prepare("SELECT t.occurred_on AS d FROM project_posting p JOIN tx t ON t.id=p.tx_id WHERE p.project_id=? AND p.kind='paid_chen_pei'").get(id) as { d: string };
+      expect(row.d).toBe(localToday);
+
+      // 非法日期：格式不对、2月30日、空串。先回退上面的入账，再用非法日期尝试，应全部被拒且不产生新流水
+      await patch(id, full({ qxMoneyReceived: false, paidSubcontractor: false, paidChenPei: false }));
+      const before = (await txOf(acc)).length;
+      for (const bad of ['2026/03/15', '2026-02-30', '2026-13-01', '', '昨天']) {
+        const r = await patch(id, full({ qxMoneyReceived: true, postingAccountId: acc, postingDate: bad }));
+        expect(r.statusCode, `postingDate=${JSON.stringify(bad)}`).toBe(400);
+      }
+      expect(await txOf(acc)).toHaveLength(before);
+    });
+
+    it('审计：入账与回退都记录在项目的 update 审计里（含流水 id、金额、动作）', async () => {
+      const { acc, id } = await setup();
+      await patch(id, full({ qxMoneyReceived: true, postingAccountId: acc }));
+      await patch(id, full({ qxMoneyReceived: false }));
+      const rows = ctx.db.prepare("SELECT payload FROM audit_log WHERE entity='project' AND entity_id=? AND action='update' ORDER BY created_at, rowid").all(id) as Array<{ payload: string }>;
+      expect(rows).toHaveLength(2);
+      const [a, b] = rows.map((r) => JSON.parse(r.payload) as { postings: Array<{ kind: string; action: string; txId: string; amount: number }> });
+      expect(a!.postings).toEqual([expect.objectContaining({ kind: 'qx_received', action: 'post', amount: 80_000 })]);
+      expect(b!.postings).toEqual([expect.objectContaining({ kind: 'qx_received', action: 'revert', amount: 80_000 })]);
+      expect(a!.postings[0]!.txId).toBe(b!.postings[0]!.txId); // 回退的正是入账的那一笔
     });
   });
 

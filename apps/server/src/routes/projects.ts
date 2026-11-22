@@ -1,6 +1,36 @@
 import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
 import type { Services } from '../app';
 import { AppError } from '../utils';
+
+/** 金额一律整数分（前端用 toCents 转换后再提交） */
+const cents = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
+
+const updateSchema = z.object({
+  contractNo: z.string().trim().max(50),
+  batchNo: z.number().int().min(0).nullable(),
+  region: z.string().trim().max(50),
+  name: z.string().trim().min(1).max(100),
+  contractPrice: cents,
+  qxReceived: cents,
+  qxSubcontractFee: cents,
+  chenPei: cents,
+  qxProfit: cents,
+  qxMoneyReceived: z.boolean(),
+  paidSubcontractor: z.boolean(),
+  paidChenPei: z.boolean(),
+  /** 本次保存有字段从否切到是（入账）时必填，在服务层校验 */
+  postingAccountId: z.string().min(1).optional(),
+  /** 入账日期，YYYY-MM-DD，且必须是真实存在的日期 */
+  postingDate: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, '入账日期格式应为 YYYY-MM-DD')
+    .refine((s) => {
+      const d = new Date(s + 'T00:00:00Z');
+      return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+    }, '入账日期不是有效日期')
+    .optional()
+});
 
 export function registerProjectRoutes(app: FastifyInstance, { projects }: Services): void {
   app.get('/api/projects', async () => projects.list());
@@ -30,4 +60,12 @@ export function registerProjectRoutes(app: FastifyInstance, { projects }: Servic
   });
 
   app.get('/api/projects/:id', async (req) => projects.get((req.params as { id: string }).id));
+
+  /** 修改项目（整体保存）。手工修改会在下次导入同名项目时被 Excel 覆盖 */
+  app.patch('/api/projects/:id', async (req) =>
+    projects.update((req.params as { id: string }).id, updateSchema.parse(req.body))
+  );
+
+  /** 「删除」项目：不物理删除，仅归档 */
+  app.post('/api/projects/:id/archive', async (req) => projects.archive((req.params as { id: string }).id));
 }

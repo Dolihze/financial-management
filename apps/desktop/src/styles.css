@@ -32,3 +32,11 @@ body {
   width: 100%;
   margin-top: 6px;
 }
+
+/* 表格列筛选面板：把「筛选」「重置」按钮互换位置（面板渲染在 body 下，需全局样式） */
+.el-table-filter__bottom {
+  display: flex;
+  flex-direction: row-reverse;
+  justify-content: flex-end;
+  gap: 6px;
+}

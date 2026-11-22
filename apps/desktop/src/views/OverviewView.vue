@@ -36,8 +36,8 @@ function render(s: OverviewSummary) {
       xAxis: { type: 'category', data: s.trend.map((t) => t.month) },
       yAxis: { type: 'value', axisLabel: { formatter: (v: number) => `${v / 100}` } },
       series: [
-        { name: '收入', type: 'bar', data: s.trend.map((t) => t.income), itemStyle: { color: '#67c23a' } },
-        { name: '支出', type: 'bar', data: s.trend.map((t) => t.expense), itemStyle: { color: '#f56c6c' } }
+        { name: '收入', type: 'bar', data: s.trend.map((t) => t.income), itemStyle: { color: '#f56c6c' } },
+        { name: '支出', type: 'bar', data: s.trend.map((t) => t.expense), itemStyle: { color: '#67c23a' } }
       ]
     });
     charts.push(c);
@@ -78,10 +78,10 @@ onBeforeUnmount(() => {
         <el-card shadow="never"><el-statistic title="公司总余额" :value="formatMoney(data.totalBalance)" /></el-card>
       </el-col>
       <el-col :span="8">
-        <el-card shadow="never"><el-statistic title="本月收入" :value="formatMoney(data.monthIncome)" value-style="color: #67c23a" /></el-card>
+        <el-card shadow="never"><el-statistic title="本月收入" :value="formatMoney(data.monthIncome)" value-style="color: #f56c6c" /></el-card>
       </el-col>
       <el-col :span="8">
-        <el-card shadow="never"><el-statistic title="本月支出" :value="formatMoney(data.monthExpense)" value-style="color: #f56c6c" /></el-card>
+        <el-card shadow="never"><el-statistic title="本月支出" :value="formatMoney(data.monthExpense)" value-style="color: #67c23a" /></el-card>
       </el-col>
     </el-row>
 

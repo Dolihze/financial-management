@@ -216,7 +216,7 @@ onMounted(load);
       <el-table-column prop="counterparty" label="往来单位" width="140" />
       <el-table-column label="金额" align="right" width="140">
         <template #default="{ row }">
-          <span :class="{ 'money-in': amountOf(row) > 0, 'money-out': amountOf(row) < 0 }" :style="row.status === 'voided' ? 'text-decoration: line-through; opacity: .5' : ''">
+          <span :class="{ 'tx-income': amountOf(row) > 0, 'tx-expense': amountOf(row) < 0 }" :style="row.status === 'voided' ? 'text-decoration: line-through; opacity: .5' : ''">
             {{ formatMoney(amountOf(row)) }}
           </span>
         </template>
@@ -292,3 +292,13 @@ onMounted(load);
     />
   </div>
 </template>
+
+<style scoped>
+/* 收入红、支出绿 */
+.tx-income {
+  color: #f56c6c;
+}
+.tx-expense {
+  color: #67c23a;
+}
+</style>

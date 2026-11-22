@@ -386,32 +386,32 @@ onMounted(load);
           </el-text>
         </el-form-item>
         <el-form-item label="合同价" prop="contractPrice">
-          <el-input v-model="form.contractPrice"><template #prepend>¥</template></el-input>
+          <el-input v-model="form.contractPrice" class="money-input"><template #prepend>¥</template></el-input>
           <div class="formula-bar">
             <el-button type="primary" plain size="small" icon="Cpu" @click="calculate">计算</el-button>
             <el-button link type="primary" size="small" icon="Setting" @click="openFormula">公式维护</el-button>
           </div>
         </el-form-item>
         <el-form-item label="企信实收" prop="qxReceived">
-          <el-input v-model="form.qxReceived" :disabled="isPosted('qxMoneyReceived')"><template #prepend>¥</template></el-input>
+          <el-input v-model="form.qxReceived" class="money-input" :disabled="isPosted('qxMoneyReceived')"><template #prepend>¥</template></el-input>
           <el-text v-if="isPosted('qxMoneyReceived')" type="warning" size="small">
             已入账，如需修改金额请先将「企信是否收到钱」切换为「否」回退入账
           </el-text>
         </el-form-item>
         <el-form-item label="企信支付下家分包费" prop="qxSubcontractFee">
-          <el-input v-model="form.qxSubcontractFee" :disabled="isPosted('paidSubcontractor')"><template #prepend>¥</template></el-input>
+          <el-input v-model="form.qxSubcontractFee" class="money-input" :disabled="isPosted('paidSubcontractor')"><template #prepend>¥</template></el-input>
           <el-text v-if="isPosted('paidSubcontractor')" type="warning" size="small">
             已入账，如需修改金额请先将「支付下家」切换为「否」回退入账
           </el-text>
         </el-form-item>
         <el-form-item label="陈沛" prop="chenPei">
-          <el-input v-model="form.chenPei" :disabled="isPosted('paidChenPei')"><template #prepend>¥</template></el-input>
+          <el-input v-model="form.chenPei" class="money-input" :disabled="isPosted('paidChenPei')"><template #prepend>¥</template></el-input>
           <el-text v-if="isPosted('paidChenPei')" type="warning" size="small">
             已入账，如需修改金额请先将「支付陈沛」切换为「否」回退入账
           </el-text>
         </el-form-item>
         <el-form-item label="企信利润" prop="qxProfit">
-          <el-input v-model="form.qxProfit"><template #prepend>¥</template></el-input>
+          <el-input v-model="form.qxProfit" class="money-input"><template #prepend>¥</template></el-input>
         </el-form-item>
         <el-form-item label="企信是否收到钱">
           <YesNoRadio v-model="form.qxMoneyReceived" :confirm="(n) => confirmFlag('qxMoneyReceived', n)" />
@@ -456,3 +456,10 @@ onMounted(load);
     </el-dialog>
   </div>
 </template>
+
+<style scoped>
+/* 金额输入框：宽度约为原来的 1/3 */
+.money-input {
+  width: 200px;
+}
+</style>

@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import type { Account, Project, ProjectPostingKind } from '@fm/shared';
 import { ElDatePicker, ElMessage, ElMessageBox, ElOption, ElSelect, type FormInstance, type FormRules } from 'element-plus';
 import { computed, h, onMounted, reactive, ref } from 'vue';
@@ -23,7 +23,7 @@ const formRef = ref<FormInstance>();
 type FlagKey = 'qxMoneyReceived' | 'paidSubcontractor' | 'paidChenPei';
 type AmountKey = 'qxReceived' | 'qxSubcontractFee' | 'chenPei';
 const FLAGS: Record<FlagKey, { label: string; kind: ProjectPostingKind; direction: '收入' | '支出'; amount: AmountKey }> = {
-  qxMoneyReceived: { label: '企信是否收到钱', kind: 'qx_received', direction: '收入', amount: 'qxReceived' },
+  qxMoneyReceived: { label: '项目结算', kind: 'qx_received', direction: '收入', amount: 'qxReceived' },
   paidSubcontractor: { label: '支付下家', kind: 'paid_subcontractor', direction: '支出', amount: 'qxSubcontractFee' },
   paidChenPei: { label: '支付陈沛', kind: 'paid_chen_pei', direction: '支出', amount: 'chenPei' }
 };
@@ -38,7 +38,6 @@ const postingDate = ref<string>(today());
 
 /** 表单里金额用「元」的字符串编辑，提交时用 toCents 转整数分，不做浮点运算 */
 interface FormState {
-  contractNo: string;
   batchNo: number | null;
   region: string;
   name: string;
@@ -55,7 +54,7 @@ const form = reactive<FormState>(emptyForm());
 
 function emptyForm(): FormState {
   return {
-    contractNo: '', batchNo: null, region: '', name: '',
+    batchNo: null, region: '', name: '',
     contractPrice: '0.00', qxReceived: '0.00', qxSubcontractFee: '0.00', chenPei: '0.00', qxProfit: '0.00',
     qxMoneyReceived: false, paidSubcontractor: false, paidChenPei: false
   };
@@ -63,7 +62,7 @@ function emptyForm(): FormState {
 
 function fillForm(p: Project) {
   Object.assign(form, {
-    contractNo: p.contractNo, batchNo: p.batchNo, region: p.region, name: p.name,
+    batchNo: p.batchNo, region: p.region, name: p.name,
     contractPrice: fromCents(p.contractPrice), qxReceived: fromCents(p.qxReceived),
     qxSubcontractFee: fromCents(p.qxSubcontractFee), chenPei: fromCents(p.chenPei), qxProfit: fromCents(p.qxProfit),
     qxMoneyReceived: p.qxMoneyReceived, paidSubcontractor: p.paidSubcontractor, paidChenPei: p.paidChenPei
@@ -96,7 +95,7 @@ const dirty = computed(() => {
     try { return toCents(s || '0'); } catch { return NaN; }
   };
   return (
-    form.contractNo !== p.contractNo || form.batchNo !== p.batchNo || form.region !== p.region || form.name !== p.name ||
+    form.batchNo !== p.batchNo || form.region !== p.region || form.name !== p.name ||
     cents(form.contractPrice) !== p.contractPrice || cents(form.qxReceived) !== p.qxReceived ||
     cents(form.qxSubcontractFee) !== p.qxSubcontractFee || cents(form.chenPei) !== p.chenPei || cents(form.qxProfit) !== p.qxProfit ||
     form.qxMoneyReceived !== p.qxMoneyReceived || form.paidSubcontractor !== p.paidSubcontractor || form.paidChenPei !== p.paidChenPei
@@ -223,7 +222,6 @@ async function save() {
   saving.value = true;
   try {
     project.value = await api.projects.update(id, {
-      contractNo: form.contractNo.trim(),
       batchNo: form.batchNo,
       region: form.region.trim(),
       name: form.name.trim(),
@@ -370,8 +368,9 @@ onMounted(load);
 
     <el-card v-if="project" shadow="never">
       <el-form ref="formRef" :model="form" :rules="rules" label-width="150px" style="max-width: 760px" @submit.prevent>
-        <el-form-item label="合同编号" prop="contractNo">
-          <el-input v-model="form.contractNo" maxlength="50" />
+        <el-form-item label="合同编号">
+          <el-input :model-value="project.contractNo || '（未归入合同）'" disabled />
+          <div class="form-hint">合同归属请在「合同管理」中维护</div>
         </el-form-item>
         <el-form-item label="批次号" prop="batchNo">
           <el-input-number v-model="form.batchNo" :min="0" :step="1" :precision="0" controls-position="right" placeholder="如 15" />
@@ -395,7 +394,7 @@ onMounted(load);
         <el-form-item label="企信实收" prop="qxReceived">
           <el-input v-model="form.qxReceived" class="money-input" :disabled="isPosted('qxMoneyReceived')"><template #prepend>¥</template></el-input>
           <el-text v-if="isPosted('qxMoneyReceived')" type="warning" size="small">
-            已入账，如需修改金额请先将「企信是否收到钱」切换为「否」回退入账
+            已入账，如需修改金额请先将「项目结算」切换为「否」回退入账
           </el-text>
         </el-form-item>
         <el-form-item label="企信支付下家分包费" prop="qxSubcontractFee">
@@ -413,7 +412,7 @@ onMounted(load);
         <el-form-item label="企信利润" prop="qxProfit">
           <el-input v-model="form.qxProfit" class="money-input"><template #prepend>¥</template></el-input>
         </el-form-item>
-        <el-form-item label="企信是否收到钱">
+        <el-form-item label="项目结算">
           <YesNoRadio v-model="form.qxMoneyReceived" :confirm="(n) => confirmFlag('qxMoneyReceived', n)" />
         </el-form-item>
         <el-form-item label="支付下家">
@@ -461,5 +460,12 @@ onMounted(load);
 /* 金额输入框：宽度约为原来的 1/3 */
 .money-input {
   width: 200px;
+}
+.form-hint {
+  width: 100%;
+  margin-top: 4px;
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--el-text-color-secondary);
 }
 </style>

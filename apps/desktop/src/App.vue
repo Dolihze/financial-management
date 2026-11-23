@@ -57,9 +57,24 @@ async function boot() {
 
 onMounted(boot);
 
-const menus = [
+interface MenuItem {
+  path: string;
+  title: string;
+  icon: string;
+  /** 有 children 时渲染为可展开的二级菜单，path 仅作为子菜单分组的 index */
+  children?: Array<{ path: string; title: string }>;
+}
+const menus: MenuItem[] = [
   { path: '/overview', title: '总览', icon: 'DataBoard' },
-  { path: '/projects', title: '项目管理', icon: 'Briefcase' },
+  {
+    path: '/projects',
+    title: '项目管理',
+    icon: 'Briefcase',
+    children: [
+      { path: '/projects/contracts', title: '合同管理' },
+      { path: '/projects/progress', title: '项目进度' }
+    ]
+  },
   { path: '/transactions', title: '记账流水', icon: 'Tickets' },
   { path: '/accounts', title: '账户管理', icon: 'Wallet' },
   { path: '/import', title: 'Excel 导入', icon: 'Upload' }
@@ -70,11 +85,20 @@ const menus = [
   <el-container style="height: 100%">
     <el-aside width="200px" style="background: #1f2d3d">
       <div style="color: #fff; font-size: 20px; font-weight: 600; padding: 20px 16px">财务管理</div>
-      <el-menu :default-active="(route.meta.menu as string | undefined) ?? route.path" router background-color="#1f2d3d" text-color="#bfcbd9" active-text-color="#409eff">
-        <el-menu-item v-for="m in menus" :key="m.path" :index="m.path">
-          <el-icon><component :is="m.icon" /></el-icon>
-          <span>{{ m.title }}</span>
-        </el-menu-item>
+      <el-menu :default-active="(route.meta.menu as string | undefined) ?? route.path" :default-openeds="['/projects']" router background-color="#1f2d3d" text-color="#bfcbd9" active-text-color="#409eff">
+        <template v-for="m in menus" :key="m.path">
+          <el-sub-menu v-if="m.children" :index="m.path">
+            <template #title>
+              <el-icon><component :is="m.icon" /></el-icon>
+              <span>{{ m.title }}</span>
+            </template>
+            <el-menu-item v-for="c in m.children" :key="c.path" :index="c.path">{{ c.title }}</el-menu-item>
+          </el-sub-menu>
+          <el-menu-item v-else :index="m.path">
+            <el-icon><component :is="m.icon" /></el-icon>
+            <span>{{ m.title }}</span>
+          </el-menu-item>
+        </template>
       </el-menu>
     </el-aside>
     <el-container>

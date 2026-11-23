@@ -1,6 +1,7 @@
-import ExcelJS from 'exceljs';
+﻿import ExcelJS from 'exceljs';
 import {
   PROJECT_IMPORT_HEADERS,
+  PROJECT_IMPORT_LEGACY_HEADERS,
   toCents,
   type ImportRowError,
   type Project,
@@ -16,7 +17,7 @@ import { TransactionService } from './transactionService';
 
 /**
  * 三个「是/否」字段 与 记账流水 的对应关系：
- * - 企信是否收到钱 -> 收入，金额取「企信实收」
+ * - 项目结算（原企信是否收到钱） -> 收入，金额取「企信实收」
  * - 支付下家       -> 支出，金额取「企信支付下家分包费」
  * - 支付陈沛       -> 支出，金额取「陈沛」
  */
@@ -24,7 +25,7 @@ const POSTING_RULES: Record<
   ProjectPostingKind,
   { label: string; txType: 'income' | 'expense'; flag: 'qxMoneyReceived' | 'paidSubcontractor' | 'paidChenPei'; amount: 'qxReceived' | 'qxSubcontractFee' | 'chenPei' }
 > = {
-  qx_received: { label: '企信是否收到钱', txType: 'income', flag: 'qxMoneyReceived', amount: 'qxReceived' },
+  qx_received: { label: '项目结算', txType: 'income', flag: 'qxMoneyReceived', amount: 'qxReceived' },
   paid_subcontractor: { label: '支付下家', txType: 'expense', flag: 'paidSubcontractor', amount: 'qxSubcontractFee' },
   paid_chen_pei: { label: '支付陈沛', txType: 'expense', flag: 'paidChenPei', amount: 'chenPei' }
 };
@@ -32,6 +33,7 @@ const POSTING_KINDS = Object.keys(POSTING_RULES) as ProjectPostingKind[];
 
 interface ProjectRow {
   id: string;
+  contract_id: string | null;
   contract_no: string;
   batch_no: number | null;
   region: string;
@@ -50,6 +52,7 @@ interface ProjectRow {
 
 const toProject = (r: ProjectRow, postedKinds: ProjectPostingKind[] = []): Project => ({
   id: r.id,
+  contractId: r.contract_id,
   contractNo: r.contract_no,
   batchNo: r.batch_no,
   region: r.region,
@@ -216,11 +219,11 @@ export class ProjectService {
     this.db.transaction(() => {
       this.db
         .prepare(
-          `UPDATE project SET contract_no=?, batch_no=?, region=?, name=?, contract_price=?, qx_received=?, qx_subcontract_fee=?,
+          `UPDATE project SET batch_no=?, region=?, name=?, contract_price=?, qx_received=?, qx_subcontract_fee=?,
                   chen_pei=?, qx_profit=?, qx_money_received=?, paid_subcontractor=?, paid_chen_pei=?, updated_at=? WHERE id=?`
         )
         .run(
-          input.contractNo.trim(), input.batchNo, input.region.trim(), name,
+          input.batchNo, input.region.trim(), name,
           input.contractPrice, input.qxReceived, input.qxSubcontractFee, input.chenPei, input.qxProfit,
           input.qxMoneyReceived ? 1 : 0, input.paidSubcontractor ? 1 : 0, input.paidChenPei ? 1 : 0,
           nowIso(), id
@@ -321,6 +324,10 @@ export class ProjectService {
       const t = cellText(cell.value).replace(/\s+/g, '');
       if (t && !colOf.has(t)) colOf.set(t, col);
     });
+    // 新表头缺失时，回退到旧表头（如「项目结算」缺失则找「企信是否收到钱」）
+    for (const [now, legacy] of Object.entries(PROJECT_IMPORT_LEGACY_HEADERS)) {
+      if (!colOf.has(now) && colOf.has(legacy)) colOf.set(now, colOf.get(legacy)!);
+    }
     const missing = PROJECT_IMPORT_HEADERS.filter((h) => !colOf.has(h));
     if (missing.length > 0) throw new AppError(`Excel 第一行缺少表头: ${missing.join('、')}`, 422, 'IMPORT_HEADER_MISSING');
     const cell = (row: ExcelJS.Row, h: (typeof PROJECT_IMPORT_HEADERS)[number]) => row.getCell(colOf.get(h)!).value;
@@ -361,7 +368,7 @@ export class ProjectService {
           qxSubcontractFee: parseMoney(cell(excelRow, '企信支付下家分包费'), '企信支付下家分包费'),
           chenPei: parseMoney(cell(excelRow, '陈沛'), '陈沛'),
           qxProfit: parseMoney(cell(excelRow, '企信利润'), '企信利润'),
-          qxMoneyReceived: parseYesNo(cell(excelRow, '企信是否收到钱')),
+          qxMoneyReceived: parseYesNo(cell(excelRow, '项目结算')),
           paidSubcontractor: parseYesNo(cell(excelRow, '支付下家')),
           paidChenPei: parseYesNo(cell(excelRow, '支付陈沛'))
         });
@@ -410,16 +417,37 @@ export class ProjectService {
     this.db.transaction(() => {
       const existing = this.existingByName(rows.map((r) => r.name));
       const insert = this.db.prepare(
-        `INSERT INTO project (id,contract_no,batch_no,region,name,contract_price,qx_received,qx_subcontract_fee,chen_pei,qx_profit,
+        `INSERT INTO project (id,contract_id,contract_no,batch_no,region,name,contract_price,qx_received,qx_subcontract_fee,chen_pei,qx_profit,
                               qx_money_received,paid_subcontractor,paid_chen_pei,archived,created_at,updated_at,device_id)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?)`
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?)`
       );
       const update = this.db.prepare(
-        `UPDATE project SET contract_no=?, batch_no=?, region=?, contract_price=?, qx_received=?, qx_subcontract_fee=?, chen_pei=?,
+        `UPDATE project SET contract_id=?, contract_no=?, batch_no=?, region=?, contract_price=?, qx_received=?, qx_subcontract_fee=?, chen_pei=?,
                 qx_profit=?, qx_money_received=?, paid_subcontractor=?, paid_chen_pei=?, updated_at=? WHERE id=?`
       );
       const currentRow = this.db.prepare('SELECT * FROM project WHERE id = ?');
+      // Excel 里的合同编号 -> 合同 id：合同表里没有就自动创建（本批内同一编号只创建一次）
+      const contractIds = new Map<string, string>();
+      const findContract = this.db.prepare('SELECT id FROM contract WHERE contract_no = ? AND archived = 0');
+      const insertContract = this.db.prepare(
+        'INSERT INTO contract (id, contract_no, archived, created_at, updated_at, device_id) VALUES (?,?,0,?,?,?)'
+      );
+      const contractIdOf = (contractNo: string): string | null => {
+        if (!contractNo) return null;
+        const cached = contractIds.get(contractNo);
+        if (cached) return cached;
+        const hit = findContract.get(contractNo) as { id: string } | undefined;
+        let id = hit?.id;
+        if (!id) {
+          id = newId();
+          insertContract.run(id, contractNo, now, now, this.deviceId);
+          writeAudit(this.db, this.deviceId, 'contract', id, 'import_create', { fileName, contractNo });
+        }
+        contractIds.set(contractNo, id);
+        return id;
+      };
       for (const r of rows) {
+        const contractId = contractIdOf(r.contractNo);
         const hit = existing.get(r.name);
         if (hit) {
           // 已入账的字段保持库里的值（标记 + 金额），其余用 Excel 的值
@@ -437,7 +465,7 @@ export class ProjectService {
             keep('paid_subcontractor') ? 1 : r.paidSubcontractor ? 1 : 0,
             keep('paid_chen_pei') ? 1 : r.paidChenPei ? 1 : 0
           ] as const;
-          update.run(r.contractNo, r.batchNo, r.region, ...money, ...flags, now, hit.id);
+          update.run(contractId, r.contractNo, r.batchNo, r.region, ...money, ...flags, now, hit.id);
           writeAudit(this.db, this.deviceId, 'project', hit.id, 'import_update', {
             fileName, name: r.name, contractNo: r.contractNo, keptPostedKinds: hit.posted
           });
@@ -447,7 +475,7 @@ export class ProjectService {
           const id = newId();
           const money = [r.contractPrice, r.qxReceived, r.qxSubcontractFee, r.chenPei, r.qxProfit] as const;
           const flags = [r.qxMoneyReceived ? 1 : 0, r.paidSubcontractor ? 1 : 0, r.paidChenPei ? 1 : 0] as const;
-          insert.run(id, r.contractNo, r.batchNo, r.region, r.name, ...money, ...flags, now, now, this.deviceId);
+          insert.run(id, contractId, r.contractNo, r.batchNo, r.region, r.name, ...money, ...flags, now, now, this.deviceId);
           writeAudit(this.db, this.deviceId, 'project', id, 'import_create', { fileName, name: r.name, contractNo: r.contractNo });
           created += 1;
         }

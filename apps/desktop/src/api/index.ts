@@ -2,7 +2,10 @@ import type {
   Account,
   ActiveAccountType,
   Category,
+  Contract,
+  ContractDetail,
   Counterparty,
+  CreateContractInput,
   CreateTransactionInput,
   ImportBatch,
   ImportPreviewResult,
@@ -12,6 +15,7 @@ import type {
   ProjectImportPreview,
   ProjectImportResult,
   Transaction,
+  UpdateContractInput,
   UpdateProjectInput,
   TransactionType
 } from '@fm/shared';
@@ -73,6 +77,13 @@ export const api = {
     remove: (id: string) => del<{ unlinkedTransactions: number }>(`/api/counterparties/${id}`)
   },
 
+  contracts: {
+    list: () => get<Contract[]>('/api/contracts'),
+    get: (id: string) => get<ContractDetail>(`/api/contracts/${id}`),
+    create: (body: CreateContractInput) => post<ContractDetail>('/api/contracts', body),
+    update: (id: string, body: UpdateContractInput) => patch<ContractDetail>(`/api/contracts/${id}`, body),
+    archive: (id: string) => post<Contract>(`/api/contracts/${id}/archive`)
+  },
   projects: {
     list: () => get<Project[]>('/api/projects'),
     get: (id: string) => get<Project>(`/api/projects/${id}`),

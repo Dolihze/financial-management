@@ -1,4 +1,4 @@
-/** 前后端共享的领域类型。金额字段一律为「整数分」。 */
+﻿/** 前后端共享的领域类型。金额字段一律为「整数分」。 */
 
 /** 允许新建/选择的账户类型 */
 export const ACCOUNT_TYPES = ['bank', 'alipay', 'wechat'] as const;
@@ -128,7 +128,9 @@ export interface Counterparty {
 /** 项目：仅通过 Excel 导入维护，项目名称唯一（导入时的匹配键），合同编号可重复。金额字段一律为「整数分」。 */
 export interface Project {
   id: string;
-  /** 合同编号（非唯一，同一合同下可有多个项目；可为空） */
+  /** 所属合同 id；未归入任何合同（未结算）为 null */
+  contractId: string | null;
+  /** 所属合同的编号（冗余文本，随合同同步；未归入合同为空字符串） */
   contractNo: string;
   /** 批次号：Excel 中写作「第15批」，这里存数字 15；未填写为 null */
   batchNo: number | null;
@@ -145,7 +147,10 @@ export interface Project {
   chenPei: number;
   /** 企信利润（分） */
   qxProfit: number;
-  /** 企信是否收到钱 */
+  /**
+   * 项目结算（原「企信是否收到钱」，字段名沿用 qxMoneyReceived）。
+   * 由否切到是时记一笔收入（金额取企信实收）；是切回否则作废该笔流水。
+   */
   qxMoneyReceived: boolean;
   /** 支付下家 */
   paidSubcontractor: boolean;
@@ -161,9 +166,8 @@ export interface Project {
 export const PROJECT_POSTING_KINDS = ['qx_received', 'paid_subcontractor', 'paid_chen_pei'] as const;
 export type ProjectPostingKind = (typeof PROJECT_POSTING_KINDS)[number];
 
-/** 修改项目的入参：金额为整数分。所有字段必填（详情页表单整体保存）。 */
+/** 修改项目的入参：金额为整数分。所有字段必填（详情页表单整体保存）。合同归属不能通过本接口修改（由合同管理维护）。 */
 export interface UpdateProjectInput {
-  contractNo: string;
   batchNo: number | null;
   region: string;
   name: string;
@@ -184,6 +188,44 @@ export interface UpdateProjectInput {
   postingDate?: string;
 }
 
+/**
+ * 合同：独立创建/删除。合同总价不单独录入，等于其下各项目「合同价」之和（整数分求和）。
+ * 「删除」合同 = 归档，并清空其下项目的合同归属（项目回到未结算），不物理删除。
+ */
+export interface Contract {
+  id: string;
+  contractNo: string;
+  /** 合同总价（分）= 其下项目合同价之和 */
+  totalPrice: number;
+  /** 其下项目数 */
+  projectCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** 合同详情：包含其下全部项目（用于合同详情页展示项目名称列表等） */
+export interface ContractDetail extends Contract {
+  projects: Array<Pick<Project, 'id' | 'name' | 'batchNo' | 'region' | 'contractPrice'>>;
+}
+
+/** 合同里的一个项目及其合同价（分） */
+export interface ContractProjectInput {
+  projectId: string;
+  contractPrice: number;
+}
+
+/** 新增合同：从未结算项目里挑选项目，并给每个项目设置合同价；合同总价由此求和得到 */
+export interface CreateContractInput {
+  contractNo: string;
+  projects: ContractProjectInput[];
+}
+
+/** 修改合同：合同编号，以及其下已有项目的合同价（不能在这里增减项目） */
+export interface UpdateContractInput {
+  contractNo: string;
+  projects: ContractProjectInput[];
+}
+
 /** 项目 Excel 导入表头（第 1 行）。项目名称为「合计」的行与重复表头的说明行会被忽略。 */
 export const PROJECT_IMPORT_HEADERS = [
   '合同编号',
@@ -195,10 +237,13 @@ export const PROJECT_IMPORT_HEADERS = [
   '企信支付下家分包费',
   '陈沛',
   '企信利润',
-  '企信是否收到钱',
+  '项目结算',
   '支付下家',
   '支付陈沛'
 ] as const;
+
+/** 旧版 Excel 里「项目结算」这一列叫「企信是否收到钱」：导入时仍然认旧表头，避免用户手里的旧文件无法导入 */
+export const PROJECT_IMPORT_LEGACY_HEADERS: Record<string, string> = { 项目结算: '企信是否收到钱' };
 
 export interface ProjectImportPreview {
   /** 数据行数（不含表头和合计行；空行不计） */

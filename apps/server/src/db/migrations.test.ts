@@ -320,6 +320,75 @@ describe('迁移 v5：支出分类收敛为 7 个内置默认项', () => {
     db.close();
   });
 
+  it('v12：现有项目的合同编号回填为合同记录并归入；空编号保持未结算；已归档项目不参与；总价由项目汇总、不落库', () => {
+    const db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    migrateTo(db, 11);
+    const ins = db.prepare(
+      `INSERT INTO project (id,contract_no,name,contract_price,archived,created_at,updated_at,device_id) VALUES (?,?,?,?,?,?,?,'d')`
+    );
+    ins.run('p1', 'HT-1', '甲', 100, 0, '2026-01-02T00:00:00Z', 't');
+    ins.run('p2', 'HT-1', '乙', 250, 0, '2026-01-01T00:00:00Z', 't');
+    ins.run('p3', 'HT-2', '丙', 40, 0, '2026-01-03T00:00:00Z', 't');
+    ins.run('p4', '', '丁', 9, 0, '2026-01-04T00:00:00Z', 't'); // 空编号：不建合同
+    ins.run('p5', '  ', '戊', 9, 0, '2026-01-05T00:00:00Z', 't'); // 纯空白：同样视为空
+    ins.run('p6', 'HT-OLD', '己', 7, 1, '2026-01-06T00:00:00Z', 't'); // 已归档：不建合同
+
+    migrateTo(db, 12, 11);
+
+    const contracts = db.prepare('SELECT id, contract_no AS no, archived, created_at AS at FROM contract ORDER BY contract_no').all() as Array<{
+      id: string; no: string; archived: number; at: string;
+    }>;
+    expect(contracts.map((c) => c.no)).toEqual(['HT-1', 'HT-2']);
+    expect(contracts.every((c) => c.archived === 0 && c.id.length > 0)).toBe(true);
+    expect(contracts[0]!.at).toBe('2026-01-01T00:00:00Z'); // 取该编号下最早的创建时间
+
+    const owner = Object.fromEntries(
+      (db.prepare('SELECT id, contract_id FROM project').all() as Array<{ id: string; contract_id: string | null }>).map((r) => [
+        r.id, r.contract_id === null ? null : contracts.find((c) => c.id === r.contract_id)!.no
+      ])
+    );
+    expect(owner).toEqual({ p1: 'HT-1', p2: 'HT-1', p3: 'HT-2', p4: null, p5: null, p6: null });
+
+    // 合同总价 = 其下项目合同价之和（整数分），合同表本身没有价格列
+    const cols = (db.pragma('table_info(contract)') as Array<{ name: string }>).map((c) => c.name);
+    expect(cols).not.toContain('total_price');
+    const total = db.prepare('SELECT SUM(contract_price) AS s FROM project WHERE contract_id = ?').get(contracts[0]!.id);
+    expect(total).toEqual({ s: 350 });
+
+    // 合同编号在未归档合同中唯一；project.contract_no 原值保留
+    expect(() => db.prepare("INSERT INTO contract (id,contract_no,archived,created_at,updated_at,device_id) VALUES ('x','HT-1',0,'t','t','d')").run()).toThrow(/UNIQUE/);
+    expect(db.prepare("SELECT contract_no FROM project WHERE id='p1'").get()).toEqual({ contract_no: 'HT-1' });
+    db.close();
+  });
+
+  it('v13：现有未归档项目全部置为已结算；只改标记，不产生任何流水或入账关联；已归档项目不动', () => {
+    const db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    migrateTo(db, 12);
+    const ins = db.prepare(
+      `INSERT INTO project (id,contract_no,name,contract_price,qx_money_received,archived,created_at,updated_at,device_id) VALUES (?,?,?,?,?,?,'t','t','d')`
+    );
+    ins.run('p1', 'HT-1', '甲', 100, 0, 0); // 否 -> 是
+    ins.run('p2', '', '乙', 200, 0, 0); // 无合同的也一样
+    ins.run('p3', 'HT-1', '丙', 300, 1, 0); // 本来就是是，保持
+    ins.run('p4', 'HT-X', '丁', 400, 0, 1); // 已归档：不动
+    const txBefore = (db.prepare('SELECT COUNT(*) AS n FROM tx').get() as { n: number }).n;
+    const priceBefore = db.prepare('SELECT id, contract_price FROM project ORDER BY id').all();
+
+    migrateTo(db, 13, 12);
+
+    const flags = Object.fromEntries(
+      (db.prepare('SELECT id, qx_money_received AS v FROM project').all() as Array<{ id: string; v: number }>).map((r) => [r.id, r.v])
+    );
+    expect(flags).toEqual({ p1: 1, p2: 1, p3: 1, p4: 0 });
+    // 不补记流水：账户余额不会因迁移而变化
+    expect((db.prepare('SELECT COUNT(*) AS n FROM tx').get() as { n: number }).n).toBe(txBefore);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM project_posting').get()).toEqual({ n: 0 });
+    expect(db.prepare('SELECT id, contract_price FROM project ORDER BY id').all()).toEqual(priceBefore);
+    db.close();
+  });
+
   it('runMigrations 可从空库一路迁移到最新版本', () => {
     const db = new Database(':memory:');
     db.pragma('foreign_keys = ON');

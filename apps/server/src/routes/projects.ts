@@ -7,7 +7,6 @@ import { AppError } from '../utils';
 const cents = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 
 const updateSchema = z.object({
-  contractNo: z.string().trim().max(50),
   batchNo: z.number().int().min(0).nullable(),
   region: z.string().trim().max(50),
   name: z.string().trim().min(1).max(100),

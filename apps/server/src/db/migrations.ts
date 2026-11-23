@@ -375,5 +375,47 @@ export const migrations: Migration[] = [
       CREATE UNIQUE INDEX uq_project_posting_active ON project_posting(project_id, kind) WHERE active = 1;
       CREATE INDEX idx_project_posting_tx ON project_posting(tx_id);
     `
+  },
+  {
+    version: 12,
+    name: 'contract',
+    sql: `
+      -- 合同：独立创建/删除（删除=归档，不物理删除）。合同总价不落库，由其下项目的合同价求和得到。
+      CREATE TABLE contract (
+        id          TEXT PRIMARY KEY,
+        contract_no TEXT NOT NULL,
+        archived    INTEGER NOT NULL DEFAULT 0,
+        created_at  TEXT NOT NULL,
+        updated_at  TEXT NOT NULL,
+        device_id   TEXT NOT NULL
+      );
+      CREATE UNIQUE INDEX uq_contract_no ON contract(contract_no) WHERE archived = 0;
+
+      -- 项目归属的合同。project.contract_no 作为冗余文本保留（导入/筛选/审计沿用），由合同服务同步维护。
+      ALTER TABLE project ADD COLUMN contract_id TEXT REFERENCES contract(id);
+      CREATE INDEX idx_project_contract_id ON project(contract_id);
+
+      -- 回填：把现有项目里每个不同的非空合同编号生成一条合同，并把项目归入。
+      -- 用 lower(hex(randomblob(16))) 生成 id（与应用层 id 同为不透明字符串）。
+      INSERT INTO contract (id, contract_no, archived, created_at, updated_at, device_id)
+        SELECT lower(hex(randomblob(16))), contract_no, 0, MIN(created_at), MIN(created_at), MIN(device_id)
+        FROM project
+        WHERE archived = 0 AND trim(contract_no) <> ''
+        GROUP BY contract_no;
+      UPDATE project SET contract_id = (
+        SELECT c.id FROM contract c WHERE c.contract_no = project.contract_no AND c.archived = 0
+      ) WHERE archived = 0 AND trim(contract_no) <> '';
+    `
+  },
+  {
+    version: 13,
+    name: 'project_settled_default',
+    sql: `
+      -- 「企信是否收到钱」更名为「项目结算」（列 qx_money_received 与入账类型 qx_received 保持不变，已入账的流水不受影响）。
+      -- 本迁移把现有未归档项目一律置为「已结算」。
+      -- 注意：这里只改标记，不补记收入流水——批量改标记不应凭空改变账户余额；
+      -- 之后在项目详情里手动把结算从「否」切到「是」时才会生成收入流水（入账）。
+      UPDATE project SET qx_money_received = 1 WHERE archived = 0 AND qx_money_received = 0;
+    `
   }
 ];

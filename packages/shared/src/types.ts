@@ -237,6 +237,41 @@ export interface BatchInput {
 }
 
 /**
+ * 未结算项目（项目管理 → 未结算项目 总表）：与已结算项目（Project）相互独立的一张表。
+ * 金额字段一律为「整数分」；序号是前端展示用的行号，不存储。
+ */
+export interface UnsettledProject {
+  id: string;
+  /** 区域 */
+  region: string;
+  /** 项目名称 */
+  name: string;
+  /** 合同价（分） */
+  contractPrice: number;
+  /** 企信实收（分） */
+  qxReceived: number;
+  /** 企信支付下家分包费（分） */
+  qxSubcontractFee: number;
+  /** 陈沛（分） */
+  chenPei: number;
+  /** 企信利润（分） */
+  qxProfit: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** 新增/修改未结算项目：金额为整数分，均必填 */
+export interface UnsettledProjectInput {
+  region: string;
+  name: string;
+  contractPrice: number;
+  qxReceived: number;
+  qxSubcontractFee: number;
+  chenPei: number;
+  qxProfit: number;
+}
+
+/**
  * 合同：独立创建/删除。合同总价不单独录入，等于其下各项目「合同价」之和（整数分求和）。
  * 每个合同必须属于一个批次。
  * 「删除」合同 = 归档，并清空其下项目的合同归属（项目回到未结算），不物理删除。

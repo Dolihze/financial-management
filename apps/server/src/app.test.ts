@@ -735,6 +735,87 @@ describe('批次管理', () => {
   });
 });
 
+describe('未结算项目总表', () => {
+  const patch = (url: string, body: unknown) => ctx.app.inject({ method: 'PATCH', url, payload: body as object });
+  const get = async (url: string) => (await ctx.app.inject({ url })).json();
+  const body = (over: Record<string, unknown> = {}) => ({
+    region: '  南山区 ',
+    name: '  测试项目A ',
+    contractPrice: 1_000_000,
+    qxReceived: 500_000,
+    qxSubcontractFee: 200_000,
+    chenPei: 50_000,
+    qxProfit: 250_000,
+    ...over
+  });
+  const mk = async (over: Record<string, unknown> = {}) => (await post('/api/unsettled-projects', body(over))).json() as { id: string };
+  const count = (action: string) =>
+    ctx.db.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE entity='unsettled_project' AND action=?").get(action);
+
+  it('新增：文本去空白、金额按整数分原样保存；按录入顺序列出；写审计', async () => {
+    const res = await post('/api/unsettled-projects', body());
+    expect(res.statusCode).toBe(201);
+    expect(res.json()).toMatchObject({
+      region: '南山区',
+      name: '测试项目A',
+      contractPrice: 1_000_000,
+      qxReceived: 500_000,
+      qxSubcontractFee: 200_000,
+      chenPei: 50_000,
+      qxProfit: 250_000
+    });
+    await mk({ name: '项目B' });
+    expect(((await get('/api/unsettled-projects')) as Array<{ name: string }>).map((p) => p.name)).toEqual(['测试项目A', '项目B']);
+    expect(count('create')).toEqual({ n: 2 });
+  });
+
+  it('区域可为空；与已结算项目互相独立（不出现在项目列表）', async () => {
+    expect((await post('/api/unsettled-projects', body({ region: '' }))).statusCode).toBe(201);
+    expect((await get('/api/projects')).length).toBe(0);
+  });
+
+  it('可选区域：未结算项目区域去重去空排序；归档后不再出现', async () => {
+    const a = await mk({ region: '天水' });
+    await mk({ region: '陇南' });
+    await mk({ region: '天水', name: '项目C' });
+    await mk({ region: '', name: '项目D' });
+    expect(await get('/api/unsettled-projects/regions')).toEqual(['天水', '陇南'].sort());
+    await post(`/api/unsettled-projects/${a.id}/archive`, {});
+    expect(await get('/api/unsettled-projects/regions')).toEqual(['天水', '陇南'].sort()); // 另一个「天水」仍在
+  });
+
+  it('异常输入一律 400 且不落库：名称为空、金额为小数/负数/字符串/缺失', async () => {
+    expect((await post('/api/unsettled-projects', body({ name: '   ' }))).statusCode).toBe(400);
+    expect((await post('/api/unsettled-projects', body({ name: undefined }))).statusCode).toBe(400);
+    for (const field of ['contractPrice', 'qxReceived', 'qxSubcontractFee', 'chenPei', 'qxProfit']) {
+      for (const v of [1.5, -1, '100', null, undefined]) {
+        expect((await post('/api/unsettled-projects', body({ [field]: v }))).statusCode, `${field}=${String(v)}`).toBe(400);
+      }
+    }
+    expect((await get('/api/unsettled-projects')).length).toBe(0);
+  });
+
+  it('编辑：整体保存并写 before/after 审计；不存在 404；非法值 400', async () => {
+    const p = await mk();
+    const ok = await patch(`/api/unsettled-projects/${p.id}`, body({ name: '改名', chenPei: 60_000 }));
+    expect(ok.statusCode).toBe(200);
+    expect(ok.json()).toMatchObject({ name: '改名', chenPei: 60_000 });
+    expect(count('update')).toEqual({ n: 1 });
+    expect((await patch(`/api/unsettled-projects/${p.id}`, body({ contractPrice: -5 }))).statusCode).toBe(400);
+    expect((await patch('/api/unsettled-projects/nope', body())).statusCode).toBe(404);
+  });
+
+  it('删除 = 归档：物理上仍在、列表与详情不可见、重复删除 404、写审计', async () => {
+    const p = await mk();
+    expect((await post(`/api/unsettled-projects/${p.id}/archive`, {})).statusCode).toBe(200);
+    expect(ctx.db.prepare('SELECT archived FROM unsettled_project WHERE id = ?').get(p.id)).toEqual({ archived: 1 });
+    expect((await get('/api/unsettled-projects')).length).toBe(0);
+    expect((await ctx.app.inject({ url: `/api/unsettled-projects/${p.id}` })).statusCode).toBe(404);
+    expect((await post(`/api/unsettled-projects/${p.id}/archive`, {})).statusCode).toBe(404);
+    expect(count('archive')).toEqual({ n: 1 });
+  });
+});
+
 describe('合同管理', () => {
   const patch = (url: string, body: unknown) => ctx.app.inject({ method: 'PATCH', url, payload: body as object });
   const get = async (url: string) => (await ctx.app.inject({ url })).json();

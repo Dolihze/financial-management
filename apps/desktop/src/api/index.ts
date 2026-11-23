@@ -17,6 +17,8 @@ import type {
   ProjectImportPreview,
   ProjectImportResult,
   Transaction,
+  UnsettledProject,
+  UnsettledProjectInput,
   UpdateContractInput,
   UpdateProjectInput,
   TransactionType
@@ -108,6 +110,17 @@ export const api = {
     importTemplateUrl: () => `${getBaseUrl()}/api/projects/import/template`,
     importPreview: (file: File) => upload<ProjectImportPreview>('/api/projects/import/preview', file),
     importCommit: (file: File) => upload<ProjectImportResult>('/api/projects/import/commit', file)
+  },
+
+  unsettledProjects: {
+    list: () => get<UnsettledProject[]>('/api/unsettled-projects'),
+    /** 已有区域（已结算 + 未结算项目的并集，去重），供下拉选择 */
+    regions: () => get<string[]>('/api/unsettled-projects/regions'),
+    get: (id: string) => get<UnsettledProject>(`/api/unsettled-projects/${id}`),
+    create: (body: UnsettledProjectInput) => post<UnsettledProject>('/api/unsettled-projects', body),
+    update: (id: string, body: UnsettledProjectInput) => patch<UnsettledProject>(`/api/unsettled-projects/${id}`, body),
+    /** 「删除」：后端只归档，不物理删除 */
+    remove: (id: string) => post<UnsettledProject>(`/api/unsettled-projects/${id}/archive`)
   },
 
   transactions: {

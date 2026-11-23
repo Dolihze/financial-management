@@ -13,6 +13,7 @@ import { registerImportRoutes } from './routes/imports';
 import { registerOverviewRoutes } from './routes/overview';
 import { registerProjectRoutes } from './routes/projects';
 import { registerTransactionRoutes } from './routes/transactions';
+import { registerUnsettledProjectRoutes } from './routes/unsettledProjects';
 import { AccountService } from './services/accountService';
 import { BatchService } from './services/batchService';
 import { CategoryService } from './services/categoryService';
@@ -22,6 +23,7 @@ import { ImportService } from './services/importService';
 import { OverviewService } from './services/overviewService';
 import { ProjectService } from './services/projectService';
 import { TransactionService } from './services/transactionService';
+import { UnsettledProjectService } from './services/unsettledProjectService';
 import { AppError } from './utils';
 
 export interface Services {
@@ -34,6 +36,7 @@ export interface Services {
   imports: ImportService;
   overview: OverviewService;
   projects: ProjectService;
+  unsettledProjects: UnsettledProjectService;
 }
 
 export interface BuiltApp {
@@ -53,7 +56,8 @@ export async function buildApp(config: AppConfig, opts: { logger?: boolean } = {
     transactions: new TransactionService(db, config.deviceId),
     imports: new ImportService(db, config.deviceId),
     overview: new OverviewService(db, config.deviceId),
-    projects: new ProjectService(db, config.deviceId)
+    projects: new ProjectService(db, config.deviceId),
+    unsettledProjects: new UnsettledProjectService(db, config.deviceId)
   };
   services.categories.seedDefaults();
 
@@ -90,6 +94,7 @@ export async function buildApp(config: AppConfig, opts: { logger?: boolean } = {
   registerOverviewRoutes(app, services);
   registerProjectRoutes(app, services);
   registerContractRoutes(app, services);
+  registerUnsettledProjectRoutes(app, services);
 
   app.addHook('onClose', async () => {
     db.close();

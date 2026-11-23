@@ -490,5 +490,28 @@ export const migrations: Migration[] = [
 
       DROP TABLE _contract_batch;
     `
+  },
+  {
+    version: 16,
+    name: 'unsettled_project',
+    sql: `
+      -- 未结算项目总表（项目管理 -> 未结算项目）：与已结算项目（project 表）相互独立。
+      -- 金额均为整数分；删除=归档，不物理删除。
+      CREATE TABLE unsettled_project (
+        id                 TEXT PRIMARY KEY,
+        region             TEXT NOT NULL DEFAULT '',
+        name               TEXT NOT NULL,
+        contract_price     INTEGER NOT NULL DEFAULT 0,
+        qx_received        INTEGER NOT NULL DEFAULT 0,
+        qx_subcontract_fee INTEGER NOT NULL DEFAULT 0,
+        chen_pei           INTEGER NOT NULL DEFAULT 0,
+        qx_profit          INTEGER NOT NULL DEFAULT 0,
+        archived           INTEGER NOT NULL DEFAULT 0,
+        created_at         TEXT NOT NULL,
+        updated_at         TEXT NOT NULL,
+        device_id          TEXT NOT NULL
+      );
+      CREATE INDEX idx_unsettled_project_archived ON unsettled_project(archived);
+    `
   }
 ];

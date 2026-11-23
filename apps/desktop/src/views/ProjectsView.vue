@@ -56,9 +56,9 @@ watch(contractId, () => {
 });
 
 /** 下拉筛选：每列已选值（空数组 = 不筛选）。选项来自当前数据，去重后排序 */
-type FilterKey = 'region' | 'qxMoneyReceived' | 'paidSubcontractor' | 'paidChenPei';
+type FilterKey = 'region' | 'paidSubcontractor' | 'paidChenPei';
 const selected = reactive<Record<FilterKey, unknown[]>>({
-  region: [], qxMoneyReceived: [], paidSubcontractor: [], paidChenPei: []
+  region: [], paidSubcontractor: [], paidChenPei: []
 });
 
 const EMPTY = '__empty__'; // 空值（未填写）的筛选项
@@ -84,7 +84,7 @@ const filtered = computed(() =>
     (Object.keys(selected) as FilterKey[]).every((k) => {
       const sel = selected[k];
       if (!sel.length) return true;
-      return sel.includes(k === 'qxMoneyReceived' || k === 'paidSubcontractor' || k === 'paidChenPei' ? p[k] : textOf(p[k]));
+      return sel.includes(k === 'paidSubcontractor' || k === 'paidChenPei' ? p[k] : textOf(p[k]));
     })
   )
 );
@@ -253,12 +253,7 @@ onMounted(load);
       <el-table-column label="企信利润" width="110">
         <template #default="{ row }">{{ formatMoney(row.qxProfit) }}</template>
       </el-table-column>
-      <el-table-column column-key="qxMoneyReceived" label="项目结算" width="110" :filters="yesNoFilters" :filter-method="() => true">
-        <template #default="{ row }">
-          <el-icon v-if="row.qxMoneyReceived" class="flag-yes" title="是"><Select /></el-icon>
-          <el-icon v-else class="flag-no" title="否"><CloseBold /></el-icon>
-        </template>
-      </el-table-column>
+      <!-- 「项目结算」列不展示：合同下的项目都是已结算（是） -->
       <el-table-column column-key="paidSubcontractor" label="支付下家" width="95" :filters="yesNoFilters" :filter-method="() => true">
         <template #default="{ row }">
           <el-icon v-if="row.paidSubcontractor" class="flag-yes" title="是"><Select /></el-icon>
@@ -291,7 +286,7 @@ onMounted(load);
 
     <ProjectEditDialog v-model="edit.visible" :project-id="edit.projectId" @saved="load" />
 
-    <el-dialog v-model="add.visible" title="添加项目" width="760px" append-to-body draggable align-center :close-on-click-modal="false">
+    <el-dialog v-model="add.visible" title="添加项目" width="760px" append-to-body draggable destroy-on-close align-center :close-on-click-modal="false">
       <el-input
         v-model="add.keyword"
         clearable

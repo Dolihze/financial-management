@@ -100,7 +100,7 @@ async function remove(item: ManagedItem) {
 </script>
 
 <template>
-  <el-dialog :model-value="modelValue" :title="title" width="420px" append-to-body draggable align-center @update:model-value="emit('update:modelValue', $event)">
+  <el-dialog :model-value="modelValue" :title="title" width="420px" append-to-body draggable destroy-on-close align-center @update:model-value="emit('update:modelValue', $event)">
     <div class="add-row">
       <el-input v-model="newName" :placeholder="`新${noun}名称`" maxlength="100" @keyup.enter="add" />
       <el-button type="primary" :disabled="!newName.trim()" @click="add">新增</el-button>

@@ -403,6 +403,7 @@ function calculate() {
     title="编辑项目"
     width="820px"
     draggable
+    destroy-on-close
     align-center
     :close-on-click-modal="false"
     :before-close="beforeClose"
@@ -483,7 +484,7 @@ function calculate() {
       <el-button type="primary" :loading="saving" :disabled="!project || !dirty" @click="save">确定</el-button>
     </template>
 
-    <el-dialog v-model="formulaVisible" title="公式维护" width="520px" append-to-body draggable align-center>
+    <el-dialog v-model="formulaVisible" title="公式维护" width="520px" append-to-body draggable destroy-on-close align-center>
       <el-form label-width="150px" @submit.prevent>
         <el-form-item label="企信实收">
           <span>= 合同价 × {{ qxReceivedRateText }}</span>

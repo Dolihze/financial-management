@@ -156,6 +156,8 @@ export interface Project {
   paidSubcontractor: boolean;
   /** 支付陈沛 */
   paidChenPei: boolean;
+  /** 备注（Excel「备注」列；可为空字符串） */
+  note: string;
   /** 当前已入账（有对应有效流水）的字段；导入不会覆盖这些字段及其金额 */
   postedKinds: ProjectPostingKind[];
   createdAt: string;
@@ -176,9 +178,12 @@ export interface UpdateProjectInput {
   qxSubcontractFee: number;
   chenPei: number;
   qxProfit: number;
-  qxMoneyReceived: boolean;
+  /** 项目结算：省略时保持原值，且不触发入账/回退（详情页不再提供此项，结算状态不会因保存而变化） */
+  qxMoneyReceived?: boolean;
   paidSubcontractor: boolean;
   paidChenPei: boolean;
+  /** 备注；省略时保持原值 */
+  note?: string;
   /**
    * 本次保存中从「否」切到「是」的字段需要入账：指定入账账户（收入、支出都记到这个账户）。
    * 没有字段从否切到是时可省略。
@@ -239,8 +244,15 @@ export const PROJECT_IMPORT_HEADERS = [
   '企信利润',
   '项目结算',
   '支付下家',
-  '支付陈沛'
+  '支付陈沛',
+  '备注'
 ] as const;
+
+/**
+ * 导入时表头里必须有的列；其余列都是可选的：缺列时，新增项目用默认值（文字为空、金额为 0、批次为空、是否类为否），
+ * 更新已有项目时保持库里原值，不会被清零。
+ */
+export const PROJECT_IMPORT_REQUIRED_HEADERS = ['项目名称', '合同价'] as const;
 
 /** 旧版 Excel 里「项目结算」这一列叫「企信是否收到钱」：导入时仍然认旧表头，避免用户手里的旧文件无法导入 */
 export const PROJECT_IMPORT_LEGACY_HEADERS: Record<string, string> = { 项目结算: '企信是否收到钱' };

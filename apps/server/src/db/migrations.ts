@@ -417,5 +417,13 @@ export const migrations: Migration[] = [
       -- 之后在项目详情里手动把结算从「否」切到「是」时才会生成收入流水（入账）。
       UPDATE project SET qx_money_received = 1 WHERE archived = 0 AND qx_money_received = 0;
     `
+  },
+  {
+    version: 14,
+    name: 'project_note',
+    sql: `
+      -- 项目备注：Excel 导入「备注」列、项目详情页可编辑。默认空字符串，已有项目不受影响。
+      ALTER TABLE project ADD COLUMN note TEXT NOT NULL DEFAULT '';
+    `
   }
 ];

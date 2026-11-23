@@ -389,6 +389,18 @@ describe('迁移 v5：支出分类收敛为 7 个内置默认项', () => {
     db.close();
   });
 
+  it('v14：项目新增备注列，已有项目默认空字符串，数据不变', () => {
+    const db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    migrateTo(db, 13);
+    db.prepare(`INSERT INTO project (id,contract_no,name,contract_price,archived,created_at,updated_at,device_id) VALUES ('p1','HT-1','甲',123,0,'t','t','d')`).run();
+    migrateTo(db, 14, 13);
+    const cols = (db.pragma('table_info(project)') as Array<{ name: string; notnull: number; dflt_value: string | null }>).find((c) => c.name === 'note');
+    expect(cols).toMatchObject({ notnull: 1, dflt_value: "''" });
+    expect(db.prepare("SELECT name, contract_price, note FROM project WHERE id='p1'").get()).toEqual({ name: '甲', contract_price: 123, note: '' });
+    db.close();
+  });
+
   it('runMigrations 可从空库一路迁移到最新版本', () => {
     const db = new Database(':memory:');
     db.pragma('foreign_keys = ON');

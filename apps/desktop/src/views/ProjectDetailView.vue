@@ -19,8 +19,12 @@ const saving = ref(false);
 const project = ref<Project | null>(null);
 const formRef = ref<FormInstance>();
 
-/** 三个「是/否」字段：对应入账方向、金额列（与后端 POSTING_RULES 一致） */
+/**
+ * 详情页可切换的「是/否」字段：对应入账方向、金额列（与后端 POSTING_RULES 一致）。
+ * 「项目结算」（qxMoneyReceived，企信实收入账）不再在详情页提供，但它已入账时对应金额仍需锁定，所以仍保留在 FLAGS 里供 isPosted 使用。
+ */
 type FlagKey = 'qxMoneyReceived' | 'paidSubcontractor' | 'paidChenPei';
+type ToggleKey = Exclude<FlagKey, 'qxMoneyReceived'>;
 type AmountKey = 'qxReceived' | 'qxSubcontractFee' | 'chenPei';
 const FLAGS: Record<FlagKey, { label: string; kind: ProjectPostingKind; direction: '收入' | '支出'; amount: AmountKey }> = {
   qxMoneyReceived: { label: '项目结算', kind: 'qx_received', direction: '收入', amount: 'qxReceived' },
@@ -46,9 +50,9 @@ interface FormState {
   qxSubcontractFee: string;
   chenPei: string;
   qxProfit: string;
-  qxMoneyReceived: boolean;
   paidSubcontractor: boolean;
   paidChenPei: boolean;
+  note: string;
 }
 const form = reactive<FormState>(emptyForm());
 
@@ -56,7 +60,7 @@ function emptyForm(): FormState {
   return {
     batchNo: null, region: '', name: '',
     contractPrice: '0.00', qxReceived: '0.00', qxSubcontractFee: '0.00', chenPei: '0.00', qxProfit: '0.00',
-    qxMoneyReceived: false, paidSubcontractor: false, paidChenPei: false
+    paidSubcontractor: false, paidChenPei: false, note: ''
   };
 }
 
@@ -65,7 +69,7 @@ function fillForm(p: Project) {
     batchNo: p.batchNo, region: p.region, name: p.name,
     contractPrice: fromCents(p.contractPrice), qxReceived: fromCents(p.qxReceived),
     qxSubcontractFee: fromCents(p.qxSubcontractFee), chenPei: fromCents(p.chenPei), qxProfit: fromCents(p.qxProfit),
-    qxMoneyReceived: p.qxMoneyReceived, paidSubcontractor: p.paidSubcontractor, paidChenPei: p.paidChenPei
+    paidSubcontractor: p.paidSubcontractor, paidChenPei: p.paidChenPei, note: p.note
   });
 }
 
@@ -98,7 +102,8 @@ const dirty = computed(() => {
     form.batchNo !== p.batchNo || form.region !== p.region || form.name !== p.name ||
     cents(form.contractPrice) !== p.contractPrice || cents(form.qxReceived) !== p.qxReceived ||
     cents(form.qxSubcontractFee) !== p.qxSubcontractFee || cents(form.chenPei) !== p.chenPei || cents(form.qxProfit) !== p.qxProfit ||
-    form.qxMoneyReceived !== p.qxMoneyReceived || form.paidSubcontractor !== p.paidSubcontractor || form.paidChenPei !== p.paidChenPei
+    form.paidSubcontractor !== p.paidSubcontractor || form.paidChenPei !== p.paidChenPei ||
+    form.note.trim() !== p.note
   );
 });
 
@@ -109,7 +114,7 @@ const dirty = computed(() => {
  *   若只是历史标记（无流水，如 Excel 导入的「是」），提示只修改标记、不影响账务。
  * 这里只确认并改表单，真正的入账/回退在点「保存」时由后端在同一事务里完成。
  */
-async function confirmFlag(flag: FlagKey, next: boolean): Promise<boolean> {
+async function confirmFlag(flag: ToggleKey, next: boolean): Promise<boolean> {
   const meta = FLAGS[flag];
   const amountText = formatMoney(toCentsSafe(form[meta.amount]));
   try {
@@ -195,9 +200,22 @@ function toCentsSafe(s: string): number {
 /** 本次保存中，哪些字段是从否切到是（需要入账） */
 const newlyPosted = computed(() => {
   const p = project.value;
-  if (!p) return [] as FlagKey[];
-  return (Object.keys(FLAGS) as FlagKey[]).filter((k) => form[k] && !p[k]);
+  if (!p) return [] as ToggleKey[];
+  return (['paidSubcontractor', 'paidChenPei'] as ToggleKey[]).filter((k) => form[k] && !p[k]);
 });
+/**
+ * 「支付下家 / 支付陈沛」两项只对已结算的项目有意义：未结算项目（未归入合同、且项目结算为否）隐藏。
+ * 例外：只要任意一项已勾选或已入账，就照常显示，避免把已有的数据藏起来。
+ * 隐藏只影响界面；表单状态与提交值保持不变，所以保存不会改变这两项（也不会误回退已入账的流水）。
+ */
+const showPaidFlags = computed(() => {
+  const p = project.value;
+  if (!p) return false;
+  const unsettled = !p.contractId && !p.qxMoneyReceived;
+  if (!unsettled) return true;
+  return p.paidSubcontractor || p.paidChenPei || isPosted('paidSubcontractor') || isPosted('paidChenPei');
+});
+
 async function load() {
   loading.value = true;
   try {
@@ -230,9 +248,9 @@ async function save() {
       qxSubcontractFee: toCents(form.qxSubcontractFee),
       chenPei: toCents(form.chenPei),
       qxProfit: toCents(form.qxProfit),
-      qxMoneyReceived: form.qxMoneyReceived,
       paidSubcontractor: form.paidSubcontractor,
       paidChenPei: form.paidChenPei,
+      note: form.note.trim(),
       // 只有本次有字段从否切到是（需要入账）时才带账户
       ...(newlyPosted.value.length > 0 ? { postingAccountId: accountId.value, postingDate: postingDate.value } : {})
     });
@@ -394,7 +412,7 @@ onMounted(load);
         <el-form-item label="企信实收" prop="qxReceived">
           <el-input v-model="form.qxReceived" class="money-input" :disabled="isPosted('qxMoneyReceived')"><template #prepend>¥</template></el-input>
           <el-text v-if="isPosted('qxMoneyReceived')" type="warning" size="small">
-            已入账，如需修改金额请先将「项目结算」切换为「否」回退入账
+            该金额已入账（有对应的收入流水），不能在这里修改
           </el-text>
         </el-form-item>
         <el-form-item label="企信支付下家分包费" prop="qxSubcontractFee">
@@ -412,14 +430,14 @@ onMounted(load);
         <el-form-item label="企信利润" prop="qxProfit">
           <el-input v-model="form.qxProfit" class="money-input"><template #prepend>¥</template></el-input>
         </el-form-item>
-        <el-form-item label="项目结算">
-          <YesNoRadio v-model="form.qxMoneyReceived" :confirm="(n) => confirmFlag('qxMoneyReceived', n)" />
-        </el-form-item>
-        <el-form-item label="支付下家">
+        <el-form-item v-if="showPaidFlags" label="支付下家">
           <YesNoRadio v-model="form.paidSubcontractor" :confirm="(n) => confirmFlag('paidSubcontractor', n)" />
         </el-form-item>
-        <el-form-item label="支付陈沛">
+        <el-form-item v-if="showPaidFlags" label="支付陈沛">
           <YesNoRadio v-model="form.paidChenPei" :confirm="(n) => confirmFlag('paidChenPei', n)" />
+        </el-form-item>
+        <el-form-item label="备注" prop="note">
+          <el-input v-model="form.note" type="textarea" :rows="3" maxlength="500" show-word-limit />
         </el-form-item>
       </el-form>
     </el-card>

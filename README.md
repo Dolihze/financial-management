@@ -112,10 +112,10 @@ npm run package
 | POST | `/api/imports/preview` / `commit` | 预览 / 确认导入（multipart `file`） |
 | POST | `/api/imports/:id/revert` | 撤销整批导入 |
 | GET | `/api/projects` / `/api/projects/:id` | 项目列表 / 详情（项目只能通过 Excel 导入维护，无手工新增接口） |
-| PATCH | `/api/projects/:id` | 修改项目（详情页整体保存；名称不能与其他项目重名，重名返回 409）。同一事务内处理入账：「项目结算」（原「企信是否收到钱」）否→是记**收入**（金额取企信实收），「支付下家」「支付陈沛」否→是记**支出**（金额取分包费/陈沛），需传 `postingAccountId` 和 `postingDate`（入账日期 YYYY-MM-DD，省略为服务器当天，非法日期 400）；是→否则作废对应流水（不物理删除）。已入账字段的金额不可直接改（409） |
+| PATCH | `/api/projects/:id` | 修改项目（详情页整体保存；名称不能与其他项目重名，重名返回 409）。同一事务内处理入账：「项目结算」（原「企信是否收到钱」，详情页已不再提供，接口里可省略，省略 = 保持原值、不入账不回退）否→是记**收入**（金额取企信实收），「支付下家」「支付陈沛」否→是记**支出**（金额取分包费/陈沛），需传 `postingAccountId` 和 `postingDate`（入账日期 YYYY-MM-DD，省略为服务器当天，非法日期 400）；是→否则作废对应流水（不物理删除）。已入账字段的金额不可直接改（409） |
 | POST | `/api/projects/:id/archive` | 「删除」项目：不物理删除，仅归档；已入账的项目不能删除（409），需先回退 |
 | GET | `/api/projects/import/template` | 下载项目导入模板 |
-| POST | `/api/projects/import/preview` / `commit` | 项目导入预览 / 确认（multipart `file`）；第 1 行表头，项目名称为「合计」的行与重复表头的说明行忽略，其余为数据；批次「第15批」记为批次号 15；以项目名称为唯一键：已存在则更新，否则新增（合同编号可重复） |
+| POST | `/api/projects/import/preview` / `commit` | 项目导入预览 / 确认（multipart `file`）；第 1 行表头，项目名称为「合计」的行与重复表头的说明行忽略，其余为数据；批次「第15批」记为批次号 15；以项目名称为唯一键：已存在则更新，否则新增（合同编号可重复）；**只有「项目名称」「合同价」两列必填**，其余列均可缺失：新增时取默认值（文字空、金额 0、批次空、是否类为否），更新已有项目时缺的列保持库里原值；「备注」列写入项目备注；缺必填表头返回 422（IMPORT_HEADER_MISSING） |
 | GET | `/api/contracts` / `/api/contracts/:id` | 合同列表（含合同总价=其下项目合同价之和、项目数）/ 详情（含其下全部项目） |
  | POST | `/api/contracts` | 新增合同：`{contractNo, projects:[{projectId, contractPrice}]}`，只能挑「项目结算=否」且未归入合同的项目（否则 409）；合同总价由项目合同价求和得到，不改变项目结算状态；合同编号未归档内唯一（409） |
  | PATCH | `/api/contracts/:id` | 修改合同编号及其下已有项目的合同价（编号同步到项目；不能在此增减项目） |

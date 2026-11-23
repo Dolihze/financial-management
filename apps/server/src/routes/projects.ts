@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify';
+﻿import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Services } from '../app';
 import { AppError } from '../utils';
@@ -15,9 +15,12 @@ const updateSchema = z.object({
   qxSubcontractFee: cents,
   chenPei: cents,
   qxProfit: cents,
-  qxMoneyReceived: z.boolean(),
+  /** 项目结算：可省略，省略时保持原值（不入账/不回退） */
+  qxMoneyReceived: z.boolean().optional(),
   paidSubcontractor: z.boolean(),
   paidChenPei: z.boolean(),
+  /** 备注：可省略，省略时保持库里原值 */
+  note: z.string().trim().max(500).optional(),
   /** 本次保存有字段从否切到是（入账）时必填，在服务层校验 */
   postingAccountId: z.string().min(1).optional(),
   /** 入账日期，YYYY-MM-DD，且必须是真实存在的日期 */

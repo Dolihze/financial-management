@@ -2,6 +2,7 @@
 import {
   PROJECT_IMPORT_HEADERS,
   PROJECT_IMPORT_LEGACY_HEADERS,
+  PROJECT_IMPORT_REQUIRED_HEADERS,
   toCents,
   type ImportRowError,
   type Project,
@@ -46,6 +47,7 @@ interface ProjectRow {
   qx_money_received: number;
   paid_subcontractor: number;
   paid_chen_pei: number;
+  note: string;
   created_at: string;
   updated_at: string;
 }
@@ -65,26 +67,34 @@ const toProject = (r: ProjectRow, postedKinds: ProjectPostingKind[] = []): Proje
   qxMoneyReceived: r.qx_money_received === 1,
   paidSubcontractor: r.paid_subcontractor === 1,
   paidChenPei: r.paid_chen_pei === 1,
+  note: r.note,
   postedKinds,
   createdAt: r.created_at,
   updatedAt: r.updated_at
 });
 
-/** 一行已校验的导入数据 */
+/**
+ * 一行已校验的导入数据。
+ * 除 name / contractPrice（必填列）外，其余字段为 null 表示「Excel 里没有这一列」：
+ * 新增项目时取默认值，更新已有项目时保留库里的原值（不覆盖）。
+ * 注意区分「没有这一列」(null) 和「有这一列但单元格为空」(空字符串 / 0 / false)，后者是明确的「置空」。
+ */
 export interface ParsedProjectRow {
   row: number;
-  contractNo: string;
-  batchNo: number | null;
-  region: string;
   name: string;
   contractPrice: number;
-  qxReceived: number;
-  qxSubcontractFee: number;
-  chenPei: number;
-  qxProfit: number;
-  qxMoneyReceived: boolean;
-  paidSubcontractor: boolean;
-  paidChenPei: boolean;
+  contractNo: string | null;
+  /** batchNo 的 undefined 表示没有这一列；null 表示有这一列但为空（清空批次号） */
+  batchNo: number | null | undefined;
+  region: string | null;
+  qxReceived: number | null;
+  qxSubcontractFee: number | null;
+  chenPei: number | null;
+  qxProfit: number | null;
+  qxMoneyReceived: boolean | null;
+  paidSubcontractor: boolean | null;
+  paidChenPei: boolean | null;
+  note: string | null;
 }
 
 interface ParseOutcome {
@@ -195,7 +205,8 @@ export class ProjectService {
     for (const kind of POSTING_KINDS) {
       const rule = POSTING_RULES[kind];
       const wasYes = current[rule.flag];
-      const isYes = input[rule.flag];
+      // 该字段在入参里省略时，视为保持当前值：既不入账也不回退（例如详情页不再提供「项目结算」）
+      const isYes = input[rule.flag] ?? wasYes;
       const posted = current.postedKinds.includes(kind);
       if (!wasYes && isYes) toPost.push(kind);
       else if (wasYes && !isYes && posted) toRevert.push(kind);
@@ -220,13 +231,13 @@ export class ProjectService {
       this.db
         .prepare(
           `UPDATE project SET batch_no=?, region=?, name=?, contract_price=?, qx_received=?, qx_subcontract_fee=?,
-                  chen_pei=?, qx_profit=?, qx_money_received=?, paid_subcontractor=?, paid_chen_pei=?, updated_at=? WHERE id=?`
+                  chen_pei=?, qx_profit=?, qx_money_received=?, paid_subcontractor=?, paid_chen_pei=?, note=?, updated_at=? WHERE id=?`
         )
         .run(
           input.batchNo, input.region.trim(), name,
           input.contractPrice, input.qxReceived, input.qxSubcontractFee, input.chenPei, input.qxProfit,
-          input.qxMoneyReceived ? 1 : 0, input.paidSubcontractor ? 1 : 0, input.paidChenPei ? 1 : 0,
-          nowIso(), id
+          (input.qxMoneyReceived ?? current.qxMoneyReceived) ? 1 : 0, input.paidSubcontractor ? 1 : 0, input.paidChenPei ? 1 : 0,
+          input.note === undefined ? current.note : input.note.trim(), nowIso(), id
         );
 
       const now = nowIso();
@@ -299,9 +310,9 @@ export class ProjectService {
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet('项目导入');
     ws.addRow([...PROJECT_IMPORT_HEADERS]);
-    ws.addRow(['', '', '', '合计', 1500000, 1000000, 600000, 100000, 300000, '', '', '']);
-    ws.addRow(['HT-2026-001', '第1批', '华东', '示例项目A', 1000000, 800000, 400000, 50000, 200000, '是', '是', '否']);
-    ws.addRow(['HT-2026-002', '第2批', '华南', '示例项目B', 500000, 200000, 200000, 50000, 100000, '否', '否', '否']);
+    ws.addRow(['', '', '', '合计', 1500000, 1000000, 600000, 100000, 300000, '', '', '', '']);
+    ws.addRow(['HT-2026-001', '第1批', '华东', '示例项目A', 1000000, 800000, 400000, 50000, 200000, '是', '是', '否', '']);
+    ws.addRow(['HT-2026-002', '第2批', '华南', '示例项目B', 500000, 200000, 200000, 50000, 100000, '否', '否', '否', '示例备注']);
     ws.getRow(1).font = { bold: true };
     ws.columns.forEach((c) => (c.width = 18));
     return Buffer.from(await wb.xlsx.writeBuffer());
@@ -328,9 +339,13 @@ export class ProjectService {
     for (const [now, legacy] of Object.entries(PROJECT_IMPORT_LEGACY_HEADERS)) {
       if (!colOf.has(now) && colOf.has(legacy)) colOf.set(now, colOf.get(legacy)!);
     }
-    const missing = PROJECT_IMPORT_HEADERS.filter((h) => !colOf.has(h));
-    if (missing.length > 0) throw new AppError(`Excel 第一行缺少表头: ${missing.join('、')}`, 422, 'IMPORT_HEADER_MISSING');
-    const cell = (row: ExcelJS.Row, h: (typeof PROJECT_IMPORT_HEADERS)[number]) => row.getCell(colOf.get(h)!).value;
+    // 只有「项目名称」「合同价」必须有；其余列都可以整列缺失
+    const missing = PROJECT_IMPORT_REQUIRED_HEADERS.filter((h) => !colOf.has(h));
+    if (missing.length > 0) throw new AppError(`Excel 第一行缺少必填表头: ${missing.join('、')}`, 422, 'IMPORT_HEADER_MISSING');
+    type Header = (typeof PROJECT_IMPORT_HEADERS)[number];
+    const has = (h: Header) => colOf.has(h);
+    const cell = (row: ExcelJS.Row, h: Header) => (has(h) ? row.getCell(colOf.get(h)!).value : null);
+    const knownCols = PROJECT_IMPORT_HEADERS.filter((h) => has(h));
 
     const rows: ParsedProjectRow[] = [];
     const errors: ImportRowError[] = [];
@@ -339,45 +354,50 @@ export class ProjectService {
 
     ws.eachRow((excelRow, rowNumber) => {
       if (rowNumber <= 1) return; // 第 1 行表头
-      if (PROJECT_IMPORT_HEADERS.every((h) => cellText(cell(excelRow, h)) === '')) return; // 空行
+      if (knownCols.every((h) => cellText(cell(excelRow, h)) === '')) return; // 空行（只看表里存在的列）
       // 非数据行：合计行（项目名称为「合计」），以及重复表头的说明行（项目名称与表头同名）。
       // 不按固定行号跳过，这样「第 2 行合计」和「第 2 行说明 + 第 3 行合计」两种 Excel 结构都能导入。
       const rowName = cellText(cell(excelRow, '项目名称')).replace(/\s+/g, '');
       if (rowName === '合计' || rowName === '项目名称') return;
       total += 1;
       try {
-        const contractNo = cellText(cell(excelRow, '合同编号'));
-        if (contractNo.length > 50) throw new Error('合同编号不能超过 50 个字符'); // 合同编号可为空、可重复
         const name = cellText(cell(excelRow, '项目名称'));
         if (!name) throw new Error('项目名称不能为空');
         if (name.length > 100) throw new Error('项目名称不能超过 100 个字符');
         const dupRow = seen.get(name);
         if (dupRow !== undefined) throw new Error(`项目名称「${name}」与第 ${dupRow} 行重复`);
-        const batchNo = parseBatchNo(cell(excelRow, '批次'));
-        const region = cellText(cell(excelRow, '区域'));
-        if (region.length > 50) throw new Error('区域不能超过 50 个字符');
+
+        // 没有这一列 -> null / undefined（表示「不涉及」）；有这一列 -> 按单元格内容解析（空单元格也是明确的值）
+        const text = (h: Header, max: number, label: string): string | null => {
+          if (!has(h)) return null;
+          const v = cellText(cell(excelRow, h));
+          if (v.length > max) throw new Error(`${label}不能超过 ${max} 个字符`);
+          return v;
+        };
+        const money = (h: Header): number | null => (has(h) ? parseMoney(cell(excelRow, h), h) : null);
+        const yesNo = (h: Header): boolean | null => (has(h) ? parseYesNo(cell(excelRow, h)) : null);
 
         rows.push({
           row: rowNumber,
-          contractNo,
-          batchNo,
-          region,
           name,
           contractPrice: parseMoney(cell(excelRow, '合同价'), '合同价'),
-          qxReceived: parseMoney(cell(excelRow, '企信实收'), '企信实收'),
-          qxSubcontractFee: parseMoney(cell(excelRow, '企信支付下家分包费'), '企信支付下家分包费'),
-          chenPei: parseMoney(cell(excelRow, '陈沛'), '陈沛'),
-          qxProfit: parseMoney(cell(excelRow, '企信利润'), '企信利润'),
-          qxMoneyReceived: parseYesNo(cell(excelRow, '项目结算')),
-          paidSubcontractor: parseYesNo(cell(excelRow, '支付下家')),
-          paidChenPei: parseYesNo(cell(excelRow, '支付陈沛'))
+          contractNo: text('合同编号', 50, '合同编号'),
+          batchNo: has('批次') ? parseBatchNo(cell(excelRow, '批次')) : undefined,
+          region: text('区域', 50, '区域'),
+          qxReceived: money('企信实收'),
+          qxSubcontractFee: money('企信支付下家分包费'),
+          chenPei: money('陈沛'),
+          qxProfit: money('企信利润'),
+          qxMoneyReceived: yesNo('项目结算'),
+          paidSubcontractor: yesNo('支付下家'),
+          paidChenPei: yesNo('支付陈沛'),
+          note: text('备注', 500, '备注')
         });
         seen.set(name, rowNumber);
       } catch (e) {
         errors.push({ row: rowNumber, message: e instanceof Error ? e.message : String(e) });
       }
-    });
-    return { rows, errors, total };
+    });    return { rows, errors, total };
   }
 
   /** 库中已存在（未归档）的项目：名称 -> id 及其已入账字段 */
@@ -418,12 +438,12 @@ export class ProjectService {
       const existing = this.existingByName(rows.map((r) => r.name));
       const insert = this.db.prepare(
         `INSERT INTO project (id,contract_id,contract_no,batch_no,region,name,contract_price,qx_received,qx_subcontract_fee,chen_pei,qx_profit,
-                              qx_money_received,paid_subcontractor,paid_chen_pei,archived,created_at,updated_at,device_id)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?)`
+                              qx_money_received,paid_subcontractor,paid_chen_pei,note,archived,created_at,updated_at,device_id)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?)`
       );
       const update = this.db.prepare(
         `UPDATE project SET contract_id=?, contract_no=?, batch_no=?, region=?, contract_price=?, qx_received=?, qx_subcontract_fee=?, chen_pei=?,
-                qx_profit=?, qx_money_received=?, paid_subcontractor=?, paid_chen_pei=?, updated_at=? WHERE id=?`
+                qx_profit=?, qx_money_received=?, paid_subcontractor=?, paid_chen_pei=?, note=?, updated_at=? WHERE id=?`
       );
       const currentRow = this.db.prepare('SELECT * FROM project WHERE id = ?');
       // Excel 里的合同编号 -> 合同 id：合同表里没有就自动创建（本批内同一编号只创建一次）
@@ -446,41 +466,54 @@ export class ProjectService {
         contractIds.set(contractNo, id);
         return id;
       };
+      const b = (v: boolean | null, fallback: number): number => (v === null ? fallback : v ? 1 : 0);
       for (const r of rows) {
-        const contractId = contractIdOf(r.contractNo);
         const hit = existing.get(r.name);
         if (hit) {
-          // 已入账的字段保持库里的值（标记 + 金额），其余用 Excel 的值
+          // 更新已有项目：Excel 里没有的列保持库里原值；已入账的字段（标记 + 金额）无论如何都保持库里的值
           const cur = currentRow.get(hit.id) as ProjectRow;
           const keep = (kind: ProjectPostingKind) => hit.posted.includes(kind);
+          const pick = <T>(excel: T | null, current: T): T => (excel === null ? current : excel);
+          // 合同归属：Excel 没有「合同编号」列时不动；有这一列则按单元格走（空 = 脱离合同）
+          const contractNo = r.contractNo === null ? cur.contract_no : r.contractNo;
+          const contractId = r.contractNo === null ? cur.contract_id : contractIdOf(r.contractNo);
           const money = [
             r.contractPrice,
-            keep('qx_received') ? cur.qx_received : r.qxReceived,
-            keep('paid_subcontractor') ? cur.qx_subcontract_fee : r.qxSubcontractFee,
-            keep('paid_chen_pei') ? cur.chen_pei : r.chenPei,
-            r.qxProfit
+            keep('qx_received') ? cur.qx_received : pick(r.qxReceived, cur.qx_received),
+            keep('paid_subcontractor') ? cur.qx_subcontract_fee : pick(r.qxSubcontractFee, cur.qx_subcontract_fee),
+            keep('paid_chen_pei') ? cur.chen_pei : pick(r.chenPei, cur.chen_pei),
+            pick(r.qxProfit, cur.qx_profit)
           ] as const;
           const flags = [
-            keep('qx_received') ? 1 : r.qxMoneyReceived ? 1 : 0,
-            keep('paid_subcontractor') ? 1 : r.paidSubcontractor ? 1 : 0,
-            keep('paid_chen_pei') ? 1 : r.paidChenPei ? 1 : 0
+            keep('qx_received') ? 1 : b(r.qxMoneyReceived, cur.qx_money_received),
+            keep('paid_subcontractor') ? 1 : b(r.paidSubcontractor, cur.paid_subcontractor),
+            keep('paid_chen_pei') ? 1 : b(r.paidChenPei, cur.paid_chen_pei)
           ] as const;
-          update.run(contractId, r.contractNo, r.batchNo, r.region, ...money, ...flags, now, hit.id);
+          const batchNo = r.batchNo === undefined ? cur.batch_no : r.batchNo;
+          update.run(
+            contractId, contractNo, batchNo, pick(r.region, cur.region), ...money, ...flags,
+            pick(r.note, cur.note), now, hit.id
+          );
           writeAudit(this.db, this.deviceId, 'project', hit.id, 'import_update', {
-            fileName, name: r.name, contractNo: r.contractNo, keptPostedKinds: hit.posted
+            fileName, name: r.name, contractNo, keptPostedKinds: hit.posted
           });
           updated += 1;
           if (hit.posted.length > 0) skippedPosted += 1;
         } else {
+          // 新增项目：Excel 里没有的列用默认值（文字空、金额 0、批次空、是否类为否）
+          const contractNo = r.contractNo ?? '';
+          const contractId = contractIdOf(contractNo);
           const id = newId();
-          const money = [r.contractPrice, r.qxReceived, r.qxSubcontractFee, r.chenPei, r.qxProfit] as const;
-          const flags = [r.qxMoneyReceived ? 1 : 0, r.paidSubcontractor ? 1 : 0, r.paidChenPei ? 1 : 0] as const;
-          insert.run(id, contractId, r.contractNo, r.batchNo, r.region, r.name, ...money, ...flags, now, now, this.deviceId);
-          writeAudit(this.db, this.deviceId, 'project', id, 'import_create', { fileName, name: r.name, contractNo: r.contractNo });
+          const money = [r.contractPrice, r.qxReceived ?? 0, r.qxSubcontractFee ?? 0, r.chenPei ?? 0, r.qxProfit ?? 0] as const;
+          const flags = [b(r.qxMoneyReceived, 0), b(r.paidSubcontractor, 0), b(r.paidChenPei, 0)] as const;
+          insert.run(
+            id, contractId, contractNo, r.batchNo ?? null, r.region ?? '', r.name, ...money, ...flags,
+            r.note ?? '', now, now, this.deviceId
+          );
+          writeAudit(this.db, this.deviceId, 'project', id, 'import_create', { fileName, name: r.name, contractNo });
           created += 1;
         }
-      }
-    })();
+      }    })();
     return { total, created, updated, skippedPosted };
   }
 }

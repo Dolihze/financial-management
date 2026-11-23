@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, Manager, RunEvent, State};
+use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
@@ -259,38 +260,168 @@ fn reveal_log(state: State<Backend>) -> Result<(), String> {
     Ok(())
 }
 
-/// 用系统默认浏览器/程序打开本机后端提供的文件（附件预览/下载）。
-/// 只放行本机后端地址 `http://127.0.0.1:<端口>/api/attachments/...`，不能被前端用来打开任意网址或本地程序。
-#[tauri::command]
-fn open_url(url: String) -> Result<(), String> {
-    let prefix = format!("http://{BACKEND_HOST}:");
-    let allowed = url.starts_with(&prefix)
-        && url[prefix.len()..]
-            .split_once("/api/attachments/")
-            .map(|(port, rest)| {
-                !port.is_empty()
-                    && port.chars().all(|c| c.is_ascii_digit())
-                    && rest.ends_with("/file")
-            })
-            .unwrap_or(false)
-        && !url.chars().any(|c| c.is_control() || c.is_whitespace());
-    if !allowed {
-        return Err("不允许打开该地址".to_string());
+/// 不允许直接启动的可执行/脚本类扩展名：附件是用户上传的任意文件，不能因为「用系统程序打开」而被直接运行。
+/// 这类文件只能下载，不能打开。
+const BLOCKED_OPEN_EXTS: &[&str] = &[
+    "exe", "com", "bat", "cmd", "msi", "msp", "scr", "pif", "lnk", "url", "vbs", "vbe", "js", "jse", "wsf", "wsh",
+    "ps1", "psm1", "reg", "hta", "cpl", "jar", "dll", "sys", "inf", "application", "gadget", "msc", "appref-ms",
+];
+
+/// 把前端传来的文件名清洗成安全的单个文件名：去掉路径成分、Windows 非法字符和结尾的点/空格，限制长度。
+fn safe_file_name(raw: &str) -> String {
+    let base = raw.rsplit(['/', '\\']).next().unwrap_or("");
+    let cleaned: String = base
+        .chars()
+        .filter(|c| !c.is_control() && !matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*'))
+        .collect();
+    // Windows 会悄悄丢掉文件名结尾的点和空格，这里一并去掉（点和空格交替出现也要处理）
+    let cleaned = cleaned.trim_matches(|c: char| c == '.' || c.is_whitespace()).to_string();
+    if cleaned.is_empty() {
+        return "未命名文件".to_string();
     }
+    // 按字符截断并保留扩展名，避免超出 Windows 路径限制
+    let chars: Vec<char> = cleaned.chars().collect();
+    if chars.len() <= 100 {
+        return cleaned;
+    }
+    let ext = std::path::Path::new(&cleaned)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| format!(".{}", e.chars().take(10).collect::<String>()))
+        .unwrap_or_default();
+    let keep = 100usize.saturating_sub(ext.chars().count());
+    format!("{}{}", chars.iter().take(keep).collect::<String>(), ext)
+}
+
+fn file_ext_lower(name: &str) -> String {
+    std::path::Path::new(name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default()
+}
+
+/// 清理 24 小时前打开过的临时附件，避免临时目录无限增长（尽力而为，失败忽略）
+fn cleanup_old_temp_files(dir: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let limit = Duration::from_secs(24 * 3600);
+    for entry in entries.flatten() {
+        let old = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| SystemTime::now().duration_since(t).ok())
+            .map(|age| age > limit)
+            .unwrap_or(false);
+        if old {
+            let path = entry.path();
+            let _ = if path.is_dir() { std::fs::remove_dir_all(path) } else { std::fs::remove_file(path) };
+        }
+    }
+}
+
+/// 用系统默认程序打开附件：图片用看图软件，PDF/Excel/Word 等用对应软件，不触发下载。
+/// 前端把文件内容（原始二进制，经 IPC 的 raw body）和文件名交过来；这里写到临时目录再交给系统打开。
+/// 只接收内容与文件名，不接收任何路径；可执行/脚本类扩展名一律拒绝。
+#[tauri::command]
+fn open_attachment(request: tauri::ipc::Request<'_>) -> Result<(), String> {
+    let tauri::ipc::InvokeBody::Raw(data) = request.body() else {
+        return Err("参数错误：缺少文件内容".to_string());
+    };
+    let name = request
+        .headers()
+        .get("x-file-name")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| percent_decode(s))
+        .ok_or_else(|| "参数错误：缺少文件名".to_string())?;
+    let name = safe_file_name(&name);
+    if BLOCKED_OPEN_EXTS.contains(&file_ext_lower(&name).as_str()) {
+        return Err("出于安全考虑，不能直接打开可执行或脚本类文件，请使用「下载」".to_string());
+    }
+
+    // 每次打开用独立子目录（随机+时间戳），既保留原文件名，又不会覆盖/冲突
+    let root = std::env::temp_dir().join("fm-attachments");
+    cleanup_old_temp_files(&root);
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir = root.join(format!("{stamp:x}-{:x}", std::process::id()));
+    std::fs::create_dir_all(&dir).map_err(|e| format!("无法创建临时目录: {e}"))?;
+    let path = dir.join(&name);
+    std::fs::write(&path, data).map_err(|e| format!("无法写入临时文件: {e}"))?;
+
     #[cfg(windows)]
     {
-        // 不经过 cmd/shell 解析，地址里的特殊字符不会被当成命令
-        std::process::Command::new("rundll32")
-            .arg("url.dll,FileProtocolHandler")
-            .arg(&url)
+        // `cmd /c start` 会按扩展名关联打开；空标题参数 "" 防止文件名被当作窗口标题。
+        // 文件名已清洗（无 & | < > ^ " 等 cmd 特殊字符之外的风险由下方检查兜底）
+        if name.chars().any(|c| matches!(c, '&' | '^' | '%' | '!' | '`')) {
+            return Err("文件名包含特殊字符，无法直接打开，请使用「下载」".to_string());
+        }
+        std::process::Command::new("cmd")
+            .args(["/c", "start", ""])
+            .arg(&path)
             .spawn()
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| format!("无法打开文件: {e}"))?;
     }
     #[cfg(not(windows))]
     {
-        let _ = url;
+        let _ = path;
     }
     Ok(())
+}
+
+/// 下载附件：弹出系统「另存为」对话框，用户选好位置后写入。取消选择时返回 false，不算错误。
+/// 与 open_attachment 一样只接收内容与文件名；保存路径完全由用户在系统对话框里决定。
+#[tauri::command]
+async fn save_attachment(app: tauri::AppHandle, request: tauri::ipc::Request<'_>) -> Result<bool, String> {
+    let tauri::ipc::InvokeBody::Raw(data) = request.body() else {
+        return Err("参数错误：缺少文件内容".to_string());
+    };
+    let name = request
+        .headers()
+        .get("x-file-name")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| percent_decode(s))
+        .ok_or_else(|| "参数错误：缺少文件名".to_string())?;
+    let name = safe_file_name(&name);
+    let data = data.clone();
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.dialog()
+        .file()
+        .set_file_name(&name)
+        .save_file(move |p| {
+            let _ = tx.send(p);
+        });
+    // 阻塞等待用户操作放到阻塞线程里，不占用异步运行时
+    let picked = tauri::async_runtime::spawn_blocking(move || rx.recv().ok().flatten())
+        .await
+        .map_err(|e| e.to_string())?;
+    let Some(picked) = picked else { return Ok(false) };
+    let path = picked.into_path().map_err(|e| e.to_string())?;
+    std::fs::write(&path, data).map_err(|e| format!("保存失败: {e}"))?;
+    Ok(true)
+}
+
+/// 解码前端用 encodeURIComponent 编码的文件名（HTTP 头只能放 ASCII，中文文件名需要编码）
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    let hex = |b: u8| (b as char).to_digit(16).map(|d| d as u8);
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(h), Some(l)) = (hex(bytes[i + 1]), hex(bytes[i + 2])) {
+                out.push(h * 16 + l);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// 启动 Node.js 后端。
@@ -410,7 +541,8 @@ pub fn run() {
             get_backend_error,
             get_log_path,
             reveal_log,
-            open_url
+            open_attachment,
+            save_attachment
         ])
         .setup(move |app| {
             start_backend(app.handle(), port)?;
@@ -424,4 +556,38 @@ pub fn run() {
             stop_backend(handle);
         }
     });
+}
+
+#[cfg(test)]
+mod attachment_tests {
+    use super::*;
+
+    #[test]
+    fn safe_file_name_strips_paths_and_illegal_chars() {
+        assert_eq!(safe_file_name("..\\..\\evil/../票据.pdf"), "票据.pdf");
+        assert_eq!(safe_file_name("a<b>:c\"d|e?f*.txt"), "abcdef.txt");
+        assert_eq!(safe_file_name("   "), "未命名文件");
+        assert_eq!(safe_file_name("name. . "), "name");
+        let long = format!("{}.xlsx", "长".repeat(300));
+        let out = safe_file_name(&long);
+        assert!(out.chars().count() <= 100 && out.ends_with(".xlsx"));
+    }
+
+    #[test]
+    fn executable_extensions_are_blocked_case_insensitively() {
+        for n in ["a.exe", "B.BAT", "c.Ps1", "d.lnk", "e.js", "f.hta", "g.msi"] {
+            assert!(BLOCKED_OPEN_EXTS.contains(&file_ext_lower(n).as_str()), "{n}");
+        }
+        for n in ["a.pdf", "b.xlsx", "c.docx", "d.png", "e.jpg", "noext"] {
+            assert!(!BLOCKED_OPEN_EXTS.contains(&file_ext_lower(n).as_str()), "{n}");
+        }
+    }
+
+    #[test]
+    fn percent_decode_handles_chinese_and_malformed_input() {
+        assert_eq!(percent_decode(&"发票 (1).pdf".bytes().map(|b| if b.is_ascii_alphanumeric() || b == b'.' { (b as char).to_string() } else { format!("%{b:02X}") }).collect::<String>()), "发票 (1).pdf");
+        assert_eq!(percent_decode("100%"), "100%");
+        assert_eq!(percent_decode("%zz.txt"), "%zz.txt");
+        assert_eq!(percent_decode("%"), "%");
+    }
 }

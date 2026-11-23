@@ -54,16 +54,37 @@ export async function revealLog(): Promise<void> {
   await invoke('reveal_log');
 }
 
+/** 文件名放进 HTTP 头需要 ASCII：用 encodeURIComponent 编码，Rust 侧解码 */
+const nameHeader = (fileName: string) => ({ 'x-file-name': encodeURIComponent(fileName) });
+
 /**
- * 用系统默认程序打开本机后端提供的文件地址（附件预览/下载）。
- * Tauri 窗口里交给 Rust 的 open_url（只接受 http://127.0.0.1: 开头的地址）；纯浏览器环境新开标签页。
+ * 用系统默认程序打开附件（图片->看图软件，PDF/Excel/Word->对应软件），不触发浏览器下载。
+ * Tauri 窗口里把文件内容（原始二进制）交给 Rust，由它写入临时目录后交给系统打开；
+ * 纯浏览器环境（开发调试）没有「系统打开」能力，退化为新开标签页。
  */
-export async function openExternal(url: string): Promise<void> {
+export async function openFileWithSystem(blob: Blob, fileName: string, fallbackUrl: string): Promise<void> {
   if (isTauri()) {
-    await invoke('open_url', { url });
+    await invoke('open_attachment', new Uint8Array(await blob.arrayBuffer()), { headers: nameHeader(fileName) });
     return;
   }
-  window.open(url, '_blank', 'noopener');
+  window.open(fallbackUrl, '_blank', 'noopener');
+}
+
+/**
+ * 下载附件：Tauri 窗口里弹出系统「另存为」对话框；纯浏览器环境走浏览器下载。
+ * @returns false 表示用户在对话框里取消了
+ */
+export async function saveFileWithSystem(blob: Blob, fileName: string): Promise<boolean> {
+  if (isTauri()) {
+    return invoke<boolean>('save_attachment', new Uint8Array(await blob.arrayBuffer()), { headers: nameHeader(fileName) });
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  return true;
 }
 
 /**

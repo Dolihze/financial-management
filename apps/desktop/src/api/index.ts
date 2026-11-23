@@ -25,7 +25,7 @@ import type {
 } from '@fm/shared';
 import { del, get, getBaseUrl, patch, post, upload } from './http';
 
-import { openExternal } from './backend';
+import { openFileWithSystem, saveFileWithSystem } from './backend';
 
 export { getBackendError, getLogPath, resolveBackendBase, revealLog, waitBackendReady } from './backend';
 export { setBaseUrl } from './http';
@@ -148,10 +148,16 @@ export const api = {
   },
 
   attachments: {
-    /** 文件内容地址：图片/PDF 浏览器内预览，其他类型下载 */
+    /** 文件内容地址 */
     fileUrl: (id: string) => `${getBaseUrl()}/api/attachments/${id}/file`,
-    /** 用系统默认程序/浏览器打开（桌面端）；纯浏览器环境下新开标签页 */
-    open: (id: string) => openExternal(`${getBaseUrl()}/api/attachments/${id}/file`)
+    /** 用系统默认程序打开（图片/PDF/Excel/Word 等都交给对应软件），不会触发下载 */
+    open: async (a: Pick<TransactionAttachment, 'id' | 'fileName'>) => {
+      const blob = await get<Blob>(`/api/attachments/${a.id}/file`);
+      await openFileWithSystem(blob, a.fileName, `${getBaseUrl()}/api/attachments/${a.id}/file`);
+    },
+    /** 下载到用户选择的位置（系统「另存为」对话框）；返回 false 表示用户取消 */
+    download: async (a: Pick<TransactionAttachment, 'id' | 'fileName'>) =>
+      saveFileWithSystem(await get<Blob>(`/api/attachments/${a.id}/file`), a.fileName)
   },
 
   overview: {

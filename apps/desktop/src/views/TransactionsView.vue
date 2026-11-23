@@ -5,6 +5,7 @@ import {
   TRANSACTION_TYPE_LABELS,
   type Category,
   type Transaction,
+  type TransactionAttachment,
   type TransactionType
 } from '@fm/shared';
 import { ElMessage, ElMessageBox, type UploadFile, type UploadFiles, type UploadUserFile } from 'element-plus';
@@ -209,13 +210,44 @@ async function submit() {
   }
 }
 
-/** 点击「相关文件」打开：桌面端交给系统默认程序，纯浏览器新开标签页 */
-async function openAttachment(id: string) {
+/** 「相关文件」弹窗：展示某笔流水上传的全部文件 */
+const filesDialog = ref(false);
+const filesOf = ref<Transaction | null>(null);
+function showFiles(tx: Transaction) {
+  filesOf.value = tx;
+  filesDialog.value = true;
+}
+
+/** 正在打开/下载的文件 id：期间禁用对应按钮，避免大文件重复点击 */
+const busyFiles = ref<Set<string>>(new Set());
+async function withBusy(id: string, fn: () => Promise<void>) {
+  if (busyFiles.value.has(id)) return;
+  busyFiles.value = new Set(busyFiles.value).add(id);
   try {
-    await api.attachments.open(id);
+    await fn();
   } catch (e) {
     ElMessage.error(errorMessage(e));
+  } finally {
+    const next = new Set(busyFiles.value);
+    next.delete(id);
+    busyFiles.value = next;
   }
+}
+
+/** 点击文件名：用系统默认程序打开（图片->看图软件，PDF/Excel/Word->对应软件），不会下载 */
+const openAttachment = (a: TransactionAttachment) => withBusy(a.id, () => api.attachments.open(a));
+
+/** 点击「下载」：弹出系统另存为对话框，把文件保存到所选位置 */
+const downloadAttachment = (a: TransactionAttachment) =>
+  withBusy(a.id, async () => {
+    if (await api.attachments.download(a)) ElMessage.success('已保存');
+  });
+/** ISO 时间（UTC）显示为本地时间 YYYY-MM-DD HH:mm */
+function formatTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 function formatSize(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -303,21 +335,12 @@ onMounted(load);
           </span>
         </template>
       </el-table-column>
-      <el-table-column label="相关文件" min-width="200" align="left" header-align="left">
+      <el-table-column label="相关文件" width="160" align="left" header-align="left">
         <template #default="{ row }">
-          <div v-if="(row as Transaction).attachments.length" class="file-list">
-            <el-link
-              v-for="a in (row as Transaction).attachments"
-              :key="a.id"
-              type="primary"
-              underline="never"
-              :title="`${a.fileName}（${formatSize(a.size)}），点击打开`"
-              @click="openAttachment(a.id)"
-            >
-              <el-icon><Paperclip /></el-icon>
-              <span class="file-name">{{ a.fileName }}</span>
-            </el-link>
-          </div>
+          <el-button v-if="(row as Transaction).attachments.length" link type="primary" @click="showFiles(row)">
+            <el-icon><Paperclip /></el-icon>
+            <span class="file-link-text">查看文件（{{ (row as Transaction).attachments.length }}）</span>
+          </el-button>
         </template>
       </el-table-column>
       <el-table-column label="操作" width="90" align="left" header-align="left">
@@ -334,9 +357,9 @@ onMounted(load);
             <el-radio-button v-for="t in TRANSACTION_TYPES" :key="t" :value="t">{{ TRANSACTION_TYPE_LABELS[t] }}</el-radio-button>
           </el-radio-group>
         </el-form-item>
-        <el-form-item label="日期"><el-date-picker v-model="form.occurredOn" type="date" value-format="YYYY-MM-DD" style="width: 100%" /></el-form-item>
-        <el-form-item label="金额(元)"><el-input v-model="form.amount" /></el-form-item>
-        <el-form-item :label="accountLabel">
+        <el-form-item label="日期" required><el-date-picker v-model="form.occurredOn" type="date" value-format="YYYY-MM-DD" style="width: 100%" /></el-form-item>
+        <el-form-item label="金额(元)" required><el-input v-model="form.amount" /></el-form-item>
+        <el-form-item :label="accountLabel" required>
           <el-select v-model="form.accountId" style="width: 100%">
             <el-option v-for="a in base.accounts" :key="a.id" :label="`${a.name}（${formatMoney(a.balance)}）`" :value="a.id" />
           </el-select>
@@ -379,6 +402,34 @@ onMounted(load);
       <template #footer>
         <el-button @click="dialog = false">取消</el-button>
         <el-button type="primary" :loading="submitting" :disabled="!form.amount || !form.accountId" @click="submit">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 相关文件列表：点击文件名用系统默认程序打开，「下载」另存到本机 -->
+    <el-dialog v-model="filesDialog" title="相关文件" width="640px" draggable align-center>
+      <el-table :data="filesOf?.attachments ?? []" size="small" border max-height="360" empty-text="暂无文件">
+        <el-table-column label="文件名" min-width="240" align="left" header-align="left">
+          <template #default="{ row }">
+            <el-link class="file-link" type="primary" underline="never" :title="`点击用系统软件打开：${row.fileName}`" :disabled="busyFiles.has(row.id)" @click="openAttachment(row)">
+              <el-icon><Paperclip /></el-icon>
+              <span class="file-name">{{ row.fileName }}</span>
+            </el-link>
+          </template>
+        </el-table-column>
+        <el-table-column label="大小" width="90" align="left" header-align="left">
+          <template #default="{ row }">{{ formatSize(row.size) }}</template>
+        </el-table-column>
+        <el-table-column label="上传时间" width="160" align="left" header-align="left">
+          <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="80" align="left" header-align="left">
+          <template #default="{ row }">
+            <el-button link type="primary" :loading="busyFiles.has(row.id)" @click="downloadAttachment(row)">下载</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      <template #footer>
+        <el-button @click="filesDialog = false">关闭</el-button>
       </template>
     </el-dialog>
 
@@ -425,14 +476,24 @@ onMounted(load);
 .summary-label {
   margin-right: 8px;
 }
-.file-list {
+.file-link-text {
+  margin-left: 4px;
+}
+/* 文件名过长时显示省略号：链接占满单元格宽度（min-width: 0 允许 flex 子项收缩），文字在链接内部截断 */
+.file-link {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
+  justify-content: flex-start;
+  max-width: 100%;
+}
+.file-link :deep(.el-link__inner) {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
 }
 .file-name {
-  max-width: 220px;
+  flex: 1;
+  min-width: 0;
   margin-left: 4px;
   overflow: hidden;
   text-overflow: ellipsis;

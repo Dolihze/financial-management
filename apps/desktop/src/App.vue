@@ -80,6 +80,8 @@ const menus = [
     <el-container>
       <el-header style="background: #fff; display: flex; align-items: center; border-bottom: 1px solid #e4e7ed">
         <b>{{ route.meta.title }}</b>
+        <!-- 页面可通过 <Teleport to="#header-actions"> 把操作按钮放到标题栏右侧 -->
+        <div id="header-actions" style="margin-left: auto; display: flex; align-items: center; gap: 8px" />
       </el-header>
       <el-main>
         <el-result v-if="failed" icon="error" title="无法连接本地服务" :sub-title="failMessage">

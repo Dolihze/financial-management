@@ -7,7 +7,7 @@ import {
   type Transaction,
   type TransactionType
 } from '@fm/shared';
-import { ElMessage, ElMessageBox } from 'element-plus';
+import { ElMessage, ElMessageBox, type UploadFile, type UploadFiles, type UploadUserFile } from 'element-plus';
 import { computed, onMounted, reactive, ref } from 'vue';
 import { api, type TransactionSummary } from '@/api';
 import NameManagerDialog from '@/components/NameManagerDialog.vue';
@@ -86,6 +86,31 @@ const form = reactive({
   counterpartyId: '' as string,
   note: ''
 });
+/** 记一笔时选中的相关文件（保存流水成功后再逐个上传） */
+const pendingFiles = ref<UploadUserFile[]>([]);
+const MAX_FILE_BYTES = 20 * 1024 * 1024;
+const MAX_FILES = 20;
+
+/** 选择文件时的数量与大小校验：不合格的直接从待上传列表里移除并提示 */
+function onFileChange(_file: UploadFile, files: UploadFiles) {
+  const ok = files.filter((f) => {
+    const size = f.raw?.size ?? f.size ?? 0;
+    if (size === 0) {
+      ElMessage.warning(`「${f.name}」是空文件，已忽略`);
+      return false;
+    }
+    if (size > MAX_FILE_BYTES) {
+      ElMessage.warning(`「${f.name}」超过 20 MB，已忽略`);
+      return false;
+    }
+    return true;
+  });
+  if (ok.length > MAX_FILES) {
+    ElMessage.warning(`一笔流水最多上传 ${MAX_FILES} 个文件`);
+    ok.length = MAX_FILES;
+  }
+  pendingFiles.value = ok;
+}
 /** 借款/贷款不使用收支分类 */
 const hasCategory = computed(() => form.type === 'income' || form.type === 'expense');
 const categoryOptions = computed(() =>
@@ -95,6 +120,7 @@ const accountLabel = computed(() => (TRANSACTION_TYPE_IS_INFLOW[form.type] ? '�
 
 function openDialog() {
   Object.assign(form, { type: 'expense', occurredOn: today(), amount: '', accountId: '', categoryId: '', counterpartyId: '', note: '' });
+  pendingFiles.value = [];
   dialog.value = true;
 }
 
@@ -140,9 +166,13 @@ async function removeCounterparty(id: string) {
   await Promise.all([base.loadCounterparties(), load()]);
 }
 const counterpartyUsedHint = () => '这些流水将不再关联该往来单位（流水上已记录的名称仍会保留显示）';
+const submitting = ref(false);
+
 async function submit() {
+  if (submitting.value) return; // 防止重复点击产生重复流水
+  submitting.value = true;
   try {
-    await api.transactions.create({
+    const created = await api.transactions.create({
       type: form.type,
       occurredOn: form.occurredOn,
       amount: toCents(form.amount),
@@ -151,12 +181,46 @@ async function submit() {
       counterpartyId: form.counterpartyId || null,
       note: form.note
     });
+    // 流水已经入账：之后文件上传失败不能当作「记账失败」，否则用户会重复记一笔。逐个上传，失败的单独提示
+    const failed: string[] = [];
+    for (const f of pendingFiles.value) {
+      if (!f.raw) continue;
+      try {
+        await api.transactions.addAttachment(created.id, f.raw);
+      } catch (e) {
+        failed.push(`${f.name}（${errorMessage(e)}）`);
+      }
+    }
     dialog.value = false;
-    ElMessage.success('已记账');
     await Promise.all([load(), base.loadAccounts()]);
+    if (failed.length === 0) {
+      ElMessage.success('已记账');
+    } else {
+      ElMessageBox.alert(
+        `流水已记账（请勿重复记账），但以下文件上传失败：\n${failed.join('\n')}`,
+        '部分文件上传失败',
+        { type: 'warning', confirmButtonText: '知道了' }
+      ).catch(() => {});
+    }
+  } catch (e) {
+    ElMessage.error(errorMessage(e));
+  } finally {
+    submitting.value = false;
+  }
+}
+
+/** 点击「相关文件」打开：桌面端交给系统默认程序，纯浏览器新开标签页 */
+async function openAttachment(id: string) {
+  try {
+    await api.attachments.open(id);
   } catch (e) {
     ElMessage.error(errorMessage(e));
   }
+}
+function formatSize(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
 async function voidTx(tx: Transaction) {
@@ -239,6 +303,23 @@ onMounted(load);
           </span>
         </template>
       </el-table-column>
+      <el-table-column label="相关文件" min-width="200" align="left" header-align="left">
+        <template #default="{ row }">
+          <div v-if="(row as Transaction).attachments.length" class="file-list">
+            <el-link
+              v-for="a in (row as Transaction).attachments"
+              :key="a.id"
+              type="primary"
+              underline="never"
+              :title="`${a.fileName}（${formatSize(a.size)}），点击打开`"
+              @click="openAttachment(a.id)"
+            >
+              <el-icon><Paperclip /></el-icon>
+              <span class="file-name">{{ a.fileName }}</span>
+            </el-link>
+          </div>
+        </template>
+      </el-table-column>
       <el-table-column label="操作" width="90" align="left" header-align="left">
         <template #default="{ row }"><el-button v-if="row.status === 'normal'" link type="danger" @click="voidTx(row)">作废</el-button></template>
       </el-table-column>
@@ -277,10 +358,27 @@ onMounted(load);
           </el-select>
         </el-form-item>
         <el-form-item label="备注"><el-input v-model="form.note" type="textarea" :rows="2" /></el-form-item>
+        <el-form-item label="相关文件">
+          <el-upload
+            v-model:file-list="pendingFiles"
+            multiple
+            drag
+            :auto-upload="false"
+            :limit="MAX_FILES + 1"
+            :on-change="onFileChange"
+            class="file-upload"
+          >
+            <el-icon class="el-icon--upload"><UploadFilled /></el-icon>
+            <div class="el-upload__text">拖拽文件到此处，或<em>点击选择</em></div>
+            <template #tip>
+              <div class="form-tip">图片、PDF 或其他文件均可，单个不超过 20 MB，最多 {{ MAX_FILES }} 个；保存流水后一并上传</div>
+            </template>
+          </el-upload>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="dialog = false">取消</el-button>
-        <el-button type="primary" :disabled="!form.amount || !form.accountId" @click="submit">保存</el-button>
+        <el-button type="primary" :loading="submitting" :disabled="!form.amount || !form.accountId" @click="submit">保存</el-button>
       </template>
     </el-dialog>
 
@@ -326,6 +424,27 @@ onMounted(load);
 }
 .summary-label {
   margin-right: 8px;
+}
+.file-list {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+.file-name {
+  max-width: 220px;
+  margin-left: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-upload {
+  width: 100%;
+}
+.form-tip {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  line-height: 1.5;
 }
 /* 收入红、支出绿 */
 .tx-income {

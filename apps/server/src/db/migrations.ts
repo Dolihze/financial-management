@@ -583,5 +583,24 @@ export const migrations: Migration[] = [
       UPDATE category SET sort_order = 9 WHERE builtin = 1 AND kind = 'expense' AND name = '车辆';
       UPDATE category SET sort_order = 10 WHERE builtin = 1 AND kind = 'expense' AND name = '其他支出';
     `
+  },
+  {
+    version: 20,
+    name: 'tx_attachment',
+    sql: `
+      -- 记账流水的相关文件（图片/PDF/其他文件）：文件本体存磁盘，这里只存元数据。
+      -- 不物理删除：没有删除接口；流水作废后附件仍保留可查看。
+      CREATE TABLE tx_attachment (
+        id          TEXT PRIMARY KEY,
+        tx_id       TEXT NOT NULL REFERENCES tx(id),
+        file_name   TEXT NOT NULL,            -- 用户上传时的原始文件名（展示/下载用）
+        stored_name TEXT NOT NULL,            -- 磁盘上的文件名（id + 扩展名，避免重名与路径注入）
+        mime_type   TEXT NOT NULL,
+        size        INTEGER NOT NULL,         -- 字节数
+        created_at  TEXT NOT NULL,
+        device_id   TEXT NOT NULL
+      );
+      CREATE INDEX idx_tx_attachment_tx ON tx_attachment(tx_id);
+    `
   }
 ];

@@ -1,5 +1,6 @@
-import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { homedir, tmpdir } from 'node:os';
+import { basename, dirname, extname, join } from 'node:path';
 
 export interface AppConfig {
   host: string;
@@ -8,6 +9,19 @@ export interface AppConfig {
   dbPath: string;
   /** 设备 ID，后期多端同步时用于标记数据来源 */
   deviceId: string;
+  /**
+   * 流水附件（图片/文件）的存放目录。缺省时由 defaultAttachmentsDir(dbPath) 推导：
+   * 与数据库文件同目录、以库文件名命名（finance.db -> finance.attachments），演示库与真实库互不混用。
+   * 数据库是 ":memory:"（测试）时用系统临时目录下的独立子目录（首次上传时才创建）。
+   */
+  attachmentsDir?: string;
+}
+
+/** 附件目录的默认位置（见 AppConfig.attachmentsDir） */
+export function defaultAttachmentsDir(dbPath: string): string {
+  // 内存库（测试）：每个进程用同一个临时根目录下按需创建的子目录，不在这里立刻建目录
+  if (dbPath === ':memory:') return join(tmpdir(), 'fm-attachments', randomUUID());
+  return join(dirname(dbPath), `${basename(dbPath, extname(dbPath))}.attachments`);
 }
 
 /**

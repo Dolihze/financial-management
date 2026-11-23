@@ -55,6 +55,18 @@ export async function revealLog(): Promise<void> {
 }
 
 /**
+ * 用系统默认程序打开本机后端提供的文件地址（附件预览/下载）。
+ * Tauri 窗口里交给 Rust 的 open_url（只接受 http://127.0.0.1: 开头的地址）；纯浏览器环境新开标签页。
+ */
+export async function openExternal(url: string): Promise<void> {
+  if (isTauri()) {
+    await invoke('open_url', { url });
+    return;
+  }
+  window.open(url, '_blank', 'noopener');
+}
+
+/**
  * 等待后端就绪。
  * @returns true=就绪；false=Rust 侧超时或本函数超时
  */

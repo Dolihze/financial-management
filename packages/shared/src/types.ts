@@ -83,6 +83,18 @@ export interface TransactionLine {
   amount: number;
 }
 
+/** 流水的相关文件（图片/PDF/其他文件）：文件存在本机磁盘，这里只是元数据 */
+export interface TransactionAttachment {
+  id: string;
+  txId: string;
+  /** 上传时的原始文件名 */
+  fileName: string;
+  mimeType: string;
+  /** 字节数 */
+  size: number;
+  createdAt: string;
+}
+
 export interface Transaction {
   id: string;
   /** 业务发生日期 YYYY-MM-DD */
@@ -100,6 +112,8 @@ export interface Transaction {
   status: TransactionStatus;
   importBatchId: string | null;
   lines: TransactionLine[];
+  /** 相关文件（按上传时间先后） */
+  attachments: TransactionAttachment[];
   createdAt: string;
   updatedAt: string;
 }

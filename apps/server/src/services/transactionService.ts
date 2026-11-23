@@ -1,7 +1,14 @@
 import { createHash } from 'node:crypto';
-import type { CreateTransactionInput, Transaction, TransactionLine, TransactionType } from '@fm/shared';
+import type {
+  CreateTransactionInput,
+  Transaction,
+  TransactionAttachment,
+  TransactionLine,
+  TransactionType
+} from '@fm/shared';
 import type { Db } from '../db/database';
 import { AppError, newId, nowIso } from '../utils';
+import { toAttachment } from './attachmentService';
 import { writeAudit } from './audit';
 
 interface TxRow {
@@ -249,6 +256,15 @@ export class TransactionService {
       arr.push({ id: l.id, accountId: l.account_id, accountName: l.account_name, amount: l.amount });
       byTx.set(l.tx_id, arr);
     }
+    const attachmentRows = this.db
+      .prepare(`SELECT * FROM tx_attachment WHERE tx_id IN (${placeholders}) ORDER BY created_at, rowid`)
+      .all(...ids) as Array<Parameters<typeof toAttachment>[0]>;
+    const attachmentsByTx = new Map<string, TransactionAttachment[]>();
+    for (const a of attachmentRows) {
+      const arr = attachmentsByTx.get(a.tx_id) ?? [];
+      arr.push(toAttachment(a));
+      attachmentsByTx.set(a.tx_id, arr);
+    }
     return rows.map((r) => ({
       id: r.id,
       occurredOn: r.occurred_on,
@@ -262,6 +278,7 @@ export class TransactionService {
       status: r.status,
       importBatchId: r.import_batch_id,
       lines: byTx.get(r.id) ?? [],
+      attachments: attachmentsByTx.get(r.id) ?? [],
       createdAt: r.created_at,
       updatedAt: r.updated_at
     }));

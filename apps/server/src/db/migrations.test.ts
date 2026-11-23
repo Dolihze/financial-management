@@ -528,6 +528,23 @@ describe('迁移 v5：支出分类收敛为 7 个内置默认项', () => {
     empty.close();
   });
 
+  it('迁移 v20：新增 tx_attachment 表，外键指向 tx，既有流水不受影响', () => {
+    const db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    migrateTo(db, 19);
+    const now = '2026-01-01T00:00:00.000Z';
+    db.prepare(`INSERT INTO account (id,name,type,created_at,updated_at,device_id) VALUES ('a1','A','bank',?,?,'d')`).run(now, now);
+    db.prepare(`INSERT INTO tx (id,occurred_on,type,summary,created_at,updated_at,device_id) VALUES ('t1','2026-01-02','income','',?,?,'d')`).run(now, now);
+    migrateTo(db, 20, 19);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM tx').get()).toEqual({ n: 1 });
+    const ins = db.prepare(
+      `INSERT INTO tx_attachment (id,tx_id,file_name,stored_name,mime_type,size,created_at,device_id) VALUES (?,?,?,?,?,?,?,'d')`
+    );
+    ins.run('f1', 't1', 'a.png', 'f1.png', 'image/png', 3, now);
+    expect(() => ins.run('f2', 'no-such-tx', 'b.png', 'f2.png', 'image/png', 3, now)).toThrow(); // 外键
+    db.close();
+  });
+
   it('runMigrations 可从空库一路迁移到最新版本', () => {
     const db = new Database(':memory:');
     db.pragma('foreign_keys = ON');

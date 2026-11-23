@@ -18,11 +18,14 @@ import type {
   ProjectImportPreview,
   ProjectImportResult,
   Transaction,
+  TransactionAttachment,
   UpdateContractInput,
   UpdateProjectInput,
   TransactionType
 } from '@fm/shared';
 import { del, get, getBaseUrl, patch, post, upload } from './http';
+
+import { openExternal } from './backend';
 
 export { getBackendError, getLogPath, resolveBackendBase, revealLog, waitBackendReady } from './backend';
 export { setBaseUrl } from './http';
@@ -138,7 +141,17 @@ export const api = {
         includeVoided: filter.includeVoided ? 'true' : undefined
       }),
     create: (body: CreateTransactionInput) => post<Transaction>('/api/transactions', body),
-    void: (id: string, reason?: string) => post<Transaction>(`/api/transactions/${id}/void`, { reason })
+    void: (id: string, reason?: string) => post<Transaction>(`/api/transactions/${id}/void`, { reason }),
+    /** 给流水上传一个相关文件（图片/PDF/其他），单个不超过 20 MB */
+    addAttachment: (txId: string, file: File) =>
+      upload<TransactionAttachment>(`/api/transactions/${txId}/attachments`, file)
+  },
+
+  attachments: {
+    /** 文件内容地址：图片/PDF 浏览器内预览，其他类型下载 */
+    fileUrl: (id: string) => `${getBaseUrl()}/api/attachments/${id}/file`,
+    /** 用系统默认程序/浏览器打开（桌面端）；纯浏览器环境下新开标签页 */
+    open: (id: string) => openExternal(`${getBaseUrl()}/api/attachments/${id}/file`)
   },
 
   overview: {

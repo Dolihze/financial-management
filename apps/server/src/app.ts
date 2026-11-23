@@ -2,9 +2,10 @@ import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { ZodError } from 'zod';
-import type { AppConfig } from './config';
+import { defaultAttachmentsDir, type AppConfig } from './config';
 import { openDatabase, type Db } from './db/database';
 import { registerAccountRoutes } from './routes/accounts';
+import { registerAttachmentRoutes } from './routes/attachments';
 import { registerBatchRoutes } from './routes/batches';
 import { registerCategoryRoutes } from './routes/categories';
 import { registerContractRoutes } from './routes/contracts';
@@ -14,6 +15,7 @@ import { registerOverviewRoutes } from './routes/overview';
 import { registerProjectRoutes } from './routes/projects';
 import { registerTransactionRoutes } from './routes/transactions';
 import { AccountService } from './services/accountService';
+import { AttachmentService } from './services/attachmentService';
 import { BatchService } from './services/batchService';
 import { CategoryService } from './services/categoryService';
 import { ContractService } from './services/contractService';
@@ -26,6 +28,7 @@ import { AppError } from './utils';
 
 export interface Services {
   accounts: AccountService;
+  attachments: AttachmentService;
   batches: BatchService;
   categories: CategoryService;
   contracts: ContractService;
@@ -46,6 +49,7 @@ export async function buildApp(config: AppConfig, opts: { logger?: boolean } = {
   const db = openDatabase(config.dbPath);
   const services: Services = {
     accounts: new AccountService(db, config.deviceId),
+    attachments: new AttachmentService(db, config.deviceId, config.attachmentsDir ?? defaultAttachmentsDir(config.dbPath)),
     batches: new BatchService(db, config.deviceId),
     categories: new CategoryService(db, config.deviceId),
     contracts: new ContractService(db, config.deviceId),
@@ -86,6 +90,7 @@ export async function buildApp(config: AppConfig, opts: { logger?: boolean } = {
   registerCategoryRoutes(app, services);
   registerCounterpartyRoutes(app, services);
   registerTransactionRoutes(app, services);
+  registerAttachmentRoutes(app, services);
   registerImportRoutes(app, services);
   registerOverviewRoutes(app, services);
   registerProjectRoutes(app, services);

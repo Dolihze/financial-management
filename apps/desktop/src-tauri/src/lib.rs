@@ -259,6 +259,40 @@ fn reveal_log(state: State<Backend>) -> Result<(), String> {
     Ok(())
 }
 
+/// 用系统默认浏览器/程序打开本机后端提供的文件（附件预览/下载）。
+/// 只放行本机后端地址 `http://127.0.0.1:<端口>/api/attachments/...`，不能被前端用来打开任意网址或本地程序。
+#[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+    let prefix = format!("http://{BACKEND_HOST}:");
+    let allowed = url.starts_with(&prefix)
+        && url[prefix.len()..]
+            .split_once("/api/attachments/")
+            .map(|(port, rest)| {
+                !port.is_empty()
+                    && port.chars().all(|c| c.is_ascii_digit())
+                    && rest.ends_with("/file")
+            })
+            .unwrap_or(false)
+        && !url.chars().any(|c| c.is_control() || c.is_whitespace());
+    if !allowed {
+        return Err("不允许打开该地址".to_string());
+    }
+    #[cfg(windows)]
+    {
+        // 不经过 cmd/shell 解析，地址里的特殊字符不会被当成命令
+        std::process::Command::new("rundll32")
+            .arg("url.dll,FileProtocolHandler")
+            .arg(&url)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = url;
+    }
+    Ok(())
+}
+
 /// 启动 Node.js 后端。
 /// - 开发模式（`tauri dev`）：后端由根目录 `npm run dev` 统一启动，这里不启动 sidecar，只探测就绪
 /// - 发布模式：用随包分发的便携 Node 运行时（sidecar `node`）执行
@@ -375,7 +409,8 @@ pub fn run() {
             is_backend_ready,
             get_backend_error,
             get_log_path,
-            reveal_log
+            reveal_log,
+            open_url
         ])
         .setup(move |app| {
             start_backend(app.handle(), port)?;

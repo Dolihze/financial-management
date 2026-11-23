@@ -36,6 +36,7 @@ financial-management/
 - **端口**：开发版固定 `17890`（`npm run dev` 的 wait-on、后端都依赖它）；发布版由 Rust 向系统申请空闲端口，通过环境变量 `FM_PORT` 传给后端，前端用 Tauri 命令 `get_backend_url` 获取，因此不会与其它软件抢端口。
 - 后端仅监听 `127.0.0.1`，不暴露到局域网。
 - 数据库位置：开发时 `%APPDATA%\financial-management\finance.db`；发布后在 Tauri 应用数据目录。
+- 流水附件（相关文件）：文件本体存放在数据库同目录的 `<库文件名>.attachments\`（如 `finance.attachments\`，演示库为 `demo.attachments\`），库里只存元数据。**备份/迁移数据时需要把这个文件夹和 `finance.db` 一起带走**。
 
 ## 核心数据规则（不要破坏）
 
@@ -106,6 +107,8 @@ npm run package
 | GET/POST/PATCH/DELETE | `/api/counterparties` | 往来单位（流水通过 `counterpartyId` 关联；PATCH 重命名并同步流水名称；DELETE 为归档式删除，流水解除关联但保留名称快照） |
 | GET/POST | `/api/transactions` | 流水查询（账户/类型/日期/关键字）/ 记账 |
 | POST | `/api/transactions/:id/void` | 作废 |
+| GET/POST | `/api/transactions/:id/attachments` | 流水相关文件：列表 / 上传（multipart，字段 `file`，单个 ≤20MB，每笔 ≤20 个；不提供删除，作废流水后仍保留） |
+| GET | `/api/attachments/:id/file` | 取文件内容（图片/PDF 内联预览，其余强制下载） |
 | GET | `/api/overview` | 总览：总余额、各账户、本月收支、趋势、分类 |
 | GET | `/api/overview/integrity` | 数据完整性校验 |
 | GET | `/api/imports/template` | 下载导入模板 |

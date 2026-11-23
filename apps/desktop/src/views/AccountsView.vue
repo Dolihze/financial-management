@@ -75,7 +75,7 @@ async function archive(id: string, name: string) {
       </el-table-column>
     </el-table>
 
-    <el-dialog v-model="dialog" title="新增账户" width="460px">
+    <el-dialog v-model="dialog" title="新增账户" width="460px" draggable>
       <el-form :model="form" label-width="90px">
         <el-form-item label="账户类型">
           <el-select v-model="form.type" style="width: 100%">

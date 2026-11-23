@@ -128,6 +128,7 @@ async function confirmFlag(flag: ToggleKey, next: boolean): Promise<boolean> {
       await ElMessageBox({
         title: `确认切换「${meta.label}」为「是」？`,
         showCancelButton: true,
+        draggable: true,
         confirmButtonText: '确认切换',
         cancelButtonText: '取消',
         type: 'warning',
@@ -372,6 +373,7 @@ function calculate() {
     title="编辑项目"
     width="820px"
     top="4vh"
+    draggable
     :close-on-click-modal="false"
     :before-close="beforeClose"
   >
@@ -438,7 +440,7 @@ function calculate() {
       <el-button type="primary" :loading="saving" :disabled="!project || !dirty" @click="save">确定</el-button>
     </template>
 
-    <el-dialog v-model="formulaVisible" title="公式维护" width="520px" append-to-body>
+    <el-dialog v-model="formulaVisible" title="公式维护" width="520px" append-to-body draggable>
       <el-form label-width="150px" @submit.prevent>
         <el-form-item label="企信实收">
           <span>= 合同价 × {{ qxReceivedRateText }}</span>

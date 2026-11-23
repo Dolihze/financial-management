@@ -291,7 +291,7 @@ onMounted(load);
 
     <ProjectEditDialog v-model="edit.visible" :project-id="edit.projectId" @saved="load" />
 
-    <el-dialog v-model="add.visible" title="添加项目" width="760px" append-to-body :close-on-click-modal="false">
+    <el-dialog v-model="add.visible" title="添加项目" width="760px" append-to-body draggable :close-on-click-modal="false">
       <el-input
         v-model="add.keyword"
         clearable

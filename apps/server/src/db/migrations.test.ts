@@ -502,6 +502,32 @@ describe('迁移 v5：支出分类收敛为 7 个内置默认项', () => {
     empty.close();
   });
 
+  it('迁移 v19：老库补建 3 个内置支出分类（已存在同名的复用）并写入内置排序，「其他支出」最后；空库不写入', () => {
+    const old = new Database(':memory:');
+    old.pragma('foreign_keys = ON');
+    migrateTo(old, 18);
+    const ins = old.prepare('INSERT INTO category (id,name,kind,created_at,builtin,archived) VALUES (?,?,?,?,?,?)');
+    for (const [id, name] of [['e1', '其他支出'], ['e2', '工资薪酬'], ['e3', '车辆']] as const) {
+      ins.run(id, name, 'expense', 'x', id === 'e3' ? 0 : 1, id === 'e3' ? 1 : 0); // 车辆：已存在的归档自定义分类
+    }
+    ins.run('i1', '其他收入', 'income', 'x', 1, 0);
+    ins.run('i2', '项目收入', 'income', 'x', 1, 0);
+    migrateTo(old, 19, 18);
+
+    const names = (old.prepare("SELECT name FROM category WHERE kind='expense' AND archived=0 AND builtin=1 ORDER BY sort_order").all() as Array<{ name: string }>).map((c) => c.name);
+    expect(names).toEqual(['工资薪酬', '企信支付下家分包费', '企信支付陈沛', '车辆', '其他支出']);
+    expect(old.prepare("SELECT id, builtin, archived FROM category WHERE name='车辆'").all()).toEqual([{ id: 'e3', builtin: 1, archived: 0 }]); // 复用
+    const income = (old.prepare("SELECT name FROM category WHERE kind='income' ORDER BY sort_order").all() as Array<{ name: string }>).map((c) => c.name);
+    expect(income).toEqual(['项目收入', '其他收入']);
+    old.close();
+
+    const empty = new Database(':memory:');
+    empty.pragma('foreign_keys = ON');
+    migrateTo(empty, 19);
+    expect(empty.prepare('SELECT COUNT(*) AS n FROM category').get()).toEqual({ n: 0 });
+    empty.close();
+  });
+
   it('runMigrations 可从空库一路迁移到最新版本', () => {
     const db = new Database(':memory:');
     db.pragma('foreign_keys = ON');

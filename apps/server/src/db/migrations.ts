@@ -551,5 +551,37 @@ export const migrations: Migration[] = [
           AND NOT EXISTS (SELECT 1 FROM category WHERE kind = 'income' AND name = '项目收入');
       UPDATE category SET builtin = 1, archived = 0 WHERE kind = 'income' AND name = '项目收入';
     `
+  },
+  {
+    version: 19,
+    name: 'expense_category_project_defaults',
+    sql: `
+      -- 内置分类显式排序：sort_order 越小越靠前（仅对内置分类有意义，自定义分类仍按新增时间倒序）。
+      ALTER TABLE category ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;
+
+      -- 支出新增 3 个内置默认项：企信支付下家分包费、企信支付陈沛、车辆。
+      -- 仅处理已有分类数据的老库（新库由程序 seedDefaults 生成）；已存在同名的直接复用并置为内置、取消归档。
+      INSERT INTO category (id, name, kind, parent_id, created_at, builtin)
+        SELECT lower(hex(randomblob(16))), d.name, 'expense', NULL, strftime('%Y-%m-%dT%H:%M:%fZ','now'), 1
+        FROM (SELECT '企信支付下家分包费' AS name UNION ALL SELECT '企信支付陈沛' UNION ALL SELECT '车辆') d
+        WHERE EXISTS (SELECT 1 FROM category)
+          AND NOT EXISTS (SELECT 1 FROM category c WHERE c.kind = 'expense' AND c.name = d.name);
+      UPDATE category SET builtin = 1, archived = 0
+        WHERE kind = 'expense' AND name IN ('企信支付下家分包费','企信支付陈沛','车辆');
+
+      -- 内置分类顺序：收入「项目收入」在前、「其他收入」最后；支出「其他支出」固定为内置里的最后一个
+      UPDATE category SET sort_order = 1 WHERE builtin = 1 AND kind = 'income'  AND name = '项目收入';
+      UPDATE category SET sort_order = 2 WHERE builtin = 1 AND kind = 'income'  AND name = '其他收入';
+      UPDATE category SET sort_order = 1 WHERE builtin = 1 AND kind = 'expense' AND name = '工资薪酬';
+      UPDATE category SET sort_order = 2 WHERE builtin = 1 AND kind = 'expense' AND name = '社保';
+      UPDATE category SET sort_order = 3 WHERE builtin = 1 AND kind = 'expense' AND name = '差旅费';
+      UPDATE category SET sort_order = 4 WHERE builtin = 1 AND kind = 'expense' AND name = '房租水电';
+      UPDATE category SET sort_order = 5 WHERE builtin = 1 AND kind = 'expense' AND name = '经营费';
+      UPDATE category SET sort_order = 6 WHERE builtin = 1 AND kind = 'expense' AND name = '员工报销';
+      UPDATE category SET sort_order = 7 WHERE builtin = 1 AND kind = 'expense' AND name = '企信支付下家分包费';
+      UPDATE category SET sort_order = 8 WHERE builtin = 1 AND kind = 'expense' AND name = '企信支付陈沛';
+      UPDATE category SET sort_order = 9 WHERE builtin = 1 AND kind = 'expense' AND name = '车辆';
+      UPDATE category SET sort_order = 10 WHERE builtin = 1 AND kind = 'expense' AND name = '其他支出';
+    `
   }
 ];

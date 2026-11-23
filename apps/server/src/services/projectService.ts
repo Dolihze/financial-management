@@ -16,7 +16,7 @@ import type { Db } from '../db/database';
 import { AppError, newId, nowIso } from '../utils';
 import { writeAudit } from './audit';
 import { MAX_BATCH_NO, UNBATCHED_NO } from './batchService';
-import { CategoryService } from './categoryService';
+import { CategoryService, PROJECT_INCOME_CATEGORY_NAME } from './categoryService';
 import { TransactionService } from './transactionService';
 
 /**
@@ -24,14 +24,22 @@ import { TransactionService } from './transactionService';
  * - 项目结算（原企信是否收到钱） -> 收入，金额取「企信实收」
  * - 支付下家       -> 支出，金额取「企信支付下家」
  * - 支付陈沛       -> 支出，金额取「陈沛」
+ * 入账流水统一带内置分类（category），往来单位与备注置空。
  */
 const POSTING_RULES: Record<
   ProjectPostingKind,
-  { label: string; txType: 'income' | 'expense'; flag: 'qxMoneyReceived' | 'paidSubcontractor' | 'paidChenPei'; amount: 'qxReceived' | 'qxSubcontractFee' | 'chenPei' }
+  {
+    label: string;
+    txType: 'income' | 'expense';
+    flag: 'qxMoneyReceived' | 'paidSubcontractor' | 'paidChenPei';
+    amount: 'qxReceived' | 'qxSubcontractFee' | 'chenPei';
+    /** 入账流水使用的内置分类名称（与 category.kind = txType 对应） */
+    category: string;
+  }
 > = {
-  qx_received: { label: '项目结算', txType: 'income', flag: 'qxMoneyReceived', amount: 'qxReceived' },
-  paid_subcontractor: { label: '支付下家', txType: 'expense', flag: 'paidSubcontractor', amount: 'qxSubcontractFee' },
-  paid_chen_pei: { label: '支付陈沛', txType: 'expense', flag: 'paidChenPei', amount: 'chenPei' }
+  qx_received: { label: '项目结算', txType: 'income', flag: 'qxMoneyReceived', amount: 'qxReceived', category: PROJECT_INCOME_CATEGORY_NAME },
+  paid_subcontractor: { label: '支付下家', txType: 'expense', flag: 'paidSubcontractor', amount: 'qxSubcontractFee', category: '企信支付下家分包费' },
+  paid_chen_pei: { label: '支付陈沛', txType: 'expense', flag: 'paidChenPei', amount: 'chenPei', category: '企信支付陈沛' }
 };
 const POSTING_KINDS = Object.keys(POSTING_RULES) as ProjectPostingKind[];
 
@@ -164,6 +172,12 @@ export class ProjectService {
     this.categories = new CategoryService(db, deviceId);
   }
 
+  /** 入账流水的内置分类 id；分类不存在（极端情况，如被手工改库）返回 null，入账仍可进行但不带分类 */
+  private postingCategoryId(kind: ProjectPostingKind): string | null {
+    const rule = POSTING_RULES[kind];
+    return this.categories.findByName(rule.txType, rule.category)?.id ?? null;
+  }
+
   /** 各项目当前「有效入账」的字段（有对应未作废流水） */
   private postedKindsOf(ids: string[]): Map<string, ProjectPostingKind[]> {
     const map = new Map<string, ProjectPostingKind[]>();
@@ -254,7 +268,7 @@ export class ProjectService {
       type: rule.txType,
       amount: project.qxReceived,
       accountId: posting.accountId,
-      categoryId: this.categories.projectIncomeId(), // 内置「项目收入」；往来单位、备注置空
+      categoryId: this.postingCategoryId('qx_received'), // 内置「项目收入」；往来单位、备注置空
       note: ''
     });
     this.db.prepare('UPDATE project SET qx_money_received = 1, updated_at = ? WHERE id = ?').run(now, project.id);
@@ -389,7 +403,8 @@ export class ProjectService {
             type: rule.txType,
             amount,
             accountId: input.postingAccountId,
-            note: `项目「${name}」${rule.label}${rule.txType === 'income' ? '（收入）' : '（支出）'}`
+            categoryId: this.postingCategoryId(kind), // 内置分类；往来单位、备注置空
+            note: ''
           })
         )();
         this.db

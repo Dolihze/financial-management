@@ -102,7 +102,7 @@ npm run package
 | GET/POST | `/api/accounts` | 账户列表（含实时余额）/ 新建 |
 | PATCH | `/api/accounts/:id` | 修改名称/类型/备注 |
 | POST | `/api/accounts/:id/archive` | 归档（余额须为 0） |
-| GET/POST/PATCH/DELETE | `/api/categories` | 分类（PATCH 重命名；DELETE 为归档式删除，已使用的流水改挂兜底分类（收入=「其他收入」，支出=「其他支出」）；内置的默认分类不可编辑/删除：收入「其他收入」，支出「工资薪酬/社保/差旅费/房租水电/经营费/员工报销/其他支出」） |
+| GET/POST/PATCH/DELETE | `/api/categories` | 分类（PATCH 重命名；DELETE 为归档式删除，已使用的流水改挂兜底分类（收入=「其他收入」，支出=「其他支出」）；内置的默认分类不可编辑/删除：收入「项目收入/其他收入」，支出「工资薪酬/社保/差旅费/房租水电/经营费/员工报销/企信支付下家分包费/企信支付陈沛/车辆/其他支出」，内置分类按此顺序展示，兜底的「其他」类固定在内置分类最后） |
 | GET/POST/PATCH/DELETE | `/api/counterparties` | 往来单位（流水通过 `counterpartyId` 关联；PATCH 重命名并同步流水名称；DELETE 为归档式删除，流水解除关联但保留名称快照） |
 | GET/POST | `/api/transactions` | 流水查询（账户/类型/日期/关键字）/ 记账 |
 | POST | `/api/transactions/:id/void` | 作废 |

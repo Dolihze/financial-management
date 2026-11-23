@@ -148,6 +148,8 @@ async function confirmFlag(flag: ToggleKey, next: boolean): Promise<boolean> {
       // 之前已选过账户就默认带上，减少重复操作
       if (!accountId.value && accounts.value.length === 1) accountId.value = accounts.value[0]!.id;
       postingDate.value = today(); // 日期默认当天，不沿用上次选的日期，避免误入账到旧日期
+      // 支出方向叫「出账」账户/日期，收入方向叫「入账」
+      const verb = meta.direction === '支出' ? '出账' : '入账';
       await ElMessageBox({
         title: `确认切换「${meta.label}」为「是」？`,
         showCancelButton: true,
@@ -157,9 +159,9 @@ async function confirmFlag(flag: ToggleKey, next: boolean): Promise<boolean> {
         type: 'warning',
         message: () =>
           h('div', null, [
-            h('p', { style: 'margin:0 0 8px' }, `切换为「是」并保存后，会入账一笔${meta.direction}：${amountText}。请确认不是误操作。`),
+            h('p', { style: 'margin:0 0 8px' }, `切换为「是」并保存后，会产生一笔${meta.direction}：${amountText}。请确认不是误操作。`),
             h('div', { style: 'display:flex;align-items:center;gap:8px' }, [
-              h('span', null, '入账账户：'),
+              h('span', null, `${verb}账户：`),
               h(
                 ElSelect,
                 {
@@ -172,7 +174,7 @@ async function confirmFlag(flag: ToggleKey, next: boolean): Promise<boolean> {
               )
             ]),
             h('div', { style: 'display:flex;align-items:center;gap:8px;margin-top:8px' }, [
-              h('span', null, '入账日期：'),
+              h('span', null, `${verb}日期：`),
               h(ElDatePicker, {
                 modelValue: postingDate.value,
                 'onUpdate:modelValue': (v: string | null) => (postingDate.value = v ?? ''),
@@ -187,11 +189,11 @@ async function confirmFlag(flag: ToggleKey, next: boolean): Promise<boolean> {
           ]),
         beforeClose: (action, _inst, done) => {
           if (action === 'confirm' && !accountId.value) {
-            ElMessage.warning('请选择入账账户');
+            ElMessage.warning(`请选择${verb}账户`);
             return; // 不关闭弹窗
           }
           if (action === 'confirm' && !/^\d{4}-\d{2}-\d{2}$/.test(postingDate.value)) {
-            ElMessage.warning('请选择入账日期');
+            ElMessage.warning(`请选择${verb}日期`);
             return;
           }
           done();
@@ -276,7 +278,7 @@ watch(
 async function save() {
   if (!(await formRef.value?.validate().catch(() => false))) return;
   if (newlyPosted.value.length > 0 && !accountId.value) {
-    ElMessage.warning('切换为「是」需要入账，请重新切换并选择入账账户');
+    ElMessage.warning('切换为「是」需要出账，请重新切换并选择出账账户');
     return;
   }
   const before = project.value?.postedKinds ?? [];

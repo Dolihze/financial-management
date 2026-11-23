@@ -609,7 +609,37 @@ describe('项目管理（Excel 导入）', () => {
       expect(sum('income')).toEqual([80_000]); // 企信实收
       expect(sum('expense')).toEqual([-40_000, -5_000]); // 分包费 + 陈沛，支出为负
       expect(await balance(acc)).toBe(1_000_000 + 80_000 - 40_000 - 5_000);
-      expect(txs.every((t) => t.note.includes('入账项目'))).toBe(true);
+      // 入账流水：按字段使用内置分类，往来单位与备注置空
+      const listed = ((await ctx.app.inject({ url: `/api/transactions?accountId=${acc}&limit=100` })).json() as {
+        items: Array<{ type: string; categoryName: string; counterparty: string; counterpartyId: string | null; note: string; lines: Array<{ amount: number }> }>;
+      }).items;
+      const catOf = (amount: number) => listed.find((t) => t.lines[0]!.amount === amount)!;
+      expect(catOf(80_000)).toMatchObject({ categoryName: '项目收入' });
+      expect(catOf(-40_000)).toMatchObject({ categoryName: '企信支付下家分包费' });
+      expect(catOf(-5_000)).toMatchObject({ categoryName: '企信支付陈沛' });
+      for (const t of listed) expect(t).toMatchObject({ counterparty: '', counterpartyId: null, note: '' });
+    });
+
+    it('只把「支付下家」切换为是：恰好新增一笔支出，金额为企信支付下家，分类「企信支付下家分包费」，往来单位和备注为空', async () => {
+      const { acc, id } = await setup();
+      expect((await patch(id, full({ paidSubcontractor: true, postingAccountId: acc, postingDate: '2026-04-01' }))).statusCode).toBe(200);
+      const items = ((await ctx.app.inject({ url: `/api/transactions?accountId=${acc}&limit=100` })).json() as {
+        items: Array<{ type: string; occurredOn: string; categoryName: string; counterparty: string; note: string; lines: Array<{ amount: number }> }>;
+      }).items;
+      expect(items).toHaveLength(1);
+      expect(items[0]).toMatchObject({ type: 'expense', occurredOn: '2026-04-01', categoryName: '企信支付下家分包费', counterparty: '', note: '' });
+      expect(items[0]!.lines[0]!.amount).toBe(-40_000);
+    });
+
+    it('只把「支付陈沛」切换为是：恰好新增一笔支出，金额为陈沛，分类「企信支付陈沛」，往来单位和备注为空', async () => {
+      const { acc, id } = await setup();
+      expect((await patch(id, full({ paidChenPei: true, postingAccountId: acc }))).statusCode).toBe(200);
+      const items = ((await ctx.app.inject({ url: `/api/transactions?accountId=${acc}&limit=100` })).json() as {
+        items: Array<{ type: string; categoryName: string; counterparty: string; note: string; lines: Array<{ amount: number }> }>;
+      }).items;
+      expect(items).toHaveLength(1);
+      expect(items[0]).toMatchObject({ type: 'expense', categoryName: '企信支付陈沛', counterparty: '', note: '' });
+      expect(items[0]!.lines[0]!.amount).toBe(-5_000);
     });
 
     it('是 -> 否：作废对应流水（不物理删除），余额回退，其他字段的流水不受影响', async () => {
@@ -1777,7 +1807,7 @@ describe('收入分类管理', () => {
     await post('/api/categories', { name: '乙收入', kind: 'income' });
     await post('/api/categories', { name: '丙收入', kind: 'income' });
     const names = (await incomeCats()).map((c) => c.name);
-    expect(names.slice(0, 2).sort()).toEqual(['其他收入', '项目收入'].sort()); // 内置在前
+    expect(names.slice(0, 2)).toEqual(['项目收入', '其他收入']); // 内置在前，「其他收入」为最后一个内置
     expect(names.slice(2)).toEqual(['丙收入', '乙收入', '甲收入']);
   });
 
@@ -1951,10 +1981,17 @@ describe('支出分类管理', () => {
   const expenseCats = async () => (await cats()).filter((c) => c.kind === 'expense');
   const del = (id: string) => ctx.app.inject({ method: 'DELETE', url: `/api/categories/${id}` });
 
-  it('默认只有 7 个内置支出分类，且全部锁定（不可编辑/删除）', async () => {
+  it('默认只有 10 个内置支出分类，且全部锁定（不可编辑/删除）；「其他支出」固定在内置分类的最后一个', async () => {
     const list = await expenseCats();
-    expect(list.map((c) => c.name).sort()).toEqual(['工资薪酬', '社保', '差旅费', '房租水电', '经营费', '员工报销', '其他支出'].sort());
+    expect(list.map((c) => c.name)).toEqual([
+      '工资薪酬', '社保', '差旅费', '房租水电', '经营费', '员工报销', '企信支付下家分包费', '企信支付陈沛', '车辆', '其他支出'
+    ]);
     expect(list.every((c) => c.builtin)).toBe(true);
+    // 新增自定义分类排在全部内置分类之后，「其他支出」仍是最后一个内置分类
+    await post('/api/categories', { name: '培训费', kind: 'expense' });
+    const after = (await expenseCats()).map((c) => c.name);
+    expect(after.indexOf('其他支出')).toBe(9);
+    expect(after[10]).toBe('培训费');
     for (const c of list) {
       expect((await patchJson(`/api/categories/${c.id}`, { name: '改名' })).statusCode).toBe(403);
       expect((await del(c.id)).statusCode).toBe(403);

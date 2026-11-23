@@ -24,10 +24,17 @@ const toCategory = (r: CategoryRow): Category => ({
 /** 内置收入分类「项目收入」：未结算项目归入合同（结算）入账时使用 */
 export const PROJECT_INCOME_CATEGORY_NAME = '项目收入';
 
-/** 默认分类（均为内置，不可编辑/删除），其余由用户自行新增 */
+/**
+ * 默认分类（均为内置，不可编辑/删除），其余由用户自行新增。
+ * 数组顺序即展示顺序（写入 sort_order，从 1 起）；兜底分类「其他收入/其他支出」固定放在各自内置分类的最后。
+ * 与迁移 v19 的 sort_order 保持一致。
+ */
 const DEFAULT_CATEGORIES: Array<{ kind: 'income' | 'expense'; names: string[] }> = [
   { kind: 'income', names: [PROJECT_INCOME_CATEGORY_NAME, '其他收入'] },
-  { kind: 'expense', names: ['工资薪酬', '社保', '差旅费', '房租水电', '经营费', '员工报销', '其他支出'] }
+  {
+    kind: 'expense',
+    names: ['工资薪酬', '社保', '差旅费', '房租水电', '经营费', '员工报销', '企信支付下家分包费', '企信支付陈沛', '车辆', '其他支出']
+  }
 ];
 
 /** 删除自定义分类时，已使用它的流水改挂到该类型的兜底分类 */
@@ -49,13 +56,11 @@ export class CategoryService {
     const count = (this.db.prepare('SELECT COUNT(*) AS c FROM category').get() as { c: number }).c;
     if (count > 0) return;
     const insert = this.db.prepare(
-      'INSERT INTO category (id,name,kind,parent_id,created_at,builtin) VALUES (?,?,?,NULL,?,?)'
+      'INSERT INTO category (id,name,kind,parent_id,created_at,builtin,sort_order) VALUES (?,?,?,NULL,?,?,?)'
     );
     this.db.transaction(() => {
       for (const group of DEFAULT_CATEGORIES) {
-        for (const name of group.names) {
-          insert.run(newId(), name, group.kind, nowIso(), 1);
-        }
+        group.names.forEach((name, i) => insert.run(newId(), name, group.kind, nowIso(), 1, i + 1));
       }
     })();
   }
@@ -67,7 +72,7 @@ export class CategoryService {
         .prepare(
           `SELECT c.id,c.name,c.kind,c.parent_id,c.builtin,
                   (SELECT COUNT(*) FROM tx t WHERE t.category_id = c.id) AS usage
-           FROM category c WHERE c.archived = 0 ORDER BY c.kind, c.builtin DESC, c.created_at DESC, c.rowid DESC`
+           FROM category c WHERE c.archived = 0 ORDER BY c.kind, c.builtin DESC, c.sort_order ASC, c.created_at DESC, c.rowid DESC`
         )
         .all() as CategoryRow[]
     ).map(toCategory);
@@ -151,11 +156,6 @@ export class CategoryService {
       .prepare(`SELECT ${COLUMNS} FROM category WHERE kind = ? AND name = ? AND archived = 0`)
       .get(kind, name) as CategoryRow | undefined;
     return row ? toCategory(row) : undefined;
-  }
-
-  /** 内置「项目收入」分类 id；不存在（极端情况，如被手工改库）返回 null，入账仍可进行但不带分类 */
-  projectIncomeId(): string | null {
-    return this.findByName('income', PROJECT_INCOME_CATEGORY_NAME)?.id ?? null;
   }
 
   private assertNameFree(kind: 'income' | 'expense', name: string): void {

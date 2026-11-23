@@ -69,7 +69,7 @@ const menus = [
 <template>
   <el-container style="height: 100%">
     <el-aside width="200px" style="background: #1f2d3d">
-      <div style="color: #fff; font-size: 18px; font-weight: 600; padding: 20px 16px">财务管理</div>
+      <div style="color: #fff; font-size: 20px; font-weight: 600; padding: 20px 16px">财务管理</div>
       <el-menu :default-active="(route.meta.menu as string | undefined) ?? route.path" router background-color="#1f2d3d" text-color="#bfcbd9" active-text-color="#409eff">
         <el-menu-item v-for="m in menus" :key="m.path" :index="m.path">
           <el-icon><component :is="m.icon" /></el-icon>

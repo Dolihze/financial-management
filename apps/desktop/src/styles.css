@@ -1,3 +1,25 @@
+﻿/* 全局字号：在 Element Plus 默认值基础上统一 +2px（弹层挂在 body 下，故写在 :root） */
+:root {
+  --el-font-size-extra-large: 22px;
+  --el-font-size-large: 20px;
+  --el-font-size-medium: 18px;
+  --el-font-size-base: 16px;
+  --el-font-size-small: 15px;
+  --el-font-size-extra-small: 14px;
+
+  /* 以下组件在 Element Plus 里写死了 px，不跟随上面的变量，需单独 +2px */
+  --el-alert-title-font-size: 16px;
+  --el-alert-description-font-size: 16px;
+  --el-checkbox-font-size: 16px;
+  --el-dialog-content-font-size: 16px;
+  --el-pagination-font-size: 16px;
+  --el-pagination-font-size-small: 14px;
+  --el-select-input-font-size: 16px;
+  --el-tag-font-size: 14px;
+  --el-popover-title-font-size: 18px;
+  --el-notification-title-font-size: 18px;
+  --el-result-title-font-size: 22px;
+}
 html,
 body,
 #app {
@@ -6,7 +28,53 @@ body,
 }
 body {
   font-family: 'Microsoft YaHei', 'PingFang SC', system-ui, sans-serif;
+  font-size: 16px;
   background: #f5f7fa;
+}
+/* Element Plus 中写死 px、不跟随上面变量的规则，逐项 +2px */
+.el-form-item {
+  --font-size: 16px;
+  font-size: 16px;
+}
+.el-form-item--small {
+  --font-size: 14px;
+  font-size: 14px;
+}
+.el-switch,
+.el-switch__label,
+.el-switch__label *,
+.el-breadcrumb,
+.el-descriptions__table .el-descriptions__cell,
+.el-progress__text,
+.el-message__content,
+.el-picker-panel__shortcut,
+.el-date-editor .el-range-separator,
+.el-range-editor--large .el-range-input,
+.el-upload-dragger .el-upload__text,
+.el-upload-list__item,
+.el-loading-spinner .el-loading-text {
+  font-size: 16px;
+}
+.el-upload__tip,
+.el-form-item__error,
+.el-date-table,
+.el-month-table,
+.el-year-table,
+.el-quarter-table,
+.el-progress-bar__innerText {
+  font-size: 14px;
+}
+.el-step__title,
+.el-date-picker__header-label,
+.el-date-range-picker__header-label {
+  font-size: 18px;
+}
+.el-step__description {
+  font-size: 14px;
+}
+.el-menu-item [class^='el-icon'],
+.el-sub-menu .el-icon {
+  font-size: 20px;
 }
 .money-in {
   color: #67c23a;
@@ -45,6 +113,6 @@ body {
 .log-path {
   margin-top: 12px;
   color: var(--el-text-color-secondary);
-  font-size: 12px;
+  font-size: 14px;
   word-break: break-all;
 }

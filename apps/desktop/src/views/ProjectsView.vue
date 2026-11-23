@@ -229,7 +229,7 @@ onMounted(load);
 /* 是/否 图标：绿勾、红叉 */
 .flag-yes,
 .flag-no {
-  font-size: 18px;
+  font-size: 20px;
   vertical-align: middle;
 }
 .flag-yes {

@@ -28,7 +28,7 @@ async function load() {
 }
 
 // ---------- 前端分页 ----------
-const PAGE_SIZE = 30;
+const PAGE_SIZE = 15;
 const currentPage = ref(1);
 const pageRows = computed(() => batches.value.slice((currentPage.value - 1) * PAGE_SIZE, currentPage.value * PAGE_SIZE));
 const rowIndex = (i: number) => (currentPage.value - 1) * PAGE_SIZE + i + 1;
@@ -125,7 +125,6 @@ onMounted(load);
           <a class="link" href="javascript:void(0)" title="查看该批次下的合同" @click.prevent="openBatch(row)">{{ batchTitle(row) }}</a>
         </template>
       </el-table-column>
-      <el-table-column prop="note" label="备注" min-width="180" show-overflow-tooltip />
       <el-table-column prop="contractCount" label="合同数" width="90" align="right" />
       <el-table-column prop="projectCount" label="项目数" width="90" align="right" />
       <el-table-column label="合同总价" width="150" align="right">
@@ -137,6 +136,7 @@ onMounted(load);
       <el-table-column label="企信利润" width="150" align="right">
         <template #default="{ row }">{{ formatMoney(row.qxProfit) }}</template>
       </el-table-column>
+      <el-table-column prop="note" label="备注" min-width="180" show-overflow-tooltip />
       <el-table-column label="操作" width="130" fixed="right">
         <template #default="{ row }">
           <el-button link type="primary" @click="openEdit(row)">编辑</el-button>

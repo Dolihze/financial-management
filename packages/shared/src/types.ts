@@ -252,6 +252,8 @@ export interface Contract {
   totalPrice: number;
   /** 其下项目数 */
   projectCount: number;
+  /** 其下项目的区域（去重、非空、按名称排序） */
+  regions: string[];
   createdAt: string;
   updatedAt: string;
 }

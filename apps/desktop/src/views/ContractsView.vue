@@ -40,16 +40,39 @@ async function load() {
   }
 }
 
-// 同一组件下切换批次（路由参数变化）时重新加载，并回到第一页
+// 同一组件下切换批次（路由参数变化）时重新加载，并回到第一页、清空区域筛选
 watch(batchId, () => {
   currentPage.value = 1;
+  selectedRegions.value = [];
   load();
 });
 
+// ---------- 区域下拉筛选（表头漏斗，多选；合同含多个区域，命中任一即显示） ----------
+const selectedRegions = ref<string[]>([]);
+const regionFilters = computed(() => {
+  const set = new Set(contracts.value.flatMap((c) => c.regions));
+  return [...set].sort((a, b) => a.localeCompare(b, 'zh-CN', { numeric: true })).map((r) => ({ text: r, value: r }));
+});
+const filteredContracts = computed(() =>
+  selectedRegions.value.length === 0 ? contracts.value : contracts.value.filter((c) => c.regions.some((r) => selectedRegions.value.includes(r)))
+);
+function onFilterChange(filters: Record<string, unknown[]>) {
+  if ('region' in filters) selectedRegions.value = filters.region as string[];
+  currentPage.value = 1;
+}
+// 数据重新加载后结果变少时，当前页可能越界：夹回最后一页
+watch(
+  () => filteredContracts.value.length,
+  (len) => {
+    const last = Math.max(1, Math.ceil(len / PAGE_SIZE));
+    if (currentPage.value > last) currentPage.value = last;
+  }
+);
+
 // ---------- 前端分页 ----------
-const PAGE_SIZE = 30;
+const PAGE_SIZE = 15;
 const currentPage = ref(1);
-const pageRows = computed(() => contracts.value.slice((currentPage.value - 1) * PAGE_SIZE, currentPage.value * PAGE_SIZE));
+const pageRows = computed(() => filteredContracts.value.slice((currentPage.value - 1) * PAGE_SIZE, currentPage.value * PAGE_SIZE));
 const rowIndex = (i: number) => (currentPage.value - 1) * PAGE_SIZE + i + 1;
 
 // ---------- 跳转 ----------
@@ -200,12 +223,30 @@ onMounted(load);
       <span class="hint">点击合同编号进入该合同的项目进度</span>
     </div>
 
-    <el-table v-loading="loading" :data="pageRows" border class="contract-table" empty-text="该批次下暂无合同，点击「新增合同」创建">
+    <el-table
+      v-loading="loading"
+      :data="pageRows"
+      border
+      class="contract-table"
+      empty-text="该批次下暂无合同，点击「新增合同」创建"
+      @filter-change="onFilterChange"
+    >
       <el-table-column type="index" :index="rowIndex" label="序号" width="70" />
       <el-table-column label="合同编号" min-width="200">
         <template #default="{ row }">
           <a class="contract-link" href="javascript:void(0)" title="查看该合同的项目进度" @click.prevent="openProgress(row)">{{ row.contractNo }}</a>
         </template>
+      </el-table-column>
+      <el-table-column
+        column-key="region"
+        label="区域"
+        min-width="200"
+        show-overflow-tooltip
+        :filters="regionFilters"
+        :filter-method="() => true"
+        filter-multiple
+      >
+        <template #default="{ row }">{{ row.regions.join('、') }}</template>
       </el-table-column>
       <el-table-column prop="projectCount" label="项目数" width="90" align="right" />
       <el-table-column label="合同总价" width="180" align="right">
@@ -220,10 +261,10 @@ onMounted(load);
     </el-table>
 
     <el-pagination
-      v-if="contracts.length > PAGE_SIZE"
+      v-if="filteredContracts.length > PAGE_SIZE"
       v-model:current-page="currentPage"
       :page-size="PAGE_SIZE"
-      :total="contracts.length"
+      :total="filteredContracts.length"
       layout="total, prev, pager, next"
       background
       style="margin-top: 16px; justify-content: flex-end"

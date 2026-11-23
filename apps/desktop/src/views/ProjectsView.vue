@@ -90,7 +90,7 @@ const filtered = computed(() =>
 );
 
 /** 前端分页：只切分表格显示的行；统计（totals）始终基于全部筛选结果 filtered，不受分页影响 */
-const PAGE_SIZE = 30;
+const PAGE_SIZE = 10;
 const currentPage = ref(1);
 const pageRows = computed(() => filtered.value.slice((currentPage.value - 1) * PAGE_SIZE, currentPage.value * PAGE_SIZE));
 /** 序号跨页连续：第 2 页从 31 开始 */

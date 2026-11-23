@@ -1136,6 +1136,19 @@ describe('合同管理', () => {
     expect(await get(`/api/projects/${id('项目丙')}`)).toMatchObject({ contractId: null });
   });
 
+  it('合同带出其下项目的区域：去重、去空、排序；换合同或项目归档后随之变化', async () => {
+    const r = (name: string, region: string) => ['', '', region, name, 0, 0, 0, 0, 0, '否', '否', '否'];
+    const id = await importProjects([r('项目甲', '陇南'), r('项目乙', '天水'), r('项目丙', '天水'), r('项目丁', ''), r('项目戊', '兰州')]);
+    const b = await mkBatch(1);
+    const c = (await mkContract(b, 'HT-1', ['项目甲', '项目乙', '项目丙', '项目丁'].map((n) => ({ projectId: id(n), contractPrice: 1 })))).json();
+    const regionsOf = async () => ((await get('/api/contracts')) as Array<{ id: string; regions: string[] }>).find((x) => x.id === c.id)!.regions;
+    const expected = ['天水', '陇南'].sort();
+    expect(await regionsOf()).toEqual(expected);
+    expect((await get(`/api/contracts/${c.id}`)).regions).toEqual(expected);
+    await post(`/api/projects/${id('项目甲')}/archive`, {});
+    expect(await regionsOf()).toEqual(['天水']);
+  });
+
   it('已有区域列表：未归档项目里出现过的非空区域，去重并排序；项目归档后不再出现', async () => {
     const r = (name: string, region: string) => ['', '', region, name, 0, 0, 0, 0, 0, '否', '否', '否'];
     const id = await importProjects([r('项目甲', '天水'), r('项目乙', '陇南'), r('项目丙', '天水'), r('项目丁', '')]);

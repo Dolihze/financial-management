@@ -969,6 +969,31 @@ describe('合同管理', () => {
     expect(await get(`/api/projects/${id('项目丙')}`)).toMatchObject({ contractPrice: 50 }); // 失败不改动
   });
 
+  it('列表「编辑」弹框的保存方式：projects 传空数组只改合同编号/所属批次，项目与合同价原样不动；编号同步到项目', async () => {
+    const id = await importProjects([row('', '项目甲'), row('', '项目乙'), row('', '项目丙')]);
+    const b1 = await mkBatch(1);
+    const b2 = await mkBatch(2);
+    const c = (await mkContract(b1, 'HT-1', [{ projectId: id('项目甲'), contractPrice: 300 }, { projectId: id('项目乙'), contractPrice: 700 }])).json();
+    await mkContract(b1, 'HT-2', [{ projectId: id('项目丙'), contractPrice: 5 }]);
+
+    // 只改编号
+    const renamed = await patch(`/api/contracts/${c.id}`, { batchId: b1, contractNo: 'HT-1X', projects: [] });
+    expect(renamed.statusCode).toBe(200);
+    expect(renamed.json()).toMatchObject({ contractNo: 'HT-1X', batchId: b1, projectCount: 2, totalPrice: 1000 });
+    expect(await get(`/api/projects/${id('项目乙')}`)).toMatchObject({ contractNo: 'HT-1X', contractPrice: 700, contractId: c.id });
+
+    // 同时改编号和批次
+    const both = await patch(`/api/contracts/${c.id}`, { batchId: b2, contractNo: 'HT-1Y', projects: [] });
+    expect(both.json()).toMatchObject({ contractNo: 'HT-1Y', batchId: b2, batchNo: 2, projectCount: 2, totalPrice: 1000 });
+    expect(await get(`/api/projects/${id('项目甲')}`)).toMatchObject({ contractNo: 'HT-1Y', batchNo: 2, contractPrice: 300 });
+
+    // 校验：空编号 400、与其他合同重号 409、批次不存在 404；失败都不改动
+    expect((await patch(`/api/contracts/${c.id}`, { batchId: b2, contractNo: '   ', projects: [] })).statusCode).toBe(400);
+    expect((await patch(`/api/contracts/${c.id}`, { batchId: b2, contractNo: 'HT-2', projects: [] })).statusCode).toBe(409);
+    expect((await patch(`/api/contracts/${c.id}`, { batchId: 'nope', contractNo: 'HT-1Y', projects: [] })).statusCode).toBe(404);
+    expect(await get(`/api/contracts/${c.id}`)).toMatchObject({ contractNo: 'HT-1Y', batchId: b2, projectCount: 2, totalPrice: 1000 });
+  });
+
   it('移动合同到其他批次：合同连同其下项目一起移动，项目批次号同步；批次不存在 404 不落库；省略 batchId 保持不变', async () => {
     const id = await importProjects([row('', '项目甲'), row('', '项目乙')]);
     const b1 = await mkBatch(1);

@@ -1,19 +1,22 @@
-﻿<script setup lang="ts">
-import type { Account, Batch, Project, ProjectPostingKind } from '@fm/shared';
+<script setup lang="ts">
+import type { Account, Project, ProjectPostingKind } from '@fm/shared';
 import { ElDatePicker, ElMessage, ElMessageBox, ElOption, ElSelect, type FormInstance, type FormRules } from 'element-plus';
-import { computed, h, onMounted, reactive, ref } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
+import { computed, h, reactive, ref, watch } from 'vue';
 import { api } from '@/api';
-import ProjectBreadcrumb, { type Crumb } from '@/components/ProjectBreadcrumb.vue';
 import YesNoRadio from '@/components/YesNoRadio.vue';
 import { errorMessage, formatMoney, fromCents, toCents, today } from '@/utils/format';
 import {
   calcFromContractPrice, CHEN_PEI_RATE, DEFAULT_RATES, QX_RECEIVED_RATE, loadRates, parseRate, rateToText, saveRates, SUBCONTRACT_MODES, type FormulaRates, type SubcontractMode
 } from '@/utils/projectFormula';
 
-const route = useRoute();
-const router = useRouter();
-const id = route.params.id as string;
+/**
+ * 编辑项目（弹窗）：原「项目详情」页的全部功能，搬进弹窗。
+ * 保存成功后触发 saved，由父页面刷新列表（删除项目在项目进度表的操作列里）。
+ */
+const props = defineProps<{ modelValue: boolean; projectId: string }>();
+const emit = defineEmits<{ (e: 'update:modelValue', v: boolean): void; (e: 'saved'): void }>();
+const visible = computed({ get: () => props.modelValue, set: (v) => emit('update:modelValue', v) });
+const id = computed(() => props.projectId);
 
 const loading = ref(false);
 const saving = ref(false);
@@ -218,20 +221,29 @@ const showPaidFlags = computed(() => {
 
 async function load() {
   loading.value = true;
+  project.value = null;
+  accountId.value = '';
   try {
-    const [p, accs] = await Promise.all([api.projects.get(id), api.accounts.list()]);
+    const [p, accs] = await Promise.all([api.projects.get(id.value), api.accounts.list()]);
     project.value = p;
     accounts.value = accs;
     fillForm(p);
-    // 面包屑要显示来源批次的名称；取不到（批次已被删除等）就只显示「…」，不影响项目本身
-    const bid = typeof route.query.batchId === 'string' ? route.query.batchId : '';
-    crumbBatch.value = bid ? await api.batches.get(bid).catch(() => null) : null;
+    formRef.value?.clearValidate();
   } catch (e) {
     ElMessage.error(errorMessage(e));
+    visible.value = false; // 项目不存在（已被删除等）：关掉弹窗，不留一个空弹窗
   } finally {
     loading.value = false;
   }
 }
+
+// 每次打开都重新拉取最新数据，避免带着上次未保存的残留
+watch(
+  () => props.modelValue,
+  (open) => {
+    if (open) load();
+  }
+);
 
 async function save() {
   if (!(await formRef.value?.validate().catch(() => false))) return;
@@ -242,7 +254,7 @@ async function save() {
   const before = project.value?.postedKinds ?? [];
   saving.value = true;
   try {
-    project.value = await api.projects.update(id, {
+    project.value = await api.projects.update(id.value, {
       region: form.region.trim(),
       name: form.name.trim(),
       contractPrice: toCents(form.contractPrice),
@@ -266,6 +278,8 @@ async function save() {
     if (posted.length) notes.push(`已入账 ${posted.length} 笔`);
     if (reverted.length) notes.push(`已回退 ${reverted.length} 笔`);
     ElMessage.success(notes.length ? `已保存，${notes.join('，')}` : '已保存');
+    visible.value = false;
+    emit('saved');
   } catch (e) {
     ElMessage.error(errorMessage(e));
   } finally {
@@ -273,72 +287,18 @@ async function save() {
   }
 }
 
-function reset() {
-  if (project.value) fillForm(project.value);
-  formRef.value?.clearValidate();
-}
-
-async function remove() {
-  try {
-    await ElMessageBox.confirm(
-      `确认删除项目「${project.value?.name ?? ''}」？删除后将不再显示在项目列表中。`,
-      '删除项目',
-      { type: 'warning', confirmButtonText: '确认删除', cancelButtonText: '取消', confirmButtonClass: 'el-button--danger' }
-    );
-  } catch {
-    return; // 用户取消
-  }
-  try {
-    await api.projects.archive(id);
-    ElMessage.success('已删除');
-    router.replace(backTarget());
-  } catch (e) {
-    ElMessage.error(errorMessage(e));
-  }
-}
-
-/**
- * 返回目标：回到来源层级。
- * - 来源（?batchId=&contractId=）由上一层页面带入；没有来源时用项目当前所属合同（合同对应的批次需要再查，这里取 query 或退到批次管理）。
- * - 项目不属于任何合同（或来源缺失）时回到批次管理。
- */
-function backTarget() {
-  const q = route.query;
-  const batchId = typeof q.batchId === 'string' ? q.batchId : '';
-  const contractId = typeof q.contractId === 'string' ? q.contractId : (project.value?.contractId ?? '');
-  if (batchId && contractId) return { name: 'projects', params: { batchId, contractId } };
-  if (batchId) return { name: 'contracts', params: { batchId } };
-  return { name: 'batches' };
-}
-
-/** 面包屑：批次管理 / 第N批 / 合同 / 项目名（来源缺失时只显示已知的层级） */
-const crumbBatch = ref<Batch | null>(null);
-const crumbs = computed<Crumb[]>(() => {
-  const target = backTarget();
-  const list: Crumb[] = [{ label: '批次管理', to: { name: 'batches' } }];
-  const batchId = target.name === 'batches' ? '' : (target.params as { batchId: string }).batchId;
-  if (batchId) {
-    const b = crumbBatch.value;
-    list.push({ label: b ? (b.batchNo === 0 ? '未分批' : `第 ${b.batchNo} 批`) : '…', to: { name: 'contracts', params: { batchId } } });
-  }
-  if (target.name === 'projects') {
-    const p = project.value;
-    list.push({ label: p?.contractNo || '合同', to: target as Crumb['to'] });
-  }
-  list.push({ label: project.value?.name ?? '项目详情' });
-  return list;
-});
-
-async function back() {
+/** 关闭前确认：有未保存的修改时提示（点遮罩/右上角叉/取消都会走这里） */
+async function beforeClose(done: () => void) {
   if (dirty.value) {
     try {
-      await ElMessageBox.confirm('有未保存的修改，确认离开？', '提示', { type: 'warning', confirmButtonText: '离开', cancelButtonText: '继续编辑' });
+      await ElMessageBox.confirm('有未保存的修改，确定放弃吗？', '提示', { type: 'warning', confirmButtonText: '放弃', cancelButtonText: '继续编辑' });
     } catch {
       return;
     }
   }
-  router.push(backTarget());
+  done();
 }
+const cancel = () => beforeClose(() => (visible.value = false));
 
 // ---------- 公式计算 ----------
 const rates = ref<FormulaRates>(loadRates());
@@ -404,31 +364,26 @@ function calculate() {
     ElMessage.success('已按公式计算，请确认后保存');
   }
 }
-
-onMounted(load);
 </script>
 
 <template>
-  <div v-loading="loading">
-    <ProjectBreadcrumb :items="crumbs" />
-
-    <div class="page-toolbar">
-      <el-button icon="Back" @click="back">返回上一级</el-button>
-      <span class="spacer" />
-      <el-button type="danger" plain icon="Delete" :disabled="!project" @click="remove">删除</el-button>
-      <el-button :disabled="!project || !dirty" @click="reset">重置</el-button>
-      <el-button type="primary" icon="Check" :loading="saving" :disabled="!project || !dirty" @click="save">保存</el-button>
-    </div>
-
-    <el-card v-if="project" shadow="never">
-      <el-form ref="formRef" :model="form" :rules="rules" label-width="150px" style="max-width: 760px" @submit.prevent>
+  <el-dialog
+    v-model="visible"
+    title="编辑项目"
+    width="820px"
+    top="4vh"
+    :close-on-click-modal="false"
+    :before-close="beforeClose"
+  >
+    <div v-loading="loading" class="body">
+      <el-form v-if="project" ref="formRef" :model="form" :rules="rules" label-width="150px" @submit.prevent>
         <el-form-item label="合同编号">
           <el-input :model-value="project.contractNo || '（未归入合同）'" disabled />
-          <div class="form-hint">合同归属请在合同的「编辑」页中维护</div>
+          <div class="form-hint">合同归属请在合同管理列表的「编辑」中维护</div>
         </el-form-item>
         <el-form-item label="批次号">
           <el-input :model-value="project.batchNo === null ? '（未分批）' : `第 ${project.batchNo} 批`" disabled />
-          <div class="form-hint">批次随所属合同走，要改批次请在合同的「编辑」页里修改合同所属批次</div>
+          <div class="form-hint">批次随所属合同走，要改批次请在合同管理列表的「编辑」里修改合同所属批次</div>
         </el-form-item>
         <el-form-item label="区域" prop="region">
           <el-input v-model="form.region" maxlength="50" />
@@ -477,7 +432,12 @@ onMounted(load);
           <el-input v-model="form.note" type="textarea" :rows="3" maxlength="500" show-word-limit />
         </el-form-item>
       </el-form>
-    </el-card>
+    </div>
+    <template #footer>
+      <el-button @click="cancel">取消</el-button>
+      <el-button type="primary" :loading="saving" :disabled="!project || !dirty" @click="save">确定</el-button>
+    </template>
+
     <el-dialog v-model="formulaVisible" title="公式维护" width="520px" append-to-body>
       <el-form label-width="150px" @submit.prevent>
         <el-form-item label="企信实收">
@@ -508,10 +468,17 @@ onMounted(load);
         <el-button type="primary" @click="saveFormula">保存</el-button>
       </template>
     </el-dialog>
-  </div>
+  </el-dialog>
 </template>
 
 <style scoped>
+/* 表单较长时在弹窗内部滚动，页脚按钮始终可见 */
+.body {
+  max-height: 68vh;
+  min-height: 120px;
+  overflow-y: auto;
+  padding-right: 8px;
+}
 /* 金额输入框：宽度约为原来的 1/3 */
 .money-input {
   width: 200px;

@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import type { Batch, ContractDetail, Project } from '@fm/shared';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { api } from '@/api';
 import ProjectBreadcrumb from '@/components/ProjectBreadcrumb.vue';
+import ProjectEditDialog from '@/components/ProjectEditDialog.vue';
 import { errorMessage, formatMoney } from '@/utils/format';
 
 /**
@@ -131,12 +132,80 @@ const summaryItems = computed(() => [
   { label: '陈沛', value: totals.value.chenPei, color: 'green' },
   { label: '企信利润', value: totals.value.qxProfit, color: 'red' }
 ]);
-/** 打开项目详情时带上来源（批次/合同），详情页的返回按钮与面包屑据此回到这一层 */
-function openDetail(id: string) {
-  router.push({ name: 'project-detail', params: { id }, query: { batchId: batchId.value, contractId: contractId.value } });
+// ---------- 编辑项目（弹窗）：原项目详情页的全部功能；保存/删除后刷新本页 ----------
+const edit = reactive({ visible: false, projectId: '' });
+function openEdit(p: Project) {
+  edit.projectId = p.id;
+  edit.visible = true;
 }
-function editContract() {
-  router.push({ name: 'contract-detail', params: { batchId: batchId.value, contractId: contractId.value } });
+
+/** 删除 = 归档（不物理删除）；已入账的项目后端会拒绝（409），需先在编辑里回退入账 */
+async function removeProject(p: Project) {
+  try {
+    await ElMessageBox.confirm(`确认删除项目「${p.name}」？删除后将不再显示在项目列表中。`, '删除项目', {
+      type: 'warning',
+      confirmButtonText: '确认删除',
+      cancelButtonText: '取消',
+      confirmButtonClass: 'el-button--danger'
+    });
+  } catch {
+    return; // 用户取消
+  }
+  try {
+    await api.projects.archive(p.id);
+    ElMessage.success('已删除');
+    await load();
+  } catch (e) {
+    ElMessage.error(errorMessage(e));
+  }
+}
+
+// ---------- 新增项目：从「项目结算 = 否」且未归入任何合同的已有项目中挑选，直接加入当前合同 ----------
+const add = reactive({ visible: false, loading: false, saving: false, keyword: '' });
+const candidates = ref<Project[]>([]);
+const picked = ref<Project[]>([]);
+
+const shownCandidates = computed(() => {
+  const k = add.keyword.trim();
+  return k ? candidates.value.filter((p) => p.name.includes(k) || p.region.includes(k)) : candidates.value;
+});
+
+async function openAdd() {
+  add.visible = true;
+  add.loading = true;
+  add.keyword = '';
+  picked.value = [];
+  try {
+    candidates.value = (await api.projects.list()).filter((p) => !p.contractId && !p.qxMoneyReceived);
+  } catch (e) {
+    ElMessage.error(errorMessage(e));
+  } finally {
+    add.loading = false;
+  }
+}
+
+async function confirmAdd() {
+  const c = contract.value;
+  if (!c) return;
+  if (picked.value.length === 0) return ElMessage.warning('请至少选择一个项目');
+  add.saving = true;
+  try {
+    // 新加入的项目沿用它原有的合同价；合同里已有项目按当前价原样带上（不改动）。批次、合同编号保持不变
+    await api.contracts.update(c.id, {
+      contractNo: c.contractNo,
+      projects: [
+        ...c.projects.map((p) => ({ projectId: p.id, contractPrice: p.contractPrice })),
+        ...picked.value.map((p) => ({ projectId: p.id, contractPrice: p.contractPrice }))
+      ]
+    });
+    ElMessage.success(`已新增 ${picked.value.length} 个项目`);
+    add.visible = false;
+    await load();
+  } catch (e) {
+    ElMessage.error(errorMessage(e));
+  } finally {
+    add.saving = false;
+  }
 }
 
 onMounted(load);
@@ -152,7 +221,7 @@ onMounted(load);
     </Teleport>
 
     <div class="page-toolbar">
-      <el-button icon="Edit" @click="editContract">编辑合同</el-button>
+      <el-button type="primary" icon="Plus" @click="openAdd">新增项目</el-button>
       <span class="hint">合同 {{ contract?.contractNo }}（{{ batchTitle }}）</span>
     </div>
 
@@ -168,11 +237,7 @@ onMounted(load);
       <el-table-column type="index" :index="rowIndex" label="序号" width="60" />
 
       <el-table-column prop="region" column-key="region" label="区域" width="80" :filters="regionFilters" :filter-method="() => true" filter-multiple />
-      <el-table-column label="项目名称" min-width="180">
-        <template #default="{ row }">
-          <a class="project-name" href="javascript:void(0)" @click.prevent="openDetail(row.id)">{{ row.name }}</a>
-        </template>
-      </el-table-column>
+      <el-table-column prop="name" label="项目名称" min-width="180" class-name="name-cell" />
       <el-table-column label="合同价" width="115">
         <template #default="{ row }">{{ formatMoney(row.contractPrice) }}</template>
       </el-table-column>
@@ -206,6 +271,12 @@ onMounted(load);
           <el-icon v-else class="flag-no" title="否"><CloseBold /></el-icon>
         </template>
       </el-table-column>
+      <el-table-column label="操作" width="120" fixed="right">
+        <template #default="{ row }">
+          <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
+          <el-button link type="danger" @click="removeProject(row)">删除</el-button>
+        </template>
+      </el-table-column>
     </el-table>
 
     <el-pagination
@@ -217,6 +288,37 @@ onMounted(load);
       background
       style="margin-top: 16px; justify-content: flex-end"
     />
+
+    <ProjectEditDialog v-model="edit.visible" :project-id="edit.projectId" @saved="load" />
+
+    <el-dialog v-model="add.visible" title="添加项目" width="760px" append-to-body :close-on-click-modal="false">
+      <el-input
+        v-model="add.keyword"
+        clearable
+        placeholder="按项目名称 / 区域筛选（仅显示项目结算为否、且未归入合同的项目）"
+        style="margin-bottom: 8px"
+      />
+      <el-table
+        v-loading="add.loading"
+        :data="shownCandidates"
+        border
+        height="300"
+        row-key="id"
+        empty-text="没有可添加的项目：需「项目结算」为否且未归入合同"
+        @selection-change="picked = $event"
+      >
+        <el-table-column type="selection" width="50" :reserve-selection="true" />
+        <el-table-column prop="region" label="区域" width="80" />
+        <el-table-column prop="name" label="项目名称" min-width="220" show-overflow-tooltip />
+        <el-table-column label="原合同价" width="130" align="right">
+          <template #default="{ row }">{{ formatMoney(row.contractPrice) }}</template>
+        </el-table-column>
+      </el-table>
+      <template #footer>
+        <el-button @click="add.visible = false">取消</el-button>
+        <el-button type="primary" :loading="add.saving" :disabled="picked.length === 0" @click="confirmAdd">添加 {{ picked.length || '' }}</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -250,26 +352,14 @@ onMounted(load);
   margin-right: 8px;
   color: var(--el-text-color-secondary);
 }
-/* 金额、编号不换行；项目名称列（自适应）单独允许换行 */
+/* 金额、编号不换行；项目名称列（自适应）单独允许换行：项目名称可能很长，break-all 兼容无空格的中文长串 */
 .project-table :deep(td .cell) {
   white-space: nowrap;
 }
-.project-table :deep(td .cell:has(.project-name)) {
-  white-space: normal;
-}
-/* 项目名称可能很长：用普通 <a>（块级文本）而不是 el-link（inline-flex + nowrap），
-   这样会占满单元格宽度并自动换行；break-all 兼容无空格的中文长串 */
-.project-name {
-  display: block;
-  color: var(--el-color-primary);
-  cursor: pointer;
-  text-decoration: none;
+.project-table :deep(td.name-cell .cell) {
   white-space: normal;
   word-break: break-all;
   line-height: 1.5;
-}
-.project-name:hover {
-  color: var(--el-color-primary-light-3);
 }
 /* 是/否 图标：绿勾、红叉 */
 .flag-yes,

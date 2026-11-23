@@ -16,6 +16,8 @@ const router = useRouter();
 const route = useRoute();
 const batchId = computed(() => route.params.batchId as string);
 const batch = ref<Batch | null>(null);
+/** 全部批次：「编辑」弹框里的所属批次下拉 */
+const allBatches = ref<Batch[]>([]);
 const contracts = ref<Contract[]>([]);
 const loading = ref(false);
 
@@ -26,9 +28,10 @@ async function load() {
   loading.value = true;
   try {
     // 批次不存在（被删除/链接过期）时后端返回 404，提示后回到批次管理
-    const [b, list] = await Promise.all([api.batches.get(batchId.value), api.contracts.list(batchId.value)]);
+    const [b, list, bs] = await Promise.all([api.batches.get(batchId.value), api.contracts.list(batchId.value), api.batches.list()]);
     batch.value = b;
     contracts.value = list;
+    allBatches.value = bs;
   } catch (e) {
     ElMessage.error(errorMessage(e));
     router.replace({ name: 'batches' });
@@ -55,7 +58,47 @@ function openProgress(c: Contract) {
   router.push({ name: 'projects', params: { batchId: batchId.value, contractId: c.id } });
 }
 
-/** 只有合同内部没有项目时才能删除（后端同样会校验）；编辑合同请先进入合同再点「编辑合同」 */
+// ---------- 编辑合同：改「所属批次」和「合同编号」 ----------
+const edit = reactive({ visible: false, saving: false, contract: null as Contract | null, batchId: '', contractNo: '' });
+const batchLabel = (b: Batch) => (b.batchNo === 0 ? '未分批' : `第 ${b.batchNo} 批`);
+const editNoError = computed(() => {
+  const v = edit.contractNo.trim();
+  if (!v) return '请输入合同编号';
+  if (v.length > 50) return '合同编号不能超过 50 个字符';
+  return '';
+});
+const editDirty = computed(
+  () => !!edit.contract && (edit.batchId !== edit.contract.batchId || edit.contractNo.trim() !== edit.contract.contractNo)
+);
+
+function openEdit(c: Contract) {
+  edit.contract = c;
+  edit.batchId = c.batchId;
+  edit.contractNo = c.contractNo;
+  edit.visible = true;
+}
+
+async function submitEdit() {
+  const c = edit.contract;
+  if (!c) return;
+  if (editNoError.value) return ElMessage.warning(editNoError.value);
+  edit.saving = true;
+  try {
+    // projects 传空数组：后端对请求里没出现的项目保持不变，所以只会修改合同编号 / 所属批次，合同价不受影响
+    await api.contracts.update(c.id, { batchId: edit.batchId, contractNo: edit.contractNo.trim(), projects: [] });
+    const moved = edit.batchId !== c.batchId;
+    ElMessage.success(moved ? '已保存，合同已移到所选批次' : '已保存');
+    edit.visible = false;
+    await load(); // 移走的合同不再属于当前批次，列表里会消失
+    if (pageRows.value.length === 0 && currentPage.value > 1) currentPage.value -= 1;
+  } catch (e) {
+    ElMessage.error(errorMessage(e));
+  } finally {
+    edit.saving = false;
+  }
+}
+
+/** 只有合同内部没有项目时才能删除（后端同样会校验） */
 async function remove(c: Contract) {
   if (c.projectCount > 0) {
     return ElMessage.warning(`合同「${c.contractNo}」下还有 ${c.projectCount} 个项目，不能删除。请先进入合同，删除其下的项目后再删除合同`);
@@ -168,8 +211,9 @@ onMounted(load);
       <el-table-column label="合同总价" width="180" align="right">
         <template #default="{ row }">{{ formatMoney(row.totalPrice) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="90" fixed="right">
+      <el-table-column label="操作" width="130" fixed="right">
         <template #default="{ row }">
+          <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
           <el-button link type="danger" @click="remove(row)">删除</el-button>
         </template>
       </el-table-column>
@@ -184,6 +228,24 @@ onMounted(load);
       background
       style="margin-top: 16px; justify-content: flex-end"
     />
+
+    <el-dialog v-model="edit.visible" title="编辑合同" width="480px" :close-on-click-modal="false">
+      <el-form label-width="90px" @submit.prevent>
+        <el-form-item label="所属批次" required>
+          <el-select v-model="edit.batchId" style="width: 100%" placeholder="请选择批次">
+            <el-option v-for="b in allBatches" :key="b.id" :label="batchLabel(b)" :value="b.id" />
+          </el-select>
+          <div v-if="edit.contract && edit.batchId !== edit.contract.batchId" class="form-tip">保存后，合同及其下项目将移到所选批次</div>
+        </el-form-item>
+        <el-form-item label="合同编号" required :error="edit.contractNo && editNoError ? editNoError : ''">
+          <el-input v-model="edit.contractNo" maxlength="50" @keyup.enter="submitEdit" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="edit.visible = false">取消</el-button>
+        <el-button type="primary" :loading="edit.saving" :disabled="!editDirty || !!editNoError" @click="submitEdit">保存</el-button>
+      </template>
+    </el-dialog>
 
     <el-dialog v-model="dlg.visible" :title="`新增合同（归属${batchTitle}）`" width="860px" :close-on-click-modal="false">
       <el-form label-width="90px" @submit.prevent>
@@ -268,6 +330,11 @@ onMounted(load);
 }
 .price-input {
   width: 220px;
+}
+.form-tip {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--el-text-color-secondary);
 }
 .err {
   font-size: 12px;

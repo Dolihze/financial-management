@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { Project } from '@fm/shared';
 import { ElMessage } from 'element-plus';
-import { computed, onMounted, reactive, ref } from 'vue';
+import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { api } from '@/api';
 import { errorMessage, formatMoney } from '@/utils/format';
@@ -57,12 +57,29 @@ const filtered = computed(() =>
   )
 );
 
+/** 前端分页：只切分表格显示的行；统计（totals）始终基于全部筛选结果 filtered，不受分页影响 */
+const PAGE_SIZE = 30;
+const currentPage = ref(1);
+const pageRows = computed(() => filtered.value.slice((currentPage.value - 1) * PAGE_SIZE, currentPage.value * PAGE_SIZE));
+/** 序号跨页连续：第 2 页从 31 开始 */
+const rowIndex = (i: number) => (currentPage.value - 1) * PAGE_SIZE + i + 1;
+
 function onFilterChange(filters: Record<string, unknown[]>) {
   for (const [col, vals] of Object.entries(filters)) {
     // column-key 即字段名
     if (col in selected) selected[col as FilterKey] = vals;
   }
+  currentPage.value = 1; // 筛选条件变了，回到第一页
 }
+
+// 数据重新加载后结果变少时，当前页可能越界：夹回最后一页
+watch(
+  () => filtered.value.length,
+  (len) => {
+    const last = Math.max(1, Math.ceil(len / PAGE_SIZE));
+    if (currentPage.value > last) currentPage.value = last;
+  }
+);
 
 /** 统计：对筛选结果的整数分直接求和，不做浮点运算 */
 const totals = computed(() => {
@@ -106,8 +123,8 @@ onMounted(load);
       </span>
     </div>
 
-    <el-table v-loading="loading" :data="filtered" border class="project-table" @filter-change="onFilterChange">
-      <el-table-column type="index" label="序号" width="60" />
+    <el-table v-loading="loading" :data="pageRows" border class="project-table" @filter-change="onFilterChange">
+      <el-table-column type="index" :index="rowIndex" label="序号" width="60" />
       <el-table-column prop="contractNo" column-key="contractNo" label="合同编号" width="145" :filters="contractNoFilters" :filter-method="() => true" filter-multiple />
       <el-table-column prop="batchNo" column-key="batchNo" label="批次号" width="85" :filters="batchNoFilters" :filter-method="() => true" filter-multiple />
       <el-table-column prop="region" column-key="region" label="区域" width="80" :filters="regionFilters" :filter-method="() => true" filter-multiple />
@@ -150,6 +167,16 @@ onMounted(load);
         </template>
       </el-table-column>
     </el-table>
+
+    <el-pagination
+      v-if="filtered.length > PAGE_SIZE"
+      v-model:current-page="currentPage"
+      :page-size="PAGE_SIZE"
+      :total="filtered.length"
+      layout="total, prev, pager, next"
+      background
+      style="margin-top: 16px; justify-content: flex-end"
+    />
   </div>
 </template>
 

@@ -1,8 +1,9 @@
-import type { Contract, ContractDetail, CreateContractInput, UpdateContractInput } from '@fm/shared';
+import type { Contract, ContractDetail, CreateContractInput, SettlementInput, UpdateContractInput } from '@fm/shared';
 import type { Db } from '../db/database';
 import { AppError, newId, nowIso } from '../utils';
 import { writeAudit } from './audit';
 import { UNBATCHED_NO } from './batchService';
+import { ProjectService } from './projectService';
 
 interface ContractRow {
   id: string;
@@ -22,14 +23,19 @@ const CONTRACT_SELECT = `SELECT c.id, c.contract_no, c.batch_id, b.batch_no, c.c
  * - 合同总价不落库：= 其下项目「合同价」之和（整数分求和，不做浮点运算）。
  * - 新增合同：从「项目结算 = 否」且尚未归入任何合同的项目中挑选，并给每个项目设置合同价。
  * - 项目归入合同后：project.contract_id / contract_no / batch_no 一并设置。
- *   不会修改「项目结算」：结算由项目详情里单独切换（切换会入账生成收入流水），这里不能悄悄改变账目。
+ * - 项目归入合同 = 结算：归入的同时把「项目结算」置为是，并按企信实收记一笔收入（需选择入账账户），
+ *   所以合同下的项目一定是已结算项目；与项目详情切换「项目结算」为是同一套入账逻辑，同一事务内完成。
  * - 删除合同：不物理删除，归档合同，并清空其下项目的合同归属与批次号（项目回到未结算）。
  */
 export class ContractService {
+  private readonly projectService: ProjectService;
+
   constructor(
     private readonly db: Db,
     private readonly deviceId: string
-  ) {}
+  ) {
+    this.projectService = new ProjectService(db, deviceId);
+  }
 
   private summaryOf(row: ContractRow): Contract {
     const agg = this.db
@@ -118,7 +124,41 @@ export class ContractService {
     if (clash) throw new AppError(`合同编号「${contractNo}」已存在`, 409, 'DUPLICATE_CONTRACT_NO');
   }
 
-  /** 新增合同：归属某个批次，挑选未结算项目并设置各自的合同价，整个过程一个事务 */
+  /** 入账日期：未指定用服务器本地日期（不能用 toISOString，UTC 与本地时区会差一天） */
+  private postingDateOf(settlement: SettlementInput): string {
+    if (settlement.date) return settlement.date;
+    const d = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  }
+
+  /**
+   * 校验待归入合同的项目（必须存在、未归档、未归入合同、项目结算 = 否），返回它们的结算所需信息。
+   * 有项目要归入时必须提供入账账户（归入 = 结算 = 入账）。在事务内调用，先全部校验再写库。
+   */
+  private loadProjectsToSettle(
+    projects: Array<{ projectId: string }>,
+    settlement: SettlementInput | undefined
+  ): Array<{ id: string; name: string; qxReceived: number }> {
+    if (projects.length === 0) return [];
+    if (!settlement?.accountId) throw new AppError('项目归入合同即结算入账，请选择入账账户', 400, 'POSTING_ACCOUNT_REQUIRED');
+    const find = this.db.prepare(
+      'SELECT id, name, contract_id AS contractId, qx_received AS qxReceived, qx_money_received AS settled FROM project WHERE id = ? AND archived = 0'
+    );
+    const found: Array<{ id: string; name: string; qxReceived: number }> = [];
+    for (const p of projects) {
+      const hit = find.get(p.projectId) as
+        | { id: string; name: string; contractId: string | null; qxReceived: number; settled: number }
+        | undefined;
+      if (!hit) throw new AppError('所选项目不存在', 404, 'NOT_FOUND');
+      if (hit.contractId) throw new AppError(`项目「${hit.name}」已归入其他合同`, 409, 'PROJECT_ALREADY_IN_CONTRACT');
+      if (hit.settled === 1) throw new AppError(`项目「${hit.name}」已结算，只能从未结算的项目中选择`, 409, 'PROJECT_ALREADY_SETTLED');
+      found.push({ id: hit.id, name: hit.name, qxReceived: hit.qxReceived });
+    }
+    return found;
+  }
+
+  /** 新增合同：归属某个批次，挑选未结算项目并设置各自的合同价，归入即结算入账，整个过程一个事务 */
   create(input: CreateContractInput): ContractDetail {
     const contractNo = input.contractNo.trim();
     if (!contractNo) throw new AppError('合同编号不能为空', 400, 'VALIDATION');
@@ -132,15 +172,7 @@ export class ContractService {
     const id = newId();
     this.db.transaction(() => {
       // 先校验所有项目都存在、未归档、尚未归入合同、且「项目结算」为否，再写库
-      const find = this.db.prepare(
-        'SELECT id, name, contract_id AS contractId, qx_money_received AS settled FROM project WHERE id = ? AND archived = 0'
-      );
-      for (const p of input.projects) {
-        const hit = find.get(p.projectId) as { id: string; name: string; contractId: string | null; settled: number } | undefined;
-        if (!hit) throw new AppError('所选项目不存在', 404, 'NOT_FOUND');
-        if (hit.contractId) throw new AppError(`项目「${hit.name}」已归入其他合同`, 409, 'PROJECT_ALREADY_IN_CONTRACT');
-        if (hit.settled === 1) throw new AppError(`项目「${hit.name}」已结算，只能从未结算的项目中选择`, 409, 'PROJECT_ALREADY_SETTLED');
-      }
+      const toSettle = this.loadProjectsToSettle(input.projects, input.settlement);
       this.db
         .prepare('INSERT INTO contract (id, contract_no, batch_id, archived, created_at, updated_at, device_id) VALUES (?,?,?,0,?,?,?)')
         .run(id, contractNo, batch.id, now, now, this.deviceId);
@@ -149,7 +181,12 @@ export class ContractService {
       );
       const pb = this.projectBatchNo(batch.batchNo);
       for (const p of input.projects) attach.run(id, contractNo, pb, p.contractPrice, now, p.projectId);
-      writeAudit(this.db, this.deviceId, 'contract', id, 'create', { contractNo, batchId: batch.id, batchNo: batch.batchNo, projects: input.projects });
+      // 归入合同 = 结算：项目结算置为是，并按企信实收入账（同一事务，任一失败整体回滚）
+      const date = input.settlement ? this.postingDateOf(input.settlement) : '';
+      for (const p of toSettle) this.projectService.settleWithinTx(p, { accountId: input.settlement!.accountId, date });
+      writeAudit(this.db, this.deviceId, 'contract', id, 'create', {
+        contractNo, batchId: batch.id, batchNo: batch.batchNo, projects: input.projects, settledProjects: toSettle.map((p) => p.id)
+      });
     })();
     return this.get(id);
   }
@@ -180,19 +217,14 @@ export class ContractService {
     const now = nowIso();
     this.db.transaction(() => {
       // 待加入的项目：先全部校验再写库
-      const find = this.db.prepare(
-        'SELECT id, name, contract_id AS contractId, qx_money_received AS settled FROM project WHERE id = ? AND archived = 0'
-      );
-      for (const p of added) {
-        const hit = find.get(p.projectId) as { id: string; name: string; contractId: string | null; settled: number } | undefined;
-        if (!hit) throw new AppError('所选项目不存在', 404, 'NOT_FOUND');
-        if (hit.contractId) throw new AppError(`项目「${hit.name}」已归入其他合同`, 409, 'PROJECT_ALREADY_IN_CONTRACT');
-        if (hit.settled === 1) throw new AppError(`项目「${hit.name}」已结算，只能从未结算的项目中选择`, 409, 'PROJECT_ALREADY_SETTLED');
-      }
+      const toSettle = this.loadProjectsToSettle(added, input.settlement);
 
       this.db.prepare('UPDATE contract SET contract_no = ?, batch_id = ?, updated_at = ? WHERE id = ?').run(contractNo, batch.id, now, id);
       const attach = this.db.prepare('UPDATE project SET contract_id = ?, contract_price = ?, updated_at = ? WHERE id = ?');
       for (const p of added) attach.run(id, p.contractPrice, now, p.projectId);
+      // 归入合同 = 结算：项目结算置为是，并按企信实收入账
+      const date = input.settlement ? this.postingDateOf(input.settlement) : '';
+      for (const p of toSettle) this.projectService.settleWithinTx(p, { accountId: input.settlement!.accountId, date });
       // 合同编号文本、批次号同步到其下全部项目（含刚加入的）
       this.db
         .prepare('UPDATE project SET contract_no = ?, batch_no = ?, updated_at = ? WHERE contract_id = ? AND archived = 0')
@@ -206,7 +238,8 @@ export class ContractService {
           projects: current.projects.map((p) => ({ projectId: p.id, contractPrice: p.contractPrice }))
         },
         after: { contractNo, batchId: batch.id, projects: input.projects },
-        addedProjects: added.map((p) => p.projectId)
+        addedProjects: added.map((p) => p.projectId),
+        settledProjects: toSettle.map((p) => p.id)
       });
     })();
     return this.get(id);

@@ -8,6 +8,7 @@ import type {
   ContractDetail,
   Counterparty,
   CreateContractInput,
+  CreateProjectInput,
   CreateTransactionInput,
   ImportBatch,
   ImportPreviewResult,
@@ -17,8 +18,6 @@ import type {
   ProjectImportPreview,
   ProjectImportResult,
   Transaction,
-  UnsettledProject,
-  UnsettledProjectInput,
   UpdateContractInput,
   UpdateProjectInput,
   TransactionType
@@ -99,28 +98,29 @@ export const api = {
     archive: (id: string) => post<Contract>(`/api/contracts/${id}/archive`)
   },
   projects: {
-    /** 传 contractId 只取该合同下的项目 */
-    list: (contractId?: string) => get<Project[]>(contractId ? `/api/projects?contractId=${encodeURIComponent(contractId)}` : '/api/projects'),
+    /**
+     * 项目只有一张表，是否结算由「项目结算」字段区分：
+     * settled = true → 已结算项目表（结算 = 是）；settled = false → 未结算项目表（结算 = 否）；省略 = 全部。
+     * 传 contractId 只取该合同下的项目。
+     */
+    list: (opts: { contractId?: string; settled?: boolean } = {}) => {
+      const q = new URLSearchParams();
+      if (opts.contractId) q.set('contractId', opts.contractId);
+      if (opts.settled !== undefined) q.set('settled', String(opts.settled));
+      const qs = q.toString();
+      return get<Project[]>(qs ? `/api/projects?${qs}` : '/api/projects');
+    },
     /** 已有的区域（去重），供下拉选择 */
     regions: () => get<string[]>('/api/projects/regions'),
     get: (id: string) => get<Project>(`/api/projects/${id}`),
+    /** 新建项目：项目结算 = 否、不归属合同，出现在未结算项目表 */
+    create: (body: CreateProjectInput) => post<Project>('/api/projects', body),
     update: (id: string, body: UpdateProjectInput) => patch<Project>(`/api/projects/${id}`, body),
     /** 「删除」：后端只归档，不物理删除 */
     archive: (id: string) => post<Project>(`/api/projects/${id}/archive`),
     importTemplateUrl: () => `${getBaseUrl()}/api/projects/import/template`,
     importPreview: (file: File) => upload<ProjectImportPreview>('/api/projects/import/preview', file),
     importCommit: (file: File) => upload<ProjectImportResult>('/api/projects/import/commit', file)
-  },
-
-  unsettledProjects: {
-    list: () => get<UnsettledProject[]>('/api/unsettled-projects'),
-    /** 已有区域（已结算 + 未结算项目的并集，去重），供下拉选择 */
-    regions: () => get<string[]>('/api/unsettled-projects/regions'),
-    get: (id: string) => get<UnsettledProject>(`/api/unsettled-projects/${id}`),
-    create: (body: UnsettledProjectInput) => post<UnsettledProject>('/api/unsettled-projects', body),
-    update: (id: string, body: UnsettledProjectInput) => patch<UnsettledProject>(`/api/unsettled-projects/${id}`, body),
-    /** 「删除」：后端只归档，不物理删除 */
-    remove: (id: string) => post<UnsettledProject>(`/api/unsettled-projects/${id}/archive`)
   },
 
   transactions: {

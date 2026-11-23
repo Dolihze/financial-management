@@ -1,10 +1,12 @@
 <script setup lang="ts">
 /**
  * 项目管理 → 未结算项目：总表。
- * 字段：序号、区域、项目名称、合同价、企信实收、企信支付下家分包费、陈沛、企信利润、操作（编辑/删除）。
+ * 项目只有一张表（project），是否结算由「项目结算」字段区分：本表只展示「项目结算 = 否」的项目
+ * （归入合同即结算，项目结算会置为是，之后出现在已结算项目里）。
+ * 字段：序号、区域、项目名称、合同价、企信实收、企信支付下家、陈沛、企信利润、操作（编辑/删除）。
  * 金额表单用「元」字符串编辑，提交时用 toCents 转整数分，不做浮点运算。
  */
-import type { UnsettledProject } from '@fm/shared';
+import type { Project } from '@fm/shared';
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus';
 import { computed, onMounted, reactive, ref } from 'vue';
 import { api } from '@/api';
@@ -13,13 +15,14 @@ import {
   calcFromContractPrice, CHEN_PEI_RATE, DEFAULT_RATES, QX_RECEIVED_RATE, loadRates, parseRate, rateToText, saveRates, SUBCONTRACT_MODES, type FormulaRates, type SubcontractMode
 } from '@/utils/projectFormula';
 
-const rows = ref<UnsettledProject[]>([]);
+const rows = ref<Project[]>([]);
 const loading = ref(false);
 
 async function load() {
   loading.value = true;
   try {
-    rows.value = await api.unsettledProjects.list();
+    // 只取「项目结算 = 否」的项目
+    rows.value = await api.projects.list({ settled: false });
   } catch (e) {
     ElMessage.error(errorMessage(e));
   } finally {
@@ -28,7 +31,7 @@ async function load() {
 }
 
 // ---------- 前端分页 ----------
-const PAGE_SIZE = 15;
+const PAGE_SIZE = 20;
 const currentPage = ref(1);
 const pageRows = computed(() => rows.value.slice((currentPage.value - 1) * PAGE_SIZE, currentPage.value * PAGE_SIZE));
 const rowIndex = (i: number) => (currentPage.value - 1) * PAGE_SIZE + i + 1;
@@ -53,7 +56,7 @@ const emptyForm = (): FormState => ({
   qxProfit: '0.00'
 });
 
-const dlg = reactive({ visible: false, saving: false, editing: null as UnsettledProject | null });
+const dlg = reactive({ visible: false, saving: false, editing: null as Project | null });
 const form = reactive<FormState>(emptyForm());
 const formRef = ref<FormInstance>();
 
@@ -70,7 +73,7 @@ const rules: FormRules<FormState> = {
   // 合同价必填：不能为空（金额格式校验同其他金额）
   contractPrice: [{ required: true, whitespace: true, message: '请输入合同价', trigger: 'blur' }, moneyRule('合同价')],
   qxReceived: [moneyRule('企信实收')],
-  qxSubcontractFee: [moneyRule('企信支付下家分包费')],
+  qxSubcontractFee: [moneyRule('企信支付下家')],
   chenPei: [moneyRule('陈沛')],
   qxProfit: [moneyRule('企信利润')]
 };
@@ -83,7 +86,7 @@ const regionChoices = computed(() =>
 );
 async function loadRegions() {
   try {
-    regionOptions.value = await api.unsettledProjects.regions();
+    regionOptions.value = await api.projects.regions();
   } catch (e) {
     ElMessage.error(errorMessage(e));
   }
@@ -97,7 +100,7 @@ function openCreate() {
   dlg.visible = true; // 弹窗 destroy-on-close：每次打开表单都是全新挂载，校验提示不会残留
   loadRegions();
 }
-function openEdit(p: UnsettledProject) {
+function openEdit(p: Project) {
   dlg.editing = p;
   loadRegions();
   Object.assign(form, {
@@ -131,10 +134,17 @@ async function submit() {
   dlg.saving = true;
   try {
     if (dlg.editing) {
-      await api.unsettledProjects.update(dlg.editing.id, body);
+      // 项目结算（qxMoneyReceived）省略 = 保持原值（否），不触发入账；表单不涉及的字段沿用原值
+      await api.projects.update(dlg.editing.id, {
+        ...body,
+        paidSubcontractor: dlg.editing.paidSubcontractor,
+        paidChenPei: dlg.editing.paidChenPei,
+        note: dlg.editing.note
+      });
       ElMessage.success('已保存');
     } else {
-      await api.unsettledProjects.create(body);
+      // 新建的项目：项目结算 = 否、不归属合同，所以出现在本表
+      await api.projects.create(body);
       ElMessage.success('已新建项目');
     }
     dlg.visible = false;
@@ -146,7 +156,7 @@ async function submit() {
   }
 }
 
-async function remove(p: UnsettledProject) {
+async function remove(p: Project) {
   try {
     await ElMessageBox.confirm(`确定删除「${p.name}」吗？`, '删除项目', {
       type: 'warning',
@@ -157,7 +167,7 @@ async function remove(p: UnsettledProject) {
     return; // 取消
   }
   try {
-    await api.unsettledProjects.remove(p.id);
+    await api.projects.archive(p.id);
     ElMessage.success('已删除');
     await load();
     if (pageRows.value.length === 0 && currentPage.value > 1) currentPage.value -= 1;
@@ -201,7 +211,7 @@ function saveFormula() {
 function resetFormula() {
   fillRateForm(DEFAULT_RATES);
 }
-/** 按合同价和公式计算企信实收、企信支付下家分包费、陈沛、企信利润 */
+/** 按合同价和公式计算企信实收、企信支付下家、陈沛、企信利润 */
 function calculate() {
   if (!/^\d+(\.\d{1,2})?$/.test(form.contractPrice.trim())) {
     ElMessage.warning('请先输入正确的合同价（非负，最多两位小数）');
@@ -234,7 +244,7 @@ onMounted(load);
       <el-table-column label="企信实收" width="140" align="right">
         <template #default="{ row }">{{ formatMoney(row.qxReceived) }}</template>
       </el-table-column>
-      <el-table-column label="企信支付下家分包费" width="180" align="right">
+      <el-table-column label="企信支付下家" width="180" align="right">
         <template #default="{ row }">{{ formatMoney(row.qxSubcontractFee) }}</template>
       </el-table-column>
       <el-table-column label="陈沛" width="130" align="right">
@@ -289,7 +299,7 @@ onMounted(load);
         <el-form-item label="企信实收" prop="qxReceived">
           <el-input v-model="form.qxReceived" class="money-input"><template #prepend>¥</template></el-input>
         </el-form-item>
-        <el-form-item label="企信支付下家分包费" prop="qxSubcontractFee">
+        <el-form-item label="企信支付下家" prop="qxSubcontractFee">
           <el-input v-model="form.qxSubcontractFee" class="money-input"><template #prepend>¥</template></el-input>
         </el-form-item>
         <el-form-item label="陈沛" prop="chenPei">
@@ -314,7 +324,7 @@ onMounted(load);
               <el-option v-for="m in SUBCONTRACT_MODES" :key="m.value" :label="m.label" :value="m.value" />
             </el-select>
           </el-form-item>
-          <el-form-item label="企信支付下家分包费">
+          <el-form-item label="企信支付下家">
             <template v-if="rateForm.mode === 'rate'">
               <span>= 企信实收 ×&nbsp;</span>
               <el-input v-model="rateForm.rate" style="width: 110px" placeholder="0.75" />
@@ -325,7 +335,7 @@ onMounted(load);
             <span>= 企信实收 × {{ chenPeiRateText }}</span>
           </el-form-item>
           <el-form-item label="企信利润">
-            <span>= 企信实收 − 企信支付下家分包费 − 陈沛</span>
+            <span>= 企信实收 − 企信支付下家 − 陈沛</span>
           </el-form-item>
         </el-form>
         <template #footer>
@@ -339,7 +349,7 @@ onMounted(load);
 </template>
 
 <style scoped>
-/* 标签单行显示，不因拥挤换行（label-width 已按最长的「企信支付下家分包费」留足） */
+/* 标签单行显示，不因拥挤换行（label-width 已按最长的「企信支付下家」留足） */
 .nowrap-label :deep(.el-form-item__label) {
   white-space: nowrap;
 }

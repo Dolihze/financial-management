@@ -8,6 +8,7 @@ import {
   type Project,
   type ProjectImportPreview,
   type ProjectImportResult,
+  type CreateProjectInput,
   type ProjectPostingKind,
   type UpdateProjectInput
 } from '@fm/shared';
@@ -20,7 +21,7 @@ import { TransactionService } from './transactionService';
 /**
  * 三个「是/否」字段 与 记账流水 的对应关系：
  * - 项目结算（原企信是否收到钱） -> 收入，金额取「企信实收」
- * - 支付下家       -> 支出，金额取「企信支付下家分包费」
+ * - 支付下家       -> 支出，金额取「企信支付下家」
  * - 支付陈沛       -> 支出，金额取「陈沛」
  */
 const POSTING_RULES: Record<
@@ -175,19 +176,91 @@ export class ProjectService {
     return map;
   }
 
-  /** 项目列表；传 contractId 时只返回该合同下的项目（合同必须存在） */
-  list(contractId?: string): Project[] {
+  /**
+   * 项目列表（项目只有一张表，是否结算由「项目结算」字段 qx_money_received 区分）：
+   * - 传 contractId 时只返回该合同下的项目（合同必须存在）；
+   * - 传 settled 时按「项目结算」筛选：true = 已结算项目表（结算 = 是），false = 未结算项目表（结算 = 否）。
+   */
+  list(contractId?: string, settled?: boolean): Project[] {
     if (contractId !== undefined) {
       const hit = this.db.prepare('SELECT 1 FROM contract WHERE id = ? AND archived = 0').get(contractId);
       if (!hit) throw new AppError('合同不存在', 404, 'NOT_FOUND');
     }
-    const rows = (
-      contractId === undefined
-        ? this.db.prepare('SELECT * FROM project WHERE archived = 0 ORDER BY created_at DESC, rowid DESC').all()
-        : this.db.prepare('SELECT * FROM project WHERE archived = 0 AND contract_id = ? ORDER BY created_at DESC, rowid DESC').all(contractId)
-    ) as ProjectRow[];
+    const where = ['archived = 0'];
+    const args: unknown[] = [];
+    if (contractId !== undefined) {
+      where.push('contract_id = ?');
+      args.push(contractId);
+    }
+    if (settled !== undefined) {
+      where.push('qx_money_received = ?');
+      args.push(settled ? 1 : 0);
+    }
+    const rows = this.db
+      .prepare(`SELECT * FROM project WHERE ${where.join(' AND ')} ORDER BY created_at DESC, rowid DESC`)
+      .all(...args) as ProjectRow[];
     const posted = this.postedKindsOf(rows.map((r) => r.id));
     return rows.map((r) => toProject(r, posted.get(r.id) ?? []));
+  }
+
+  /**
+   * 新建项目（未结算项目表的「新建项目」）：项目结算 = 否、不归属合同、支付下家/支付陈沛 = 否，不入账。
+   * 项目名称在未归档项目中唯一（Excel 导入以名称匹配）。
+   */
+  create(input: CreateProjectInput): Project {
+    const name = input.name.trim();
+    if (!name) throw new AppError('项目名称不能为空', 400, 'VALIDATION');
+    const clash = this.db.prepare('SELECT 1 FROM project WHERE name = ? AND archived = 0').get(name);
+    if (clash) throw new AppError(`项目名称「${name}」已存在，请换一个名称`, 409, 'DUPLICATE_NAME');
+    const id = newId();
+    const now = nowIso();
+    this.db.transaction(() => {
+      this.db
+        .prepare(
+          `INSERT INTO project (id,contract_id,contract_no,batch_no,region,name,contract_price,qx_received,qx_subcontract_fee,chen_pei,qx_profit,
+                                qx_money_received,paid_subcontractor,paid_chen_pei,note,archived,created_at,updated_at,device_id)
+           VALUES (?,NULL,'',NULL,?,?,?,?,?,?,?,0,0,0,?,0,?,?,?)`
+        )
+        .run(
+          id, input.region.trim(), name,
+          input.contractPrice, input.qxReceived, input.qxSubcontractFee, input.chenPei, input.qxProfit,
+          (input.note ?? '').trim(), now, now, this.deviceId
+        );
+      writeAudit(this.db, this.deviceId, 'project', id, 'create', { name, region: input.region.trim(), contractPrice: input.contractPrice });
+    })();
+    return this.get(id);
+  }
+
+  /**
+   * 结算项目（在调用方的事务内执行）：把「项目结算」由否置为是，并记一笔收入（金额取企信实收）、写入入账关联。
+   * 项目归入合同 = 结算，所以合同服务在归入项目时调用它。
+   * 已结算的项目直接跳过（返回 null）；企信实收必须大于 0 才能入账，否则拒绝（与详情页切换为「是」同一规则）。
+   * 返回入账的流水 id。
+   */
+  settleWithinTx(
+    project: { id: string; name: string; qxReceived: number },
+    posting: { accountId: string; date: string }
+  ): string {
+    const rule = POSTING_RULES.qx_received;
+    if (project.qxReceived <= 0) {
+      throw new AppError(`项目「${project.name}」企信实收为 0，无法结算入账，请先填写企信实收`, 400, 'SETTLE_AMOUNT_REQUIRED');
+    }
+    const now = nowIso();
+    const txId = this.txService.insertWithinTx({
+      occurredOn: posting.date,
+      type: rule.txType,
+      amount: project.qxReceived,
+      accountId: posting.accountId,
+      note: `项目「${project.name}」${rule.label}（收入）`
+    });
+    this.db.prepare('UPDATE project SET qx_money_received = 1, updated_at = ? WHERE id = ?').run(now, project.id);
+    this.db
+      .prepare('INSERT INTO project_posting (id, project_id, kind, tx_id, active, created_at) VALUES (?,?,?,?,1,?)')
+      .run(newId(), project.id, 'qx_received', txId, now);
+    writeAudit(this.db, this.deviceId, 'project', project.id, 'settle', {
+      name: project.name, amount: project.qxReceived, txId, date: posting.date
+    });
+    return txId;
   }
 
   /** 已有的区域（未归档项目里出现过的非空区域，去重，按名称排序），供下拉选择 */
@@ -353,7 +426,8 @@ export class ProjectService {
     ws.addRow([...PROJECT_IMPORT_HEADERS]);
     ws.addRow(['', '', '', '合计', 1500000, 1000000, 600000, 100000, 300000, '', '', '', '']);
     ws.addRow(['HT-2026-001', '第1批', '华东', '示例项目A', 1000000, 800000, 400000, 50000, 200000, '是', '是', '否', '']);
-    ws.addRow(['HT-2026-002', '第2批', '华南', '示例项目B', 500000, 200000, 200000, 50000, 100000, '否', '否', '否', '示例备注']);
+    // 未结算项目：合同编号留空、项目结算为否（填了合同编号就视为已结算，项目结算必须为是）
+    ws.addRow(['', '', '华南', '示例项目B', 500000, 200000, 200000, 50000, 100000, '否', '否', '否', '示例备注']);
     ws.getRow(1).font = { bold: true };
     ws.columns.forEach((c) => (c.width = 18));
     return Buffer.from(await wb.xlsx.writeBuffer());
@@ -376,7 +450,7 @@ export class ProjectService {
       const t = cellText(cell.value).replace(/\s+/g, '');
       if (t && !colOf.has(t)) colOf.set(t, col);
     });
-    // 新表头缺失时，回退到旧表头（如「项目结算」缺失则找「企信是否收到钱」）
+    // 新表头缺失时，回退到旧表头（如「项目结算」缺失则找「企信是否收到钱」，「企信支付下家」缺失则找「企信支付下家分包费」）
     for (const [now, legacy] of Object.entries(PROJECT_IMPORT_LEGACY_HEADERS)) {
       if (!colOf.has(now) && colOf.has(legacy)) colOf.set(now, colOf.get(legacy)!);
     }
@@ -426,7 +500,7 @@ export class ProjectService {
           batchNo: has('批次') ? parseBatchNo(cell(excelRow, '批次')) : undefined,
           region: text('区域', 50, '区域'),
           qxReceived: money('企信实收'),
-          qxSubcontractFee: money('企信支付下家分包费'),
+          qxSubcontractFee: money('企信支付下家'),
           chenPei: money('陈沛'),
           qxProfit: money('企信利润'),
           qxMoneyReceived: yesNo('项目结算'),
@@ -438,7 +512,42 @@ export class ProjectService {
       } catch (e) {
         errors.push({ row: rowNumber, message: e instanceof Error ? e.message : String(e) });
       }
-    });    return { rows, errors, total };
+    });
+    this.checkSettledWhenInContract(rows, errors);
+    return { rows, errors, total };
+  }
+
+  /**
+   * 项目归入合同即结算：导入后「在合同里」的项目，「项目结算」必须为是；否则整批拒绝（按行报错，预览与确认导入一致）。
+   * 按导入后的最终状态判断，而不是只看单元格：
+   * - 合同编号不为空（含新增项目）而项目结算为否 / 空白 / 没有这一列（新增项目默认否）→ 拒绝；
+   * - 更新已有项目时，Excel 缺列的字段沿用库里原值；没有「合同编号」列时合同归属也沿用库里原值；
+   * - 项目结算已入账（有有效收入流水）时，导入不会覆盖该标记，一律视为已结算，不拦。
+   * 注意：错误信息里的行号是 Excel 的行号。
+   */
+  private checkSettledWhenInContract(rows: ParsedProjectRow[], errors: ImportRowError[]): void {
+    if (rows.length === 0) return;
+    const existing = this.existingByName(rows.map((r) => r.name));
+    const find = this.db.prepare('SELECT contract_id, qx_money_received FROM project WHERE id = ?');
+    for (const r of rows) {
+      const hit = existing.get(r.name);
+      const cur = hit ? (find.get(hit.id) as { contract_id: string | null; qx_money_received: number }) : undefined;
+
+      // 导入后是否在合同里：有「合同编号」列按单元格（空 = 不在合同）；没有该列则新增项目不在、已有项目沿用原归属
+      const inContract = r.contractNo !== null ? r.contractNo !== '' : Boolean(cur?.contract_id);
+      if (!inContract) continue;
+
+      // 导入后项目结算的最终值：已入账的保持是；否则按 Excel（缺列时：新增为否、已有沿用原值）
+      const posted = hit?.posted.includes('qx_received') ?? false;
+      const settled = posted ? true : r.qxMoneyReceived !== null ? r.qxMoneyReceived : cur ? cur.qx_money_received === 1 : false;
+      if (settled) continue;
+
+      const where = r.contractNo ? `合同编号为「${r.contractNo}」` : '项目已在合同中';
+      errors.push({
+        row: r.row,
+        message: `项目「${r.name}」${where}，但「项目结算」不是「是」：项目归入合同即视为已结算，请将项目结算改为「是」，或清空合同编号`
+      });
+    }
   }
 
   /** 库中已存在（未归档）的项目：名称 -> id 及其已入账字段 */

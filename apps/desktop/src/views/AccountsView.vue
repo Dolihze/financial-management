@@ -57,19 +57,19 @@ async function archive(id: string, name: string) {
     </div>
 
     <el-table :data="base.accounts" border>
-      <el-table-column prop="name" label="账户名称" />
+      <el-table-column prop="name" label="账户名称" min-width="120" />
       <el-table-column label="类型" width="120">
         <template #default="{ row }">{{ ACCOUNT_TYPE_LABELS[row.type as AccountType] }}</template>
       </el-table-column>
-      <el-table-column prop="bankName" label="开户银行" />
-      <el-table-column prop="accountNo" label="银行卡号" />
+      <el-table-column prop="bankName" label="开户银行" min-width="120" />
+      <el-table-column prop="accountNo" label="银行卡号" min-width="140" />
       <el-table-column label="期初余额" align="right" width="160">
         <template #default="{ row }">{{ formatMoney(row.openingBalance) }}</template>
       </el-table-column>
       <el-table-column label="当前余额" align="right" width="160">
         <template #default="{ row }"><b>{{ formatMoney(row.balance) }}</b></template>
       </el-table-column>
-      <el-table-column prop="note" label="备注" />
+      <el-table-column prop="note" label="备注" min-width="100" />
       <el-table-column label="操作" width="100">
         <template #default="{ row }"><el-button link type="danger" @click="archive(row.id, row.name)">归档</el-button></template>
       </el-table-column>

@@ -36,12 +36,32 @@ const updateSchema = z.object({
     .optional()
 });
 
+/** 新建项目：项目结算固定为否、不归属合同（出现在未结算项目表），所以不接收这些字段 */
+const createSchema = z.object({
+  region: z.string().trim().max(50),
+  name: z.string().trim().min(1, '项目名称不能为空').max(100),
+  contractPrice: cents,
+  qxReceived: cents,
+  qxSubcontractFee: cents,
+  chenPei: cents,
+  qxProfit: cents,
+  note: z.string().trim().max(500).optional()
+});
+
 export function registerProjectRoutes(app: FastifyInstance, { projects }: Services): void {
-  /** 项目列表；?contractId=xxx 只返回该合同下的项目 */
+  /**
+   * 项目列表；?contractId=xxx 只返回该合同下的项目；
+   * ?settled=true 只返回「项目结算 = 是」的项目（已结算项目表），?settled=false 只返回「项目结算 = 否」的项目（未结算项目表）。
+   */
   app.get('/api/projects', async (req) => {
-    const { contractId } = z.object({ contractId: z.string().min(1).optional() }).parse(req.query);
-    return projects.list(contractId);
+    const { contractId, settled } = z
+      .object({ contractId: z.string().min(1).optional(), settled: z.enum(['true', 'false']).optional() })
+      .parse(req.query);
+    return projects.list(contractId, settled === undefined ? undefined : settled === 'true');
   });
+
+  /** 新建项目（未结算项目表的「新建项目」） */
+  app.post('/api/projects', async (req, reply) => reply.status(201).send(projects.create(createSchema.parse(req.body))));
 
   // 注意：固定路径必须先于 /api/projects/:id 注册
   /** 已有的区域列表（去重），供区域下拉选择 */

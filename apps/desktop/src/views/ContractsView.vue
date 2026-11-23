@@ -5,6 +5,7 @@ import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { api } from '@/api';
 import ProjectBreadcrumb from '@/components/ProjectBreadcrumb.vue';
+import SettlementFields from '@/components/SettlementFields.vue';
 import { contractPriceToCents, sumContractPrices, validateContractPrice } from '@/utils/contractPrice';
 import { errorMessage, formatMoney, fromCents } from '@/utils/format';
 
@@ -145,9 +146,12 @@ async function remove(c: Contract) {
   }
 }
 
-// ---------- 新增合同：从「项目结算 = 否」且尚未归入合同的项目中挑选，并给每个项目设置合同价 ----------
+// ---------- 新增合同：从未结算项目表（项目结算 = 否）中挑选，并给每个项目设置合同价 ----------
+// 项目归入合同 = 结算：创建时把所选项目的「项目结算」置为是，并按企信实收入账，所以要选入账账户与日期
 const dlg = reactive({ visible: false, saving: false, loading: false });
 const contractNo = ref('');
+const settleAccountId = ref('');
+const settleDate = ref('');
 const unsettled = ref<Project[]>([]);
 const keyword = ref('');
 const selectedIds = ref<string[]>([]);
@@ -167,11 +171,14 @@ async function openCreate() {
   dlg.visible = true;
   dlg.loading = true;
   contractNo.value = '';
+  settleAccountId.value = '';
+  settleDate.value = '';
   keyword.value = '';
   selectedIds.value = [];
   for (const k of Object.keys(prices)) delete prices[k];
   try {
-    unsettled.value = (await api.projects.list()).filter((p) => !p.contractId && !p.qxMoneyReceived);
+    // 未结算项目表 = 项目结算为否的项目；它们不会已归入合同（归入合同即结算），这里再兜底排除
+    unsettled.value = (await api.projects.list({ settled: false })).filter((p) => !p.contractId);
   } catch (e) {
     ElMessage.error(errorMessage(e));
   } finally {
@@ -194,14 +201,19 @@ async function submitCreate() {
     if (err) return ElMessage.warning(`「${p.name}」：${err}`);
   }
   if (totalCents.value === null) return ElMessage.warning('合同总价超出允许范围，请检查各项目合同价');
+  if (!settleAccountId.value) return ElMessage.warning('项目归入合同即结算入账，请选择入账账户');
+  if (!settleDate.value) return ElMessage.warning('请选择入账日期');
+  const noReceived = selectedProjects.value.find((p) => p.qxReceived <= 0);
+  if (noReceived) return ElMessage.warning(`「${noReceived.name}」企信实收为 0，无法结算入账，请先填写企信实收`);
   dlg.saving = true;
   try {
     await api.contracts.create({
       batchId: batchId.value,
       contractNo: no,
-      projects: selectedProjects.value.map((p) => ({ projectId: p.id, contractPrice: contractPriceToCents(prices[p.id]!) }))
+      projects: selectedProjects.value.map((p) => ({ projectId: p.id, contractPrice: contractPriceToCents(prices[p.id]!) })),
+      settlement: { accountId: settleAccountId.value, date: settleDate.value }
     });
-    ElMessage.success('合同已创建');
+    ElMessage.success(`合同已创建，${selectedProjects.value.length} 个项目已结算入账`);
     dlg.visible = false;
     await load();
   } catch (e) {
@@ -295,14 +307,14 @@ onMounted(load);
         </el-form-item>
         <el-form-item label="选择项目">
           <div class="pick">
-            <el-input v-model="keyword" clearable placeholder="按项目名称 / 区域筛选（仅显示项目结算为否、且未归入合同的项目）" style="margin-bottom: 8px" />
+            <el-input v-model="keyword" clearable placeholder="按项目名称 / 区域筛选（仅显示未结算项目：项目结算为否）" style="margin-bottom: 8px" />
             <el-table
               v-loading="dlg.loading"
               :data="shown"
               border
               height="260"
               row-key="id"
-              empty-text="没有可选的项目：需「项目结算」为否且未归入合同"
+              empty-text="没有可选的项目：请先在「未结算项目」中新建项目"
               @selection-change="onSelectionChange"
             >
               <el-table-column type="selection" width="50" :reserve-selection="true" />
@@ -333,6 +345,10 @@ onMounted(load);
         <el-form-item label="合同总价">
           <b class="total">{{ totalCents === null ? '—' : formatMoney(totalCents) }}</b>
           <span class="hint">（已选 {{ selectedProjects.length }} 个项目的合同价之和）</span>
+        </el-form-item>
+        <el-form-item label="结算入账" required>
+          <SettlementFields v-model:account-id="settleAccountId" v-model:date="settleDate" />
+          <div class="form-tip" style="width: 100%">项目归入合同即结算：创建后所选项目的「项目结算」置为是，并按各自企信实收记一笔收入</div>
         </el-form-item>
       </el-form>
       <template #footer>

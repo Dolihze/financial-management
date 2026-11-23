@@ -513,5 +513,30 @@ export const migrations: Migration[] = [
       );
       CREATE INDEX idx_unsettled_project_archived ON unsettled_project(archived);
     `
+  },
+  {
+    version: 17,
+    name: 'unsettled_project_merge_into_project',
+    sql: `
+      -- 项目只有一张表（project），是否结算由 qx_money_received 字段区分：
+      --   未结算项目表 = qx_money_received = 0；已结算项目表 = qx_money_received = 1。
+      -- 把 v16 的独立表 unsettled_project 里未归档的数据并入 project（结算=否、不归属合同、不入账）。
+      -- 项目名称在未归档项目里唯一：已有同名项目的不迁移（其数据以 project 表为准），并记审计便于人工核对。
+      -- 旧表保留不删（不物理删除财务数据），不再被应用读写。
+      INSERT INTO project (id, contract_id, contract_no, batch_no, region, name, contract_price, qx_received, qx_subcontract_fee, chen_pei, qx_profit,
+                           qx_money_received, paid_subcontractor, paid_chen_pei, note, archived, created_at, updated_at, device_id)
+        SELECT u.id, NULL, '', NULL, u.region, u.name, u.contract_price, u.qx_received, u.qx_subcontract_fee, u.chen_pei, u.qx_profit,
+               0, 0, 0, '', 0, u.created_at, u.updated_at, u.device_id
+        FROM unsettled_project u
+        WHERE u.archived = 0
+          AND NOT EXISTS (SELECT 1 FROM project p WHERE p.archived = 0 AND p.name = u.name)
+          AND u.rowid = (SELECT MIN(x.rowid) FROM unsettled_project x WHERE x.archived = 0 AND x.name = u.name);
+
+      INSERT INTO audit_log (id, entity, entity_id, action, payload, device_id, created_at)
+        SELECT lower(hex(randomblob(16))), 'unsettled_project', u.id,
+               CASE WHEN EXISTS (SELECT 1 FROM project p WHERE p.id = u.id) THEN 'migrate_to_project' ELSE 'migrate_skipped_duplicate_name' END,
+               json_object('name', u.name), 'migration', strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        FROM unsettled_project u WHERE u.archived = 0;
+    `
   }
 ];

@@ -93,7 +93,7 @@ const rules: FormRules<FormState> = {
   name: [{ required: true, whitespace: true, message: '请输入项目名称', trigger: 'blur' }],
   contractPrice: [moneyRule('合同价')],
   qxReceived: [moneyRule('企信实收')],
-  qxSubcontractFee: [moneyRule('企信支付下家分包费')],
+  qxSubcontractFee: [moneyRule('企信支付下家')],
   chenPei: [moneyRule('陈沛')],
   qxProfit: [moneyRule('企信利润')]
 };
@@ -453,7 +453,7 @@ function calculate() {
             该金额已入账（有对应的收入流水），不能在这里修改
           </el-text>
         </el-form-item>
-        <el-form-item label="企信支付下家分包费" prop="qxSubcontractFee">
+        <el-form-item label="企信支付下家" prop="qxSubcontractFee">
           <el-input v-model="form.qxSubcontractFee" class="money-input" :disabled="isPosted('paidSubcontractor')"><template #prepend>¥</template></el-input>
           <el-text v-if="isPosted('paidSubcontractor')" type="warning" size="small">
             已入账，如需修改金额请先将「支付下家」切换为「否」回退入账
@@ -494,7 +494,7 @@ function calculate() {
             <el-option v-for="m in SUBCONTRACT_MODES" :key="m.value" :label="m.label" :value="m.value" />
           </el-select>
         </el-form-item>
-        <el-form-item label="企信支付下家分包费">
+        <el-form-item label="企信支付下家">
           <template v-if="rateForm.mode === 'rate'">
             <span>= 企信实收 ×&nbsp;</span>
             <el-input v-model="rateForm.rate" style="width: 110px" placeholder="0.75" />
@@ -505,7 +505,7 @@ function calculate() {
           <span>= 企信实收 × {{ chenPeiRateText }}</span>
         </el-form-item>
         <el-form-item label="企信利润">
-          <span>= 企信实收 − 企信支付下家分包费 − 陈沛</span>
+          <span>= 企信实收 − 企信支付下家 − 陈沛</span>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -537,7 +537,7 @@ function calculate() {
 .name-input {
   width: calc(100% - 80px);
 }
-/* 标签单行显示，不因拥挤换行（label-width 已按最长的「企信支付下家分包费」留足） */
+/* 标签单行显示，不因拥挤换行（label-width 已按最长的「企信支付下家」留足） */
 .project-form :deep(.el-form-item__label) {
   white-space: nowrap;
 }

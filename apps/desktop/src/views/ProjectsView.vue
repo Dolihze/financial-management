@@ -6,6 +6,7 @@ import { useRoute, useRouter } from 'vue-router';
 import { api } from '@/api';
 import ProjectBreadcrumb from '@/components/ProjectBreadcrumb.vue';
 import ProjectEditDialog from '@/components/ProjectEditDialog.vue';
+import SettlementFields from '@/components/SettlementFields.vue';
 import { errorMessage, formatMoney } from '@/utils/format';
 
 /**
@@ -28,6 +29,15 @@ const crumbs = computed(() => [
   { label: contract.value?.contractNo ?? '…' }
 ]);
 
+/** 已结算项目表里不应出现「项目结算 = 否」的项目（归入合同即结算），出现即为异常数据 */
+const unsettledInContract = computed(() => projects.value.filter((p) => !p.qxMoneyReceived));
+const unsettledMessage = computed(() => {
+  const names = unsettledInContract.value.map((p) => `「${p.name}」`);
+  const shown = names.slice(0, 3).join('、');
+  const more = names.length > 3 ? ` 等 ${names.length} 个` : '';
+  return `合同下有 ${names.length} 个项目的「项目结算」为否：${shown}${more}。已结算项目中不应出现未结算的项目，请核对`;
+});
+
 async function load() {
   loading.value = true;
   try {
@@ -35,11 +45,15 @@ async function load() {
     const [b, c, list] = await Promise.all([
       api.batches.get(batchId.value),
       api.contracts.get(contractId.value),
-      api.projects.list(contractId.value)
+      api.projects.list({ contractId: contractId.value })
     ]);
     batch.value = b;
     contract.value = c;
     projects.value = list;
+    // 项目归入合同即结算：合同下出现「项目结算 = 否」的项目是异常数据，直接报错提示
+    if (unsettledInContract.value.length > 0) {
+      ElMessage.error({ message: `数据异常：${unsettledMessage.value}`, duration: 8000, showClose: true });
+    }
   } catch (e) {
     ElMessage.error(errorMessage(e));
     router.replace({ name: 'contracts', params: { batchId: batchId.value } });
@@ -128,7 +142,7 @@ const totals = computed(() => {
 const summaryItems = computed(() => [
   { label: '合同价', value: totals.value.contractPrice, color: 'red' },
   { label: '企信实收', value: totals.value.qxReceived, color: 'red' },
-  { label: '企信支付下家分包费', value: totals.value.qxSubcontractFee, color: 'green' },
+  { label: '企信支付下家', value: totals.value.qxSubcontractFee, color: 'green' },
   { label: '陈沛', value: totals.value.chenPei, color: 'green' },
   { label: '企信利润', value: totals.value.qxProfit, color: 'red' }
 ]);
@@ -160,8 +174,9 @@ async function removeProject(p: Project) {
   }
 }
 
-// ---------- 新增项目：从「项目结算 = 否」且未归入任何合同的已有项目中挑选，直接加入当前合同 ----------
-const add = reactive({ visible: false, loading: false, saving: false, keyword: '' });
+// ---------- 新增项目：从未结算项目表（项目结算 = 否）中挑选，加入当前合同 ----------
+// 项目归入合同 = 结算：加入时「项目结算」置为是，并按企信实收入账，所以要选入账账户与日期
+const add = reactive({ visible: false, loading: false, saving: false, keyword: '', accountId: '', date: '' });
 const candidates = ref<Project[]>([]);
 const picked = ref<Project[]>([]);
 
@@ -174,9 +189,11 @@ async function openAdd() {
   add.visible = true;
   add.loading = true;
   add.keyword = '';
+  add.accountId = '';
+  add.date = '';
   picked.value = [];
   try {
-    candidates.value = (await api.projects.list()).filter((p) => !p.contractId && !p.qxMoneyReceived);
+    candidates.value = (await api.projects.list({ settled: false })).filter((p) => !p.contractId);
   } catch (e) {
     ElMessage.error(errorMessage(e));
   } finally {
@@ -188,6 +205,10 @@ async function confirmAdd() {
   const c = contract.value;
   if (!c) return;
   if (picked.value.length === 0) return ElMessage.warning('请至少选择一个项目');
+  if (!add.accountId) return ElMessage.warning('项目归入合同即结算入账，请选择入账账户');
+  if (!add.date) return ElMessage.warning('请选择入账日期');
+  const noReceived = picked.value.find((p) => p.qxReceived <= 0);
+  if (noReceived) return ElMessage.warning(`「${noReceived.name}」企信实收为 0，无法结算入账，请先填写企信实收`);
   add.saving = true;
   try {
     // 新加入的项目沿用它原有的合同价；合同里已有项目按当前价原样带上（不改动）。批次、合同编号保持不变
@@ -196,9 +217,10 @@ async function confirmAdd() {
       projects: [
         ...c.projects.map((p) => ({ projectId: p.id, contractPrice: p.contractPrice })),
         ...picked.value.map((p) => ({ projectId: p.id, contractPrice: p.contractPrice }))
-      ]
+      ],
+      settlement: { accountId: add.accountId, date: add.date }
     });
-    ElMessage.success(`已新增 ${picked.value.length} 个项目`);
+    ElMessage.success(`已新增 ${picked.value.length} 个项目，并已结算入账`);
     add.visible = false;
     await load();
   } catch (e) {
@@ -225,6 +247,15 @@ onMounted(load);
       <span class="hint">合同 {{ contract?.contractNo }}（{{ batchTitle }}）</span>
     </div>
 
+    <el-alert
+      v-if="unsettledInContract.length > 0"
+      type="error"
+      show-icon
+      :closable="false"
+      :title="`数据异常：${unsettledMessage}`"
+      style="margin-bottom: 12px"
+    />
+
     <div class="summary-bar">
       <span class="summary-count">共 {{ filtered.length }} / {{ projects.length }} 个项目</span>
       <span v-for="s in summaryItems" :key="s.label" class="summary-item">
@@ -244,7 +275,7 @@ onMounted(load);
       <el-table-column label="企信实收" width="115">
         <template #default="{ row }">{{ formatMoney(row.qxReceived) }}</template>
       </el-table-column>
-      <el-table-column label="企信支付下家分包费" width="160">
+      <el-table-column label="企信支付下家" width="160">
         <template #default="{ row }">{{ formatMoney(row.qxSubcontractFee) }}</template>
       </el-table-column>
       <el-table-column label="陈沛" width="100">
@@ -253,14 +284,14 @@ onMounted(load);
       <el-table-column label="企信利润" width="110">
         <template #default="{ row }">{{ formatMoney(row.qxProfit) }}</template>
       </el-table-column>
-      <!-- 「项目结算」列不展示：合同下的项目都是已结算（是） -->
-      <el-table-column column-key="paidSubcontractor" label="支付下家" width="95" :filters="yesNoFilters" :filter-method="() => true">
+      <!-- 「项目结算」列不展示：项目归入合同即结算，合同下的项目都是已结算（是） -->
+      <el-table-column column-key="paidSubcontractor" label="支付下家" width="120" :filters="yesNoFilters" :filter-method="() => true">
         <template #default="{ row }">
           <el-icon v-if="row.paidSubcontractor" class="flag-yes" title="是"><Select /></el-icon>
           <el-icon v-else class="flag-no" title="否"><CloseBold /></el-icon>
         </template>
       </el-table-column>
-      <el-table-column column-key="paidChenPei" label="支付陈沛" width="95" :filters="yesNoFilters" :filter-method="() => true">
+      <el-table-column column-key="paidChenPei" label="支付陈沛" width="120" :filters="yesNoFilters" :filter-method="() => true">
         <template #default="{ row }">
           <el-icon v-if="row.paidChenPei" class="flag-yes" title="是"><Select /></el-icon>
           <el-icon v-else class="flag-no" title="否"><CloseBold /></el-icon>
@@ -290,7 +321,7 @@ onMounted(load);
       <el-input
         v-model="add.keyword"
         clearable
-        placeholder="按项目名称 / 区域筛选（仅显示项目结算为否、且未归入合同的项目）"
+        placeholder="按项目名称 / 区域筛选（仅显示未结算项目：项目结算为否）"
         style="margin-bottom: 8px"
       />
       <el-table
@@ -299,7 +330,7 @@ onMounted(load);
         border
         height="300"
         row-key="id"
-        empty-text="没有可添加的项目：需「项目结算」为否且未归入合同"
+        empty-text="没有可添加的项目：请先在「未结算项目」中新建项目"
         @selection-change="picked = $event"
       >
         <el-table-column type="selection" width="50" :reserve-selection="true" />
@@ -309,6 +340,11 @@ onMounted(load);
           <template #default="{ row }">{{ formatMoney(row.contractPrice) }}</template>
         </el-table-column>
       </el-table>
+      <div class="settle-row">
+        <span class="settle-label">结算入账：</span>
+        <SettlementFields v-model:account-id="add.accountId" v-model:date="add.date" />
+      </div>
+      <div class="settle-tip">项目加入合同即结算：「项目结算」置为是，并按各自企信实收记一笔收入</div>
       <template #footer>
         <el-button @click="add.visible = false">取消</el-button>
         <el-button type="primary" :loading="add.saving" :disabled="picked.length === 0" @click="confirmAdd">添加 {{ picked.length || '' }}</el-button>
@@ -355,6 +391,19 @@ onMounted(load);
   white-space: normal;
   word-break: break-all;
   line-height: 1.5;
+}
+.settle-row {
+  display: flex;
+  align-items: center;
+  margin-top: 12px;
+}
+.settle-label {
+  margin-right: 8px;
+}
+.settle-tip {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
 }
 /* 是/否 图标：绿勾、红叉 */
 .flag-yes,

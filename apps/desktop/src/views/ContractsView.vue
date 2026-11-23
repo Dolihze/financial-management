@@ -1,26 +1,47 @@
-﻿<script setup lang="ts">
-import type { Contract, Project } from '@fm/shared';
+<script setup lang="ts">
+import type { Batch, Contract, Project } from '@fm/shared';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { computed, onMounted, reactive, ref } from 'vue';
-import { useRouter } from 'vue-router';
+import { computed, onMounted, reactive, ref, watch } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import { api } from '@/api';
+import ProjectBreadcrumb from '@/components/ProjectBreadcrumb.vue';
 import { contractPriceToCents, sumContractPrices, validateContractPrice } from '@/utils/contractPrice';
 import { errorMessage, formatMoney, fromCents } from '@/utils/format';
 
+/**
+ * 项目管理第二层：某个批次下的合同。点击合同编号进入该合同的项目进度。
+ * 批次由路由参数 batchId 决定；新增合同默认归属当前批次。
+ */
 const router = useRouter();
+const route = useRoute();
+const batchId = computed(() => route.params.batchId as string);
+const batch = ref<Batch | null>(null);
 const contracts = ref<Contract[]>([]);
 const loading = ref(false);
+
+const batchTitle = computed(() => (!batch.value ? '' : batch.value.batchNo === 0 ? '未分批' : `第 ${batch.value.batchNo} 批`));
+const crumbs = computed(() => [{ label: '批次管理', to: { name: 'batches' } }, { label: batchTitle.value || '…' }]);
 
 async function load() {
   loading.value = true;
   try {
-    contracts.value = await api.contracts.list();
+    // 批次不存在（被删除/链接过期）时后端返回 404，提示后回到批次管理
+    const [b, list] = await Promise.all([api.batches.get(batchId.value), api.contracts.list(batchId.value)]);
+    batch.value = b;
+    contracts.value = list;
   } catch (e) {
     ElMessage.error(errorMessage(e));
+    router.replace({ name: 'batches' });
   } finally {
     loading.value = false;
   }
 }
+
+// 同一组件下切换批次（路由参数变化）时重新加载，并回到第一页
+watch(batchId, () => {
+  currentPage.value = 1;
+  load();
+});
 
 // ---------- 前端分页 ----------
 const PAGE_SIZE = 30;
@@ -29,21 +50,22 @@ const pageRows = computed(() => contracts.value.slice((currentPage.value - 1) * 
 const rowIndex = (i: number) => (currentPage.value - 1) * PAGE_SIZE + i + 1;
 
 // ---------- 跳转 ----------
-/** 点合同编号：跳到项目进度，并把表格的「合同编号」筛选预置为该合同 */
-function openProgress(contractNo: string) {
-  router.push({ name: 'projects', query: { contractNo } });
-}
-function openDetail(id: string) {
-  router.push({ name: 'contract-detail', params: { id } });
+/** 点合同编号：进入该合同的项目进度 */
+function openProgress(c: Contract) {
+  router.push({ name: 'projects', params: { batchId: batchId.value, contractId: c.id } });
 }
 
+/** 只有合同内部没有项目时才能删除（后端同样会校验）；编辑合同请先进入合同再点「编辑合同」 */
 async function remove(c: Contract) {
+  if (c.projectCount > 0) {
+    return ElMessage.warning(`合同「${c.contractNo}」下还有 ${c.projectCount} 个项目，不能删除。请先进入合同，删除其下的项目后再删除合同`);
+  }
   try {
-    await ElMessageBox.confirm(
-      `确定删除合同「${c.contractNo}」吗？其下 ${c.projectCount} 个项目会保留，但会脱离该合同（项目结算状态不变）。`,
-      '删除合同',
-      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' }
-    );
+    await ElMessageBox.confirm(`确定删除合同「${c.contractNo}」吗？`, '删除合同', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消'
+    });
   } catch {
     return; // 取消
   }
@@ -68,7 +90,7 @@ const prices = reactive<Record<string, string>>({});
 
 const shown = computed(() => {
   const k = keyword.value.trim();
-  return k ? unsettled.value.filter((p) => p.name.includes(k) || p.region.includes(k) || String(p.batchNo ?? '').includes(k)) : unsettled.value;
+  return k ? unsettled.value.filter((p) => p.name.includes(k) || p.region.includes(k)) : unsettled.value;
 });
 const selectedProjects = computed(() => unsettled.value.filter((p) => selectedIds.value.includes(p.id)));
 
@@ -109,6 +131,7 @@ async function submitCreate() {
   dlg.saving = true;
   try {
     await api.contracts.create({
+      batchId: batchId.value,
       contractNo: no,
       projects: selectedProjects.value.map((p) => ({ projectId: p.id, contractPrice: contractPriceToCents(prices[p.id]!) }))
     });
@@ -127,23 +150,26 @@ onMounted(load);
 
 <template>
   <div>
+    <ProjectBreadcrumb :items="crumbs" />
+
     <div class="page-toolbar">
       <el-button type="primary" icon="Plus" @click="openCreate">新增合同</el-button>
+      <span class="hint">点击合同编号进入该合同的项目进度</span>
     </div>
 
-    <el-table v-loading="loading" :data="pageRows" border class="contract-table" empty-text="暂无合同">
+    <el-table v-loading="loading" :data="pageRows" border class="contract-table" empty-text="该批次下暂无合同，点击「新增合同」创建">
       <el-table-column type="index" :index="rowIndex" label="序号" width="70" />
       <el-table-column label="合同编号" min-width="200">
         <template #default="{ row }">
-          <a class="contract-link" href="javascript:void(0)" title="查看该合同的项目进度" @click.prevent="openProgress(row.contractNo)">{{ row.contractNo }}</a>
+          <a class="contract-link" href="javascript:void(0)" title="查看该合同的项目进度" @click.prevent="openProgress(row)">{{ row.contractNo }}</a>
         </template>
       </el-table-column>
+      <el-table-column prop="projectCount" label="项目数" width="90" align="right" />
       <el-table-column label="合同总价" width="180" align="right">
         <template #default="{ row }">{{ formatMoney(row.totalPrice) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="160" fixed="right">
+      <el-table-column label="操作" width="90" fixed="right">
         <template #default="{ row }">
-          <el-button link type="primary" @click="openDetail(row.id)">编辑</el-button>
           <el-button link type="danger" @click="remove(row)">删除</el-button>
         </template>
       </el-table-column>
@@ -159,14 +185,14 @@ onMounted(load);
       style="margin-top: 16px; justify-content: flex-end"
     />
 
-    <el-dialog v-model="dlg.visible" title="新增合同" width="860px" :close-on-click-modal="false">
+    <el-dialog v-model="dlg.visible" :title="`新增合同（归属${batchTitle}）`" width="860px" :close-on-click-modal="false">
       <el-form label-width="90px" @submit.prevent>
         <el-form-item label="合同编号" required>
           <el-input v-model="contractNo" maxlength="50" style="width: 320px" placeholder="如 HT-2026-001" />
         </el-form-item>
         <el-form-item label="选择项目">
           <div class="pick">
-            <el-input v-model="keyword" clearable placeholder="按项目名称 / 区域 / 批次号筛选（仅显示项目结算为否、且未归入合同的项目）" style="margin-bottom: 8px" />
+            <el-input v-model="keyword" clearable placeholder="按项目名称 / 区域筛选（仅显示项目结算为否、且未归入合同的项目）" style="margin-bottom: 8px" />
             <el-table
               v-loading="dlg.loading"
               :data="shown"
@@ -177,7 +203,6 @@ onMounted(load);
               @selection-change="onSelectionChange"
             >
               <el-table-column type="selection" width="50" :reserve-selection="true" />
-              <el-table-column prop="batchNo" label="批次号" width="80" />
               <el-table-column prop="region" label="区域" width="80" />
               <el-table-column prop="name" label="项目名称" min-width="220" show-overflow-tooltip />
               <el-table-column label="原合同价" width="120" align="right">

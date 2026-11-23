@@ -1,6 +1,8 @@
 import type {
   Account,
   ActiveAccountType,
+  Batch,
+  BatchInput,
   Category,
   Contract,
   ContractDetail,
@@ -77,15 +79,26 @@ export const api = {
     remove: (id: string) => del<{ unlinkedTransactions: number }>(`/api/counterparties/${id}`)
   },
 
+  batches: {
+    list: () => get<Batch[]>('/api/batches'),
+    get: (id: string) => get<Batch>(`/api/batches/${id}`),
+    create: (body: BatchInput) => post<Batch>('/api/batches', body),
+    update: (id: string, body: BatchInput) => patch<Batch>(`/api/batches/${id}`, body),
+    /** 「删除」：后端只归档；批次下还有合同时会被拒绝 */
+    remove: (id: string) => post<Batch>(`/api/batches/${id}/archive`)
+  },
+
   contracts: {
-    list: () => get<Contract[]>('/api/contracts'),
+    /** 传 batchId 只取该批次下的合同 */
+    list: (batchId?: string) => get<Contract[]>(batchId ? `/api/contracts?batchId=${encodeURIComponent(batchId)}` : '/api/contracts'),
     get: (id: string) => get<ContractDetail>(`/api/contracts/${id}`),
     create: (body: CreateContractInput) => post<ContractDetail>('/api/contracts', body),
     update: (id: string, body: UpdateContractInput) => patch<ContractDetail>(`/api/contracts/${id}`, body),
     archive: (id: string) => post<Contract>(`/api/contracts/${id}/archive`)
   },
   projects: {
-    list: () => get<Project[]>('/api/projects'),
+    /** 传 contractId 只取该合同下的项目 */
+    list: (contractId?: string) => get<Project[]>(contractId ? `/api/projects?contractId=${encodeURIComponent(contractId)}` : '/api/projects'),
     get: (id: string) => get<Project>(`/api/projects/${id}`),
     update: (id: string, body: UpdateProjectInput) => patch<Project>(`/api/projects/${id}`, body),
     /** 「删除」：后端只归档，不物理删除 */

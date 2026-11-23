@@ -1,39 +1,69 @@
-﻿<script setup lang="ts">
-import type { Project } from '@fm/shared';
+<script setup lang="ts">
+import type { Batch, ContractDetail, Project } from '@fm/shared';
 import { ElMessage } from 'element-plus';
 import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { api } from '@/api';
+import ProjectBreadcrumb from '@/components/ProjectBreadcrumb.vue';
 import { errorMessage, formatMoney } from '@/utils/format';
 
+/**
+ * 项目管理第三层：某个合同下的项目进度。
+ * 批次、合同由路由参数 batchId / contractId 决定；这里只展示该合同下的项目，所以没有「合同编号」「批次号」筛选。
+ */
 const router = useRouter();
 const route = useRoute();
+const batchId = computed(() => route.params.batchId as string);
+const contractId = computed(() => route.params.contractId as string);
+const batch = ref<Batch | null>(null);
+const contract = ref<ContractDetail | null>(null);
 const projects = ref<Project[]>([]);
 const loading = ref(false);
+
+const batchTitle = computed(() => (!batch.value ? '…' : batch.value.batchNo === 0 ? '未分批' : `第 ${batch.value.batchNo} 批`));
+const crumbs = computed(() => [
+  { label: '批次管理', to: { name: 'batches' } },
+  { label: batchTitle.value, to: { name: 'contracts', params: { batchId: batchId.value } } },
+  { label: contract.value?.contractNo ?? '…' }
+]);
 
 async function load() {
   loading.value = true;
   try {
-    projects.value = await api.projects.list();
+    // 合同/批次不存在（被删除、链接过期）时后端 404：提示后回到上一层
+    const [b, c, list] = await Promise.all([
+      api.batches.get(batchId.value),
+      api.contracts.get(contractId.value),
+      api.projects.list(contractId.value)
+    ]);
+    batch.value = b;
+    contract.value = c;
+    projects.value = list;
   } catch (e) {
     ElMessage.error(errorMessage(e));
+    router.replace({ name: 'contracts', params: { batchId: batchId.value } });
   } finally {
     loading.value = false;
   }
 }
 
+// 同一组件下切换合同（路由参数变化）时重新加载并回到第一页、清空筛选
+watch(contractId, () => {
+  currentPage.value = 1;
+  for (const k of Object.keys(selected) as FilterKey[]) selected[k] = [];
+  load();
+});
+
 /** 下拉筛选：每列已选值（空数组 = 不筛选）。选项来自当前数据，去重后排序 */
-type FilterKey = 'contractNo' | 'batchNo' | 'region' | 'qxMoneyReceived' | 'paidSubcontractor' | 'paidChenPei';
+type FilterKey = 'region' | 'qxMoneyReceived' | 'paidSubcontractor' | 'paidChenPei';
 const selected = reactive<Record<FilterKey, unknown[]>>({
-  // 从「合同管理」点合同编号跳过来时，URL 带 ?contractNo=xxx，预置为该合同的筛选
-  contractNo: typeof route.query.contractNo === 'string' && route.query.contractNo ? [route.query.contractNo] : [],
-  batchNo: [], region: [], qxMoneyReceived: [], paidSubcontractor: [], paidChenPei: []
+  region: [], qxMoneyReceived: [], paidSubcontractor: [], paidChenPei: []
 });
 
 const EMPTY = '__empty__'; // 空值（未填写）的筛选项
 const textOf = (v: unknown) => (v === null || v === undefined || v === '' ? EMPTY : v);
 
-function optionsOf(key: 'contractNo' | 'batchNo' | 'region') {
+function optionsOf(key: 'region') {
   const set = new Set<unknown>(projects.value.map((p) => textOf(p[key])));
   const values = [...set].filter((v) => v !== EMPTY);
   values.sort((a, b) => (typeof a === 'number' && typeof b === 'number' ? a - b : String(a).localeCompare(String(b), 'zh-CN', { numeric: true })));
@@ -41,8 +71,6 @@ function optionsOf(key: 'contractNo' | 'batchNo' | 'region') {
   if (set.has(EMPTY)) opts.push({ text: '（空）', value: EMPTY });
   return opts;
 }
-const contractNoFilters = computed(() => optionsOf('contractNo'));
-const batchNoFilters = computed(() => optionsOf('batchNo'));
 const regionFilters = computed(() => optionsOf('region'));
 const yesNoFilters = [
   { text: '是', value: true },
@@ -103,8 +131,12 @@ const summaryItems = computed(() => [
   { label: '陈沛', value: totals.value.chenPei, color: 'green' },
   { label: '企信利润', value: totals.value.qxProfit, color: 'red' }
 ]);
+/** 打开项目详情时带上来源（批次/合同），详情页的返回按钮与面包屑据此回到这一层 */
 function openDetail(id: string) {
-  router.push({ name: 'project-detail', params: { id } });
+  router.push({ name: 'project-detail', params: { id }, query: { batchId: batchId.value, contractId: contractId.value } });
+}
+function editContract() {
+  router.push({ name: 'contract-detail', params: { batchId: batchId.value, contractId: contractId.value } });
 }
 
 onMounted(load);
@@ -112,10 +144,17 @@ onMounted(load);
 
 <template>
   <div>
+    <ProjectBreadcrumb :items="crumbs" />
+
     <!-- 「去导入」放到顶部标题栏右侧 -->
     <Teleport to="#header-actions">
       <el-button icon="Upload" @click="router.push({ name: 'import' })">去导入</el-button>
     </Teleport>
+
+    <div class="page-toolbar">
+      <el-button icon="Edit" @click="editContract">编辑合同</el-button>
+      <span class="hint">合同 {{ contract?.contractNo }}（{{ batchTitle }}）</span>
+    </div>
 
     <div class="summary-bar">
       <span class="summary-count">共 {{ filtered.length }} / {{ projects.length }} 个项目</span>
@@ -125,10 +164,9 @@ onMounted(load);
       </span>
     </div>
 
-    <el-table v-loading="loading" :data="pageRows" border class="project-table" @filter-change="onFilterChange">
+    <el-table v-loading="loading" :data="pageRows" border class="project-table" empty-text="该合同下暂无项目" @filter-change="onFilterChange">
       <el-table-column type="index" :index="rowIndex" label="序号" width="60" />
-      <el-table-column prop="contractNo" column-key="contractNo" label="合同编号" width="145" :filters="contractNoFilters" :filtered-value="selected.contractNo as string[]" :filter-method="() => true" filter-multiple />
-      <el-table-column prop="batchNo" column-key="batchNo" label="批次号" width="85" :filters="batchNoFilters" :filter-method="() => true" filter-multiple />
+
       <el-table-column prop="region" column-key="region" label="区域" width="80" :filters="regionFilters" :filter-method="() => true" filter-multiple />
       <el-table-column label="项目名称" min-width="180">
         <template #default="{ row }">
@@ -195,6 +233,11 @@ onMounted(load);
   border-radius: 4px;
 }
 .summary-count {
+  color: var(--el-text-color-secondary);
+}
+.hint {
+  margin-left: 12px;
+  font-size: 14px;
   color: var(--el-text-color-secondary);
 }
 .summary-red {

@@ -1,9 +1,10 @@
 ﻿<script setup lang="ts">
-import type { Account, Project, ProjectPostingKind } from '@fm/shared';
+import type { Account, Batch, Project, ProjectPostingKind } from '@fm/shared';
 import { ElDatePicker, ElMessage, ElMessageBox, ElOption, ElSelect, type FormInstance, type FormRules } from 'element-plus';
 import { computed, h, onMounted, reactive, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { api } from '@/api';
+import ProjectBreadcrumb, { type Crumb } from '@/components/ProjectBreadcrumb.vue';
 import YesNoRadio from '@/components/YesNoRadio.vue';
 import { errorMessage, formatMoney, fromCents, toCents, today } from '@/utils/format';
 import {
@@ -42,7 +43,6 @@ const postingDate = ref<string>(today());
 
 /** 表单里金额用「元」的字符串编辑，提交时用 toCents 转整数分，不做浮点运算 */
 interface FormState {
-  batchNo: number | null;
   region: string;
   name: string;
   contractPrice: string;
@@ -58,7 +58,7 @@ const form = reactive<FormState>(emptyForm());
 
 function emptyForm(): FormState {
   return {
-    batchNo: null, region: '', name: '',
+    region: '', name: '',
     contractPrice: '0.00', qxReceived: '0.00', qxSubcontractFee: '0.00', chenPei: '0.00', qxProfit: '0.00',
     paidSubcontractor: false, paidChenPei: false, note: ''
   };
@@ -66,7 +66,7 @@ function emptyForm(): FormState {
 
 function fillForm(p: Project) {
   Object.assign(form, {
-    batchNo: p.batchNo, region: p.region, name: p.name,
+    region: p.region, name: p.name,
     contractPrice: fromCents(p.contractPrice), qxReceived: fromCents(p.qxReceived),
     qxSubcontractFee: fromCents(p.qxSubcontractFee), chenPei: fromCents(p.chenPei), qxProfit: fromCents(p.qxProfit),
     paidSubcontractor: p.paidSubcontractor, paidChenPei: p.paidChenPei, note: p.note
@@ -99,7 +99,7 @@ const dirty = computed(() => {
     try { return toCents(s || '0'); } catch { return NaN; }
   };
   return (
-    form.batchNo !== p.batchNo || form.region !== p.region || form.name !== p.name ||
+    form.region !== p.region || form.name !== p.name ||
     cents(form.contractPrice) !== p.contractPrice || cents(form.qxReceived) !== p.qxReceived ||
     cents(form.qxSubcontractFee) !== p.qxSubcontractFee || cents(form.chenPei) !== p.chenPei || cents(form.qxProfit) !== p.qxProfit ||
     form.paidSubcontractor !== p.paidSubcontractor || form.paidChenPei !== p.paidChenPei ||
@@ -223,6 +223,9 @@ async function load() {
     project.value = p;
     accounts.value = accs;
     fillForm(p);
+    // 面包屑要显示来源批次的名称；取不到（批次已被删除等）就只显示「…」，不影响项目本身
+    const bid = typeof route.query.batchId === 'string' ? route.query.batchId : '';
+    crumbBatch.value = bid ? await api.batches.get(bid).catch(() => null) : null;
   } catch (e) {
     ElMessage.error(errorMessage(e));
   } finally {
@@ -240,7 +243,6 @@ async function save() {
   saving.value = true;
   try {
     project.value = await api.projects.update(id, {
-      batchNo: form.batchNo,
       region: form.region.trim(),
       name: form.name.trim(),
       contractPrice: toCents(form.contractPrice),
@@ -289,11 +291,43 @@ async function remove() {
   try {
     await api.projects.archive(id);
     ElMessage.success('已删除');
-    router.replace({ name: 'projects' });
+    router.replace(backTarget());
   } catch (e) {
     ElMessage.error(errorMessage(e));
   }
 }
+
+/**
+ * 返回目标：回到来源层级。
+ * - 来源（?batchId=&contractId=）由上一层页面带入；没有来源时用项目当前所属合同（合同对应的批次需要再查，这里取 query 或退到批次管理）。
+ * - 项目不属于任何合同（或来源缺失）时回到批次管理。
+ */
+function backTarget() {
+  const q = route.query;
+  const batchId = typeof q.batchId === 'string' ? q.batchId : '';
+  const contractId = typeof q.contractId === 'string' ? q.contractId : (project.value?.contractId ?? '');
+  if (batchId && contractId) return { name: 'projects', params: { batchId, contractId } };
+  if (batchId) return { name: 'contracts', params: { batchId } };
+  return { name: 'batches' };
+}
+
+/** 面包屑：批次管理 / 第N批 / 合同 / 项目名（来源缺失时只显示已知的层级） */
+const crumbBatch = ref<Batch | null>(null);
+const crumbs = computed<Crumb[]>(() => {
+  const target = backTarget();
+  const list: Crumb[] = [{ label: '批次管理', to: { name: 'batches' } }];
+  const batchId = target.name === 'batches' ? '' : (target.params as { batchId: string }).batchId;
+  if (batchId) {
+    const b = crumbBatch.value;
+    list.push({ label: b ? (b.batchNo === 0 ? '未分批' : `第 ${b.batchNo} 批`) : '…', to: { name: 'contracts', params: { batchId } } });
+  }
+  if (target.name === 'projects') {
+    const p = project.value;
+    list.push({ label: p?.contractNo || '合同', to: target as Crumb['to'] });
+  }
+  list.push({ label: project.value?.name ?? '项目详情' });
+  return list;
+});
 
 async function back() {
   if (dirty.value) {
@@ -303,7 +337,7 @@ async function back() {
       return;
     }
   }
-  router.push({ name: 'projects' });
+  router.push(backTarget());
 }
 
 // ---------- 公式计算 ----------
@@ -376,8 +410,10 @@ onMounted(load);
 
 <template>
   <div v-loading="loading">
+    <ProjectBreadcrumb :items="crumbs" />
+
     <div class="page-toolbar">
-      <el-button icon="Back" @click="back">返回项目列表</el-button>
+      <el-button icon="Back" @click="back">返回上一级</el-button>
       <span class="spacer" />
       <el-button type="danger" plain icon="Delete" :disabled="!project" @click="remove">删除</el-button>
       <el-button :disabled="!project || !dirty" @click="reset">重置</el-button>
@@ -388,10 +424,11 @@ onMounted(load);
       <el-form ref="formRef" :model="form" :rules="rules" label-width="150px" style="max-width: 760px" @submit.prevent>
         <el-form-item label="合同编号">
           <el-input :model-value="project.contractNo || '（未归入合同）'" disabled />
-          <div class="form-hint">合同归属请在「合同管理」中维护</div>
+          <div class="form-hint">合同归属请在合同的「编辑」页中维护</div>
         </el-form-item>
-        <el-form-item label="批次号" prop="batchNo">
-          <el-input-number v-model="form.batchNo" :min="0" :step="1" :precision="0" controls-position="right" placeholder="如 15" />
+        <el-form-item label="批次号">
+          <el-input :model-value="project.batchNo === null ? '（未分批）' : `第 ${project.batchNo} 批`" disabled />
+          <div class="form-hint">批次随所属合同走，要改批次请在合同的「编辑」页里修改合同所属批次</div>
         </el-form-item>
         <el-form-item label="区域" prop="region">
           <el-input v-model="form.region" maxlength="50" />

@@ -14,6 +14,7 @@ import {
 import type { Db } from '../db/database';
 import { AppError, newId, nowIso } from '../utils';
 import { writeAudit } from './audit';
+import { MAX_BATCH_NO, UNBATCHED_NO } from './batchService';
 import { TransactionService } from './transactionService';
 
 /**
@@ -84,7 +85,10 @@ export interface ParsedProjectRow {
   name: string;
   contractPrice: number;
   contractNo: string | null;
-  /** batchNo 的 undefined 表示没有这一列；null 表示有这一列但为空（清空批次号） */
+  /**
+   * Excel「批次」列：undefined = 没有这一列；null = 有这一列但单元格为空。
+   * 只用于「新建合同」时决定合同归属的批次；已存在合同的批次不会被改动。
+   */
   batchNo: number | null | undefined;
   region: string | null;
   qxReceived: number | null;
@@ -138,7 +142,8 @@ function parseBatchNo(v: ExcelJS.CellValue): number | null {
   const m = /^(?:第(\d+)批|(\d+))$/.exec(text);
   if (!m) throw new Error(`批次格式无法识别: ${raw}（应为「第15批」或数字 15）`);
   const n = Number(m[1] ?? m[2]);
-  if (!Number.isSafeInteger(n)) throw new Error(`批次号超出范围: ${raw}`);
+  if (!Number.isSafeInteger(n) || n > MAX_BATCH_NO) throw new Error(`批次号超出范围: ${raw}`);
+  if (n < 1) throw new Error(`批次号必须从 1 开始: ${raw}`); // 0 号保留给「未分批」兜底批次
   return n;
 }
 
@@ -170,10 +175,17 @@ export class ProjectService {
     return map;
   }
 
-  list(): Project[] {
-    const rows = this.db
-      .prepare('SELECT * FROM project WHERE archived = 0 ORDER BY created_at DESC, rowid DESC')
-      .all() as ProjectRow[];
+  /** 项目列表；传 contractId 时只返回该合同下的项目（合同必须存在） */
+  list(contractId?: string): Project[] {
+    if (contractId !== undefined) {
+      const hit = this.db.prepare('SELECT 1 FROM contract WHERE id = ? AND archived = 0').get(contractId);
+      if (!hit) throw new AppError('合同不存在', 404, 'NOT_FOUND');
+    }
+    const rows = (
+      contractId === undefined
+        ? this.db.prepare('SELECT * FROM project WHERE archived = 0 ORDER BY created_at DESC, rowid DESC').all()
+        : this.db.prepare('SELECT * FROM project WHERE archived = 0 AND contract_id = ? ORDER BY created_at DESC, rowid DESC').all(contractId)
+    ) as ProjectRow[];
     const posted = this.postedKindsOf(rows.map((r) => r.id));
     return rows.map((r) => toProject(r, posted.get(r.id) ?? []));
   }
@@ -230,11 +242,11 @@ export class ProjectService {
     this.db.transaction(() => {
       this.db
         .prepare(
-          `UPDATE project SET batch_no=?, region=?, name=?, contract_price=?, qx_received=?, qx_subcontract_fee=?,
+          `UPDATE project SET region=?, name=?, contract_price=?, qx_received=?, qx_subcontract_fee=?,
                   chen_pei=?, qx_profit=?, qx_money_received=?, paid_subcontractor=?, paid_chen_pei=?, note=?, updated_at=? WHERE id=?`
         )
         .run(
-          input.batchNo, input.region.trim(), name,
+          input.region.trim(), name,
           input.contractPrice, input.qxReceived, input.qxSubcontractFee, input.chenPei, input.qxProfit,
           (input.qxMoneyReceived ?? current.qxMoneyReceived) ? 1 : 0, input.paidSubcontractor ? 1 : 0, input.paidChenPei ? 1 : 0,
           input.note === undefined ? current.note : input.note.trim(), nowIso(), id
@@ -446,26 +458,52 @@ export class ProjectService {
                 qx_profit=?, qx_money_received=?, paid_subcontractor=?, paid_chen_pei=?, note=?, updated_at=? WHERE id=?`
       );
       const currentRow = this.db.prepare('SELECT * FROM project WHERE id = ?');
-      // Excel 里的合同编号 -> 合同 id：合同表里没有就自动创建（本批内同一编号只创建一次）
-      const contractIds = new Map<string, string>();
-      const findContract = this.db.prepare('SELECT id FROM contract WHERE contract_no = ? AND archived = 0');
-      const insertContract = this.db.prepare(
-        'INSERT INTO contract (id, contract_no, archived, created_at, updated_at, device_id) VALUES (?,?,0,?,?,?)'
+      // Excel 里的批次号 -> 批次 id：批次表里没有就自动创建（本批内同一批次号只创建一次）。
+      // 批次号 null（Excel 没填）-> 0 号「未分批」兜底批次
+      const batchIds = new Map<number, string>();
+      const findBatch = this.db.prepare('SELECT id FROM batch WHERE batch_no = ? AND archived = 0');
+      const insertBatch = this.db.prepare(
+        'INSERT INTO batch (id, batch_no, note, archived, created_at, updated_at, device_id) VALUES (?,?,?,0,?,?,?)'
       );
-      const contractIdOf = (contractNo: string): string | null => {
-        if (!contractNo) return null;
-        const cached = contractIds.get(contractNo);
+      const batchIdOf = (batchNo: number | null): string => {
+        const no = batchNo ?? UNBATCHED_NO;
+        const cached = batchIds.get(no);
         if (cached) return cached;
-        const hit = findContract.get(contractNo) as { id: string } | undefined;
+        const hit = findBatch.get(no) as { id: string } | undefined;
         let id = hit?.id;
         if (!id) {
           id = newId();
-          insertContract.run(id, contractNo, now, now, this.deviceId);
-          writeAudit(this.db, this.deviceId, 'contract', id, 'import_create', { fileName, contractNo });
+          insertBatch.run(id, no, no === UNBATCHED_NO ? '未分批' : '', now, now, this.deviceId);
+          writeAudit(this.db, this.deviceId, 'batch', id, 'import_create', { fileName, batchNo: no });
         }
-        contractIds.set(contractNo, id);
+        batchIds.set(no, id);
         return id;
       };
+      // Excel 里的合同编号 -> 合同：合同表里没有就自动创建（本批内同一编号只创建一次），新合同归属该行 Excel 的批次；
+      // 已存在的合同保持原来所属的批次（批次以合同为准，不被 Excel 的批次列改动）
+      const contracts = new Map<string, { id: string; batchNo: number }>();
+      const findContract = this.db.prepare(
+        'SELECT c.id, b.batch_no AS batchNo FROM contract c JOIN batch b ON b.id = c.batch_id WHERE c.contract_no = ? AND c.archived = 0'
+      );
+      const insertContract = this.db.prepare(
+        'INSERT INTO contract (id, contract_no, batch_id, archived, created_at, updated_at, device_id) VALUES (?,?,?,0,?,?,?)'
+      );
+      const contractOf = (contractNo: string, excelBatchNo: number | null): { id: string; batchNo: number } | null => {
+        if (!contractNo) return null;
+        const cached = contracts.get(contractNo);
+        if (cached) return cached;
+        let found = findContract.get(contractNo) as { id: string; batchNo: number } | undefined;
+        if (!found) {
+          const id = newId();
+          insertContract.run(id, contractNo, batchIdOf(excelBatchNo), now, now, this.deviceId);
+          writeAudit(this.db, this.deviceId, 'contract', id, 'import_create', { fileName, contractNo, batchNo: excelBatchNo ?? UNBATCHED_NO });
+          found = { id, batchNo: excelBatchNo ?? UNBATCHED_NO };
+        }
+        contracts.set(contractNo, found);
+        return found;
+      };
+      /** 项目冗余的批次号随合同走：「未分批」对应 NULL；无合同的项目没有批次 */
+      const projectBatchNo = (c: { batchNo: number } | null): number | null => (c === null || c.batchNo === UNBATCHED_NO ? null : c.batchNo);
       const b = (v: boolean | null, fallback: number): number => (v === null ? fallback : v ? 1 : 0);
       for (const r of rows) {
         const hit = existing.get(r.name);
@@ -476,7 +514,8 @@ export class ProjectService {
           const pick = <T>(excel: T | null, current: T): T => (excel === null ? current : excel);
           // 合同归属：Excel 没有「合同编号」列时不动；有这一列则按单元格走（空 = 脱离合同）
           const contractNo = r.contractNo === null ? cur.contract_no : r.contractNo;
-          const contractId = r.contractNo === null ? cur.contract_id : contractIdOf(r.contractNo);
+          const contract = r.contractNo === null ? null : contractOf(r.contractNo, r.batchNo ?? null);
+          const contractId = r.contractNo === null ? cur.contract_id : (contract?.id ?? null);
           const money = [
             r.contractPrice,
             keep('qx_received') ? cur.qx_received : pick(r.qxReceived, cur.qx_received),
@@ -489,7 +528,8 @@ export class ProjectService {
             keep('paid_subcontractor') ? 1 : b(r.paidSubcontractor, cur.paid_subcontractor),
             keep('paid_chen_pei') ? 1 : b(r.paidChenPei, cur.paid_chen_pei)
           ] as const;
-          const batchNo = r.batchNo === undefined ? cur.batch_no : r.batchNo;
+          // 批次号随合同走：没有「合同编号」列 -> 合同归属不动，批次号也保持；否则取（可能新建的）合同所属批次
+          const batchNo = r.contractNo === null ? cur.batch_no : projectBatchNo(contract);
           update.run(
             contractId, contractNo, batchNo, pick(r.region, cur.region), ...money, ...flags,
             pick(r.note, cur.note), now, hit.id
@@ -502,12 +542,13 @@ export class ProjectService {
         } else {
           // 新增项目：Excel 里没有的列用默认值（文字空、金额 0、批次空、是否类为否）
           const contractNo = r.contractNo ?? '';
-          const contractId = contractIdOf(contractNo);
+          const contract = contractOf(contractNo, r.batchNo ?? null);
+          const contractId = contract?.id ?? null;
           const id = newId();
           const money = [r.contractPrice, r.qxReceived ?? 0, r.qxSubcontractFee ?? 0, r.chenPei ?? 0, r.qxProfit ?? 0] as const;
           const flags = [b(r.qxMoneyReceived, 0), b(r.paidSubcontractor, 0), b(r.paidChenPei, 0)] as const;
           insert.run(
-            id, contractId, contractNo, r.batchNo ?? null, r.region ?? '', r.name, ...money, ...flags,
+            id, contractId, contractNo, projectBatchNo(contract), r.region ?? '', r.name, ...money, ...flags,
             r.note ?? '', now, now, this.deviceId
           );
           writeAudit(this.db, this.deviceId, 'project', id, 'import_create', { fileName, name: r.name, contractNo });

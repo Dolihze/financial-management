@@ -17,25 +17,33 @@ const projectEntry = z.object({
   contractPrice: cents
 });
 
-const bodySchema = z.object({
+const baseSchema = z.object({
   contractNo: z.string().trim().min(1, '合同编号不能为空').max(50),
   projects: z.array(projectEntry).max(1000)
 });
+/** 新增合同必须指定所属批次 */
+const createSchema = baseSchema.extend({ batchId: z.string().min(1, '请选择所属批次') });
+/** 修改合同：batchId 可省略（保持不变），指定则移到该批次 */
+const updateSchema = baseSchema.extend({ batchId: z.string().min(1).optional() });
 
 export function registerContractRoutes(app: FastifyInstance, { contracts }: Services): void {
-  app.get('/api/contracts', async () => contracts.list());
+  /** 合同列表；?batchId=xxx 只返回该批次下的合同 */
+  app.get('/api/contracts', async (req) => {
+    const { batchId } = z.object({ batchId: z.string().min(1).optional() }).parse(req.query);
+    return contracts.list(batchId);
+  });
 
   app.get('/api/contracts/:id', async (req) => contracts.get((req.params as { id: string }).id));
 
-  /** 新增合同：从未结算项目里挑选并设置合同价 */
+  /** 新增合同：归属某个批次，从未结算项目里挑选并设置合同价 */
   app.post('/api/contracts', async (req, reply) => {
-    const created = contracts.create(bodySchema.parse(req.body));
+    const created = contracts.create(createSchema.parse(req.body));
     return reply.status(201).send(created);
   });
 
-  /** 修改合同编号与其下项目的合同价 */
+  /** 修改合同编号 / 所属批次与其下项目的合同价 */
   app.patch('/api/contracts/:id', async (req) =>
-    contracts.update((req.params as { id: string }).id, bodySchema.parse(req.body))
+    contracts.update((req.params as { id: string }).id, updateSchema.parse(req.body))
   );
 
   /** 「删除」合同：不物理删除，仅归档，并清空其下项目的合同归属 */

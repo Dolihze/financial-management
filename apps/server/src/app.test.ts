@@ -135,6 +135,7 @@ describe('项目管理（Excel 导入）', () => {
     const list = (await ctx.app.inject({ url: '/api/projects' })).json() as Array<Record<string, unknown>>;
     expect(list).toHaveLength(4);
     const by = (name: string) => list.find((p) => p.name === name)!;
+    // 项目甲原先在 HT-001（第14批），导入改为 HT-009：HT-009 是新合同，归属 Excel 里的第15批，项目批次号随合同走
     expect(by('项目甲')).toMatchObject({
       contractNo: 'HT-009', batchNo: 15, region: '华北', contractPrice: 20_000, qxReceived: 15_000, qxMoneyReceived: true
     });
@@ -162,32 +163,38 @@ describe('项目管理（Excel 导入）', () => {
     expect((await ctx.app.inject({ url: '/api/projects' })).json()).toEqual([]);
   });
 
-  it('批次：「第15批」记为批次号 15；数字、带空白同样识别；留空为 null；其他写法报错', async () => {
+  it('批次：「第15批」记为批次号 15；数字、带空白同样识别；批次随合同走，没有合同编号的项目没有批次；其他写法报错', async () => {
     const m = multipart(
       await projectXlsx([
-        ['', '第15批', '', '甲', 0, 0, 0, 0, 0, '', '', ''],
-        ['', 16, '', '乙', 0, 0, 0, 0, 0, '', '', ''],
-        ['', '第 7 批', '', '丙', 0, 0, 0, 0, 0, '', '', ''],
-        ['', '', '', '丁', 0, 0, 0, 0, 0, '', '', '']
+        ['HT-A', '第15批', '', '甲', 0, 0, 0, 0, 0, '', '', ''],
+        ['HT-B', 16, '', '乙', 0, 0, 0, 0, 0, '', '', ''],
+        ['HT-C', '第 7 批', '', '丙', 0, 0, 0, 0, 0, '', '', ''],
+        ['HT-D', '', '', '丁', 0, 0, 0, 0, 0, '', '', ''], // 有合同但没填批次 -> 「未分批」，项目批次号为空
+        ['', '第9批', '', '戊', 0, 0, 0, 0, 0, '', '', ''] // 没有合同编号 -> 不归任何合同，也就没有批次
       ])
     );
     expect((await ctx.app.inject({ method: 'POST', url: importUrl('commit'), ...m })).statusCode).toBe(201);
     const list = (await ctx.app.inject({ url: '/api/projects' })).json() as Array<{ name: string; batchNo: number | null }>;
     const no = (name: string) => list.find((p) => p.name === name)!.batchNo;
-    expect([no('甲'), no('乙'), no('丙'), no('丁')]).toEqual([15, 16, 7, null]);
+    expect([no('甲'), no('乙'), no('丙'), no('丁'), no('戊')]).toEqual([15, 16, 7, null, null]);
+    // 批次表：导入时自动创建（含「未分批」兜底批次 0），没有合同的「第9批」不会凭空建批次
+    const nos = (ctx.db.prepare('SELECT batch_no FROM batch WHERE archived = 0 ORDER BY batch_no').all() as Array<{ batch_no: number }>).map((r) => r.batch_no);
+    expect(nos).toEqual([0, 7, 15, 16]);
 
     const bad = multipart(
       await projectXlsx([
         ['', '第十五批', '', '戊', 0, 0, 0, 0, 0, '', '', ''],
         ['', '第15期', '', '己', 0, 0, 0, 0, 0, '', '', ''],
-        ['', '15.5', '', '庚', 0, 0, 0, 0, 0, '', '', '']
+        ['', '15.5', '', '庚', 0, 0, 0, 0, 0, '', '', ''],
+        ['', '第0批', '', '辛', 0, 0, 0, 0, 0, '', '', ''] // 0 号保留给「未分批」
       ])
     );
     const preview = (await ctx.app.inject({ method: 'POST', url: importUrl('preview'), ...bad })).json() as {
       errors: Array<{ row: number; message: string }>;
     };
-    expect(preview.errors.map((e) => e.row)).toEqual([3, 4, 5]);
+    expect(preview.errors.map((e) => e.row)).toEqual([3, 4, 5, 6]);
     expect(preview.errors[0]!.message).toContain('批次格式无法识别');
+    expect(preview.errors[3]!.message).toContain('批次号必须从 1 开始');
   });
 
   it('兼容「表头 + 说明行 + 合计行 + 数据」的三行表头结构：说明行与合计行都被忽略，行号对应 Excel 实际行', async () => {
@@ -299,7 +306,7 @@ describe('项目管理（Excel 导入）', () => {
       const id = (await list())[0]!.id;
       const acc = await makeAccount('入账户', 0);
       const body = {
-        batchNo: 1, region: '兰州', name: '入账项目', contractPrice: 100_000, qxReceived: 80_000, qxSubcontractFee: 0, chenPei: 0, qxProfit: 0,
+        region: '兰州', name: '入账项目', contractPrice: 100_000, qxReceived: 80_000, qxSubcontractFee: 0, chenPei: 0, qxProfit: 0,
         qxMoneyReceived: true, paidSubcontractor: false, paidChenPei: false, postingAccountId: acc.id
       };
       expect((await ctx.app.inject({ method: 'PATCH', url: `/api/projects/${id}`, payload: body })).statusCode).toBe(200);
@@ -312,7 +319,7 @@ describe('项目管理（Excel 导入）', () => {
       await commit(await sheet(['项目名称', '合同价', '备注'], [['备注项目', 100, '导入备注']]));
       const p = (await list())[0]!;
       const base = {
-        batchNo: null, region: '', name: '备注项目', contractPrice: 10_000, qxReceived: 0, qxSubcontractFee: 0, chenPei: 0, qxProfit: 0,
+        region: '', name: '备注项目', contractPrice: 10_000, qxReceived: 0, qxSubcontractFee: 0, chenPei: 0, qxProfit: 0,
         qxMoneyReceived: false, paidSubcontractor: false, paidChenPei: false
       };
       const patchP = (b: object) => ctx.app.inject({ method: 'PATCH', url: `/api/projects/${p.id}`, payload: b });
@@ -337,7 +344,7 @@ describe('项目管理（Excel 导入）', () => {
     const patch = (id: string, body: unknown) =>
       ctx.app.inject({ method: 'PATCH', url: `/api/projects/${id}`, payload: body as object });
     const baseBody = {
-      batchNo: 15, region: '陇南', name: '改名后的项目',
+      region: '陇南', name: '改名后的项目',
       contractPrice: 1000, qxReceived: 800, qxSubcontractFee: 400, chenPei: 50, qxProfit: 200,
       qxMoneyReceived: false, paidSubcontractor: false, paidChenPei: false // 不涉及入账；入账见下方「入账与回退」
     };
@@ -411,11 +418,15 @@ describe('项目管理（Excel 导入）', () => {
       expect((await ctx.app.inject({ url: '/api/accounts' })).json().find((x: { id: string }) => x.id === acc.id)).toMatchObject({ balance: 800 });
     });
 
-    it('批次号可清空为 null；保留自己的名称不算重名', async () => {
+    it('批次号随合同走、不能通过项目接口修改：请求里带 batchNo 被忽略；保留自己的名称不算重名', async () => {
       const { a } = await seed();
-      const res = await patch(a, { ...baseBody, name: '项目甲', batchNo: null });
-      expect(res.statusCode).toBe(200);
-      expect(res.json()).toMatchObject({ name: '项目甲', batchNo: null });
+      const before = (await ctx.app.inject({ url: `/api/projects/${a}` })).json() as { batchNo: number | null };
+      expect(before.batchNo).toBe(14); // 导入时 HT-1 归属第14批
+      for (const batchNo of [99, null, 1.5, 'x']) {
+        const res = await patch(a, { ...baseBody, name: '项目甲', batchNo });
+        expect(res.statusCode).toBe(200);
+        expect(res.json()).toMatchObject({ name: '项目甲', batchNo: 14 });
+      }
     });
 
     it('与其他项目重名返回 409；校验失败返回 400；不存在返回 404', async () => {
@@ -426,7 +437,6 @@ describe('项目管理（Excel 导入）', () => {
       expect((await patch(a, { ...baseBody, name: '  ' })).statusCode).toBe(400);
       expect((await patch(a, { ...baseBody, contractPrice: 10.5 })).statusCode).toBe(400); // 金额必须是整数分
       expect((await patch(a, { ...baseBody, contractPrice: -1 })).statusCode).toBe(400);
-      expect((await patch(a, { ...baseBody, batchNo: 1.5 })).statusCode).toBe(400);
       expect((await patch(a, { ...baseBody, qxMoneyReceived: 'yes' })).statusCode).toBe(400);
       expect((await patch('nope', baseBody)).statusCode).toBe(404);
       // 失败的修改不改动数据
@@ -471,7 +481,7 @@ describe('项目管理（Excel 导入）', () => {
     const patch = (id: string, body: unknown) =>
       ctx.app.inject({ method: 'PATCH', url: `/api/projects/${id}`, payload: body as object });
     const full = (over: Record<string, unknown> = {}) => ({
-      contractNo: 'HT-1', batchNo: 15, region: '陇南', name: '入账项目',
+      contractNo: 'HT-1', region: '陇南', name: '入账项目',
       contractPrice: 100_000, qxReceived: 80_000, qxSubcontractFee: 40_000, chenPei: 5_000, qxProfit: 35_000,
       qxMoneyReceived: false, paidSubcontractor: false, paidChenPei: false,
       ...over
@@ -671,9 +681,67 @@ describe('项目管理（Excel 导入）', () => {
   });
 });
 
+describe('批次管理', () => {
+  const patch = (url: string, body: unknown) => ctx.app.inject({ method: 'PATCH', url, payload: body as object });
+  const get = async (url: string) => (await ctx.app.inject({ url })).json();
+  const mk = async (batchNo: number, note?: string) => (await post('/api/batches', { batchNo, note })).json() as { id: string; batchNo: number };
+
+  it('新增批次：批次号必须是 1 以上的整数且唯一，备注可选；列表按批次号倒序；写审计', async () => {
+    const res = await post('/api/batches', { batchNo: 15, note: '  第十五批  ' });
+    expect(res.statusCode).toBe(201);
+    expect(res.json()).toMatchObject({ batchNo: 15, note: '第十五批', contractCount: 0, projectCount: 0, totalPrice: 0, qxReceived: 0, qxProfit: 0 });
+    await mk(3);
+    await mk(20);
+    expect(((await get('/api/batches')) as Array<{ batchNo: number }>).map((b) => b.batchNo)).toEqual([20, 15, 3]);
+    expect(ctx.db.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE entity='batch' AND action='create'").get()).toEqual({ n: 3 });
+
+    const dup = await post('/api/batches', { batchNo: 15 });
+    expect(dup.statusCode).toBe(409);
+    expect(dup.json()).toMatchObject({ code: 'DUPLICATE_BATCH_NO' });
+  });
+
+  it('批次号异常输入一律 400：0、负数、小数、字符串、null、缺失、超大值；备注超长', async () => {
+    for (const batchNo of [0, -1, 1.5, '15', null, undefined, true, 100_001, 1e15, Number.MAX_SAFE_INTEGER]) {
+      expect((await post('/api/batches', { batchNo })).statusCode, `batchNo=${String(batchNo)}`).toBe(400);
+    }
+    expect((await post('/api/batches', { batchNo: 1, note: 'x'.repeat(201) })).statusCode).toBe(400);
+    expect((await post('/api/batches', {})).statusCode).toBe(400);
+    expect((await get('/api/batches')).length).toBe(0); // 失败都不落库
+    expect((await post('/api/batches', { batchNo: 100_000 })).statusCode).toBe(201); // 上限边界合法
+  });
+
+  it('修改批次：改备注、改批次号（重复被拒、非法值被拒）；不存在 404', async () => {
+    const b = await mk(1);
+    const other = await mk(2);
+    const ok = await patch(`/api/batches/${b.id}`, { batchNo: 1, note: '改备注' });
+    expect(ok.statusCode).toBe(200);
+    expect(ok.json()).toMatchObject({ batchNo: 1, note: '改备注' });
+    expect((await patch(`/api/batches/${b.id}`, { batchNo: 2 })).statusCode).toBe(409);
+    expect((await patch(`/api/batches/${b.id}`, { batchNo: 0 })).statusCode).toBe(400);
+    expect((await patch('/api/batches/nope', { batchNo: 9 })).statusCode).toBe(404);
+    expect(await get(`/api/batches/${other.id}`)).toMatchObject({ batchNo: 2 });
+  });
+
+  it('删除批次 = 归档：只有批次下没有合同才能删；批次号可复用；重复删除 404；写审计', async () => {
+    const b = await mk(5);
+    const del = await post(`/api/batches/${b.id}/archive`, {});
+    expect(del.statusCode).toBe(200);
+    expect(ctx.db.prepare('SELECT archived FROM batch WHERE id = ?').get(b.id)).toEqual({ archived: 1 }); // 物理上仍在
+    expect((await get('/api/batches')).length).toBe(0);
+    expect((await ctx.app.inject({ url: `/api/batches/${b.id}` })).statusCode).toBe(404);
+    expect((await post(`/api/batches/${b.id}/archive`, {})).statusCode).toBe(404);
+    expect(ctx.db.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE entity='batch' AND action='archive'").get()).toEqual({ n: 1 });
+    expect((await post('/api/batches', { batchNo: 5 })).statusCode).toBe(201); // 归档后批次号可复用
+  });
+});
+
 describe('合同管理', () => {
   const patch = (url: string, body: unknown) => ctx.app.inject({ method: 'PATCH', url, payload: body as object });
   const get = async (url: string) => (await ctx.app.inject({ url })).json();
+  const mkBatch = async (batchNo: number) => ((await post('/api/batches', { batchNo })).json() as { id: string }).id;
+  /** 新增合同（默认放进第 1 批） */
+  const mkContract = async (batchId: string, contractNo: string, projects: Array<{ projectId: string; contractPrice: number }>) =>
+    post('/api/contracts', { batchId, contractNo, projects });
 
   /** 导入若干项目：合同编号为空 = 未结算 */
   async function importProjects(rows: unknown[][]) {
@@ -682,40 +750,42 @@ describe('合同管理', () => {
     const list = (await get('/api/projects')) as Array<{ id: string; name: string }>;
     return (name: string) => list.find((p) => p.name === name)!.id;
   }
-  const row = (contractNo: string, name: string, price = 0) => [contractNo, '第1批', '天水', name, price, 0, 0, 0, 0, '否', '否', '否'];
+  const row = (contractNo: string, name: string, price = 0) => [contractNo, '', '天水', name, price, 0, 0, 0, 0, '否', '否', '否'];
 
-  it('新增合同：从未结算项目里挑选并设置合同价，合同总价 = 各项目合同价之和（整数分）；不改变项目结算状态', async () => {
+  it('新增合同：归属批次，从未结算项目里挑选并设置合同价，合同总价 = 各项目合同价之和（整数分）；不改变项目结算状态；项目批次号随合同', async () => {
     const id = await importProjects([row('', '项目甲'), row('', '项目乙'), row('', '项目丙')]);
-    const res = await post('/api/contracts', {
-      contractNo: 'HT-100',
-      projects: [{ projectId: id('项目甲'), contractPrice: 100_010 }, { projectId: id('项目乙'), contractPrice: 20_005 }]
-    });
+    const batchId = await mkBatch(7);
+    const res = await mkContract(batchId, 'HT-100', [{ projectId: id('项目甲'), contractPrice: 100_010 }, { projectId: id('项目乙'), contractPrice: 20_005 }]);
     expect(res.statusCode).toBe(201);
-    expect(res.json()).toMatchObject({ contractNo: 'HT-100', totalPrice: 120_015, projectCount: 2 });
+    expect(res.json()).toMatchObject({ contractNo: 'HT-100', batchId, batchNo: 7, totalPrice: 120_015, projectCount: 2 });
     expect(res.json().projects.map((p: { name: string }) => p.name).sort()).toEqual(['项目乙', '项目甲']);
 
-    // 项目：归入合同、合同价被设置；项目结算保持原样（否），不会悄悄生成收入流水；未选的项目不受影响
-    expect(await get(`/api/projects/${id('项目甲')}`)).toMatchObject({ contractNo: 'HT-100', contractPrice: 100_010, qxMoneyReceived: false, postedKinds: [] });
+    // 项目：归入合同、合同价被设置、批次号 = 合同所属批次；项目结算保持原样（否），不会悄悄生成收入流水；未选的项目不受影响
+    expect(await get(`/api/projects/${id('项目甲')}`)).toMatchObject({ contractNo: 'HT-100', batchNo: 7, contractPrice: 100_010, qxMoneyReceived: false, postedKinds: [] });
     expect(ctx.db.prepare('SELECT COUNT(*) AS n FROM tx').get()).toEqual({ n: 0 });
-    expect(await get(`/api/projects/${id('项目丙')}`)).toMatchObject({ contractId: null, contractNo: '', qxMoneyReceived: false });
+    expect(await get(`/api/projects/${id('项目丙')}`)).toMatchObject({ contractId: null, contractNo: '', batchNo: null, qxMoneyReceived: false });
     expect(ctx.db.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE entity='contract' AND action='create'").get()).toEqual({ n: 1 });
   });
 
-  it('新增合同的校验：编号必填且唯一、至少一个项目、项目必须存在且未归入其他合同、不能重复选同一项目', async () => {
+  it('新增合同的校验：必须指定存在的批次、编号必填且唯一、至少一个项目、项目必须存在且未归入其他合同、不能重复选同一项目', async () => {
     const id = await importProjects([row('', '项目甲'), row('', '项目乙')]);
+    const b = await mkBatch(1);
     const one = [{ projectId: id('项目甲'), contractPrice: 100 }];
-    expect((await post('/api/contracts', { contractNo: '  ', projects: one })).statusCode).toBe(400);
-    expect((await post('/api/contracts', { contractNo: 'HT-1', projects: [] })).statusCode).toBe(400);
-    expect((await post('/api/contracts', { contractNo: 'HT-1', projects: [{ projectId: 'nope', contractPrice: 1 }] })).statusCode).toBe(404);
-    expect((await post('/api/contracts', { contractNo: 'HT-1', projects: [{ projectId: id('项目甲'), contractPrice: 1.5 }] })).statusCode).toBe(400);
-    expect((await post('/api/contracts', { contractNo: 'HT-1', projects: [...one, ...one] })).statusCode).toBe(400);
+    expect((await post('/api/contracts', { contractNo: 'HT-1', projects: one })).statusCode).toBe(400); // 没有 batchId
+    expect((await post('/api/contracts', { batchId: '', contractNo: 'HT-1', projects: one })).statusCode).toBe(400);
+    expect((await mkContract('nope', 'HT-1', one)).statusCode).toBe(404); // 批次不存在
+    expect((await mkContract(b, '  ', one)).statusCode).toBe(400);
+    expect((await mkContract(b, 'HT-1', [])).statusCode).toBe(400);
+    expect((await mkContract(b, 'HT-1', [{ projectId: 'nope', contractPrice: 1 }])).statusCode).toBe(404);
+    expect((await mkContract(b, 'HT-1', [{ projectId: id('项目甲'), contractPrice: 1.5 }])).statusCode).toBe(400);
+    expect((await mkContract(b, 'HT-1', [...one, ...one])).statusCode).toBe(400);
     expect((await get('/api/contracts')).length).toBe(0); // 失败都不落库
 
-    expect((await post('/api/contracts', { contractNo: 'HT-1', projects: one })).statusCode).toBe(201);
-    const dupNo = await post('/api/contracts', { contractNo: 'HT-1', projects: [{ projectId: id('项目乙'), contractPrice: 1 }] });
+    expect((await mkContract(b, 'HT-1', one)).statusCode).toBe(201);
+    const dupNo = await mkContract(b, 'HT-1', [{ projectId: id('项目乙'), contractPrice: 1 }]);
     expect(dupNo.statusCode).toBe(409);
     expect(dupNo.json()).toMatchObject({ code: 'DUPLICATE_CONTRACT_NO' });
-    const taken = await post('/api/contracts', { contractNo: 'HT-2', projects: one });
+    const taken = await mkContract(b, 'HT-2', one);
     expect(taken.statusCode).toBe(409);
     expect(taken.json()).toMatchObject({ code: 'PROJECT_ALREADY_IN_CONTRACT' });
     expect((await get('/api/contracts')).length).toBe(1);
@@ -728,7 +798,7 @@ describe('合同管理', () => {
       ...multipart(await projectXlsx([['', '第1批', '天水', '已结算项目', 100, 0, 0, 0, 0, '是', '否', '否']]))
     });
     const sid = ((await get('/api/projects')) as Array<{ id: string }>)[0]!.id;
-    const res = await post('/api/contracts', { contractNo: 'HT-S', projects: [{ projectId: sid, contractPrice: 100 }] });
+    const res = await mkContract(await mkBatch(1), 'HT-S', [{ projectId: sid, contractPrice: 100 }]);
     expect(res.statusCode).toBe(409);
     expect(res.json()).toMatchObject({ code: 'PROJECT_ALREADY_SETTLED' });
     expect((await get('/api/contracts')).length).toBe(0);
@@ -752,17 +822,64 @@ describe('合同管理', () => {
     expect(list.find((p) => p.name === '新表头项目')!.qxMoneyReceived).toBe(true);
   });
 
-  it('列表与详情：详情包含其下所有项目；不存在返回 404', async () => {
-    const id = await importProjects([row('', '项目甲'), row('', '项目乙')]);
-    const created = (await post('/api/contracts', {
-      contractNo: 'HT-1', projects: [{ projectId: id('项目甲'), contractPrice: 300 }, { projectId: id('项目乙'), contractPrice: 700 }]
-    })).json();
-    const list = await get('/api/contracts');
-    expect(list).toEqual([expect.objectContaining({ id: created.id, contractNo: 'HT-1', totalPrice: 1000, projectCount: 2 })]);
+  it('列表与详情：可按批次过滤合同；详情包含其下所有项目；不存在返回 404', async () => {
+    const id = await importProjects([row('', '项目甲'), row('', '项目乙'), row('', '项目丙')]);
+    const b1 = await mkBatch(1);
+    const b2 = await mkBatch(2);
+    const created = (await mkContract(b1, 'HT-1', [{ projectId: id('项目甲'), contractPrice: 300 }, { projectId: id('项目乙'), contractPrice: 700 }])).json();
+    await mkContract(b2, 'HT-2', [{ projectId: id('项目丙'), contractPrice: 5 }]);
+
+    expect(await get('/api/contracts')).toHaveLength(2);
+    expect(await get(`/api/contracts?batchId=${b1}`)).toEqual([
+      expect.objectContaining({ id: created.id, contractNo: 'HT-1', batchId: b1, batchNo: 1, totalPrice: 1000, projectCount: 2 })
+    ]);
+    expect(((await get(`/api/contracts?batchId=${b2}`)) as Array<{ contractNo: string }>).map((c) => c.contractNo)).toEqual(['HT-2']);
+    expect((await ctx.app.inject({ url: '/api/contracts?batchId=nope' })).statusCode).toBe(404);
+
     const detail = await get(`/api/contracts/${created.id}`);
     expect(detail.projects).toHaveLength(2);
     expect(detail.projects[0]).toMatchObject({ id: expect.any(String), name: expect.any(String), contractPrice: expect.any(Number) });
     expect((await ctx.app.inject({ url: '/api/contracts/nope' })).statusCode).toBe(404);
+  });
+
+  it('项目列表可按合同过滤；合同不存在返回 404', async () => {
+    const id = await importProjects([row('', '项目甲'), row('', '项目乙')]);
+    const b = await mkBatch(1);
+    const c1 = (await mkContract(b, 'HT-1', [{ projectId: id('项目甲'), contractPrice: 1 }])).json();
+    expect(((await get(`/api/projects?contractId=${c1.id}`)) as Array<{ name: string }>).map((p) => p.name)).toEqual(['项目甲']);
+    expect(await get('/api/projects')).toHaveLength(2);
+    expect((await ctx.app.inject({ url: '/api/projects?contractId=nope' })).statusCode).toBe(404);
+  });
+
+  it('批次汇总：合同数、项目数、合同总价、企信实收、企信利润按整数分汇总；已删除的项目/合同不计入', async () => {
+    const id = await importProjects([
+      ['', '', '', '项目甲', 0, 800, 0, 0, 350, '否', '否', '否'],
+      ['', '', '', '项目乙', 0, 200, 0, 0, 50, '否', '否', '否'],
+      ['', '', '', '项目丙', 0, 1, 0, 0, 1, '否', '否', '否']
+    ]);
+    const b = await mkBatch(1);
+    await mkContract(b, 'HT-1', [{ projectId: id('项目甲'), contractPrice: 300 }, { projectId: id('项目乙'), contractPrice: 700 }]);
+    const c2 = (await mkContract(b, 'HT-2', [{ projectId: id('项目丙'), contractPrice: 5 }])).json();
+    expect(await get(`/api/batches/${b}`)).toMatchObject({ contractCount: 2, projectCount: 3, totalPrice: 1005, qxReceived: 100_100, qxProfit: 40_100 });
+
+    // 合同下的项目先删除（归档），合同才能删除；之后两者都不再计入批次汇总
+    expect((await post(`/api/projects/${id('项目丙')}/archive`, {})).statusCode).toBe(200);
+    expect((await post(`/api/contracts/${c2.id}/archive`, {})).statusCode).toBe(200);
+    expect(await get(`/api/batches/${b}`)).toMatchObject({ contractCount: 1, projectCount: 2, totalPrice: 1000, qxReceived: 100_000, qxProfit: 40_000 });
+  });
+
+  it('删除批次：批次下还有合同返回 409 且不归档；合同全部删除/移走后才可删', async () => {
+    const id = await importProjects([row('', '项目甲')]);
+    const b1 = await mkBatch(1);
+    const b2 = await mkBatch(2);
+    const c = (await mkContract(b1, 'HT-1', [{ projectId: id('项目甲'), contractPrice: 1 }])).json();
+    const blocked = await post(`/api/batches/${b1}/archive`, {});
+    expect(blocked.statusCode).toBe(409);
+    expect(blocked.json()).toMatchObject({ code: 'BATCH_HAS_CONTRACTS' });
+    expect(ctx.db.prepare('SELECT archived FROM batch WHERE id = ?').get(b1)).toEqual({ archived: 0 });
+
+    await patch(`/api/contracts/${c.id}`, { batchId: b2, contractNo: 'HT-1', projects: [] }); // 移走
+    expect((await post(`/api/batches/${b1}/archive`, {})).statusCode).toBe(200);
   });
 
   it('编辑合同：可加入未结算且未归属的已有项目；已归属其他合同/已结算/不存在的被拒绝，且整体不落库', async () => {
@@ -777,8 +894,9 @@ describe('合同管理', () => {
     });
     const list = (await get('/api/projects')) as Array<{ id: string; name: string }>;
     const id = (n: string) => list.find((p) => p.name === n)!.id;
-    const c = (await post('/api/contracts', { contractNo: 'HT-1', projects: [{ projectId: id('项目甲'), contractPrice: 1_000 }] })).json();
-    const other = (await post('/api/contracts', { contractNo: 'HT-2', projects: [{ projectId: id('项目丙'), contractPrice: 50 }] })).json();
+    const b = await mkBatch(3);
+    const c = (await mkContract(b, 'HT-1', [{ projectId: id('项目甲'), contractPrice: 1_000 }])).json();
+    const other = (await mkContract(b, 'HT-2', [{ projectId: id('项目丙'), contractPrice: 50 }])).json();
 
     // 失败：已归属其他合同 409、已结算 409、不存在 404；同一请求里合法的新增项目也不应落库
     const bad = (projectId: string) => patch(`/api/contracts/${c.id}`, {
@@ -787,17 +905,17 @@ describe('合同管理', () => {
     expect((await bad(id('项目丙'))).json()).toMatchObject({ code: 'PROJECT_ALREADY_IN_CONTRACT' });
     expect((await bad(id('已结算项目'))).json()).toMatchObject({ code: 'PROJECT_ALREADY_SETTLED' });
     expect((await bad('nope')).statusCode).toBe(404);
-    expect(await get(`/api/projects/${id('项目乙')}`)).toMatchObject({ contractId: null, contractNo: '', contractPrice: 25_000 });
+    expect(await get(`/api/projects/${id('项目乙')}`)).toMatchObject({ contractId: null, contractNo: '', batchNo: null, contractPrice: 25_000 });
     expect(await get(`/api/contracts/${c.id}`)).toMatchObject({ projectCount: 1, totalPrice: 1_000 });
     expect(await get(`/api/contracts/${other.id}`)).toMatchObject({ projectCount: 1, totalPrice: 50 });
 
-    // 成功：加入项目乙并改编号；总价 = 各项目合同价之和；项目结算状态不变、不产生流水
+    // 成功：加入项目乙并改编号；总价 = 各项目合同价之和；项目批次号 = 合同批次；项目结算状态不变、不产生流水
     const ok = await patch(`/api/contracts/${c.id}`, {
       contractNo: 'HT-1B', projects: [{ projectId: id('项目甲'), contractPrice: 1_000 }, { projectId: id('项目乙'), contractPrice: 30_005 }]
     });
     expect(ok.statusCode).toBe(200);
-    expect(ok.json()).toMatchObject({ contractNo: 'HT-1B', projectCount: 2, totalPrice: 31_005 });
-    expect(await get(`/api/projects/${id('项目乙')}`)).toMatchObject({ contractId: c.id, contractNo: 'HT-1B', contractPrice: 30_005, qxMoneyReceived: false });
+    expect(ok.json()).toMatchObject({ contractNo: 'HT-1B', batchNo: 3, projectCount: 2, totalPrice: 31_005 });
+    expect(await get(`/api/projects/${id('项目乙')}`)).toMatchObject({ contractId: c.id, contractNo: 'HT-1B', batchNo: 3, contractPrice: 30_005, qxMoneyReceived: false });
     expect(ctx.db.prepare('SELECT COUNT(*) AS n FROM tx').get()).toEqual({ n: 0 });
     const audit = ctx.db.prepare("SELECT payload FROM audit_log WHERE entity='contract' AND entity_id=? AND action='update'").get(c.id) as { payload: string };
     expect(JSON.parse(audit.payload).addedProjects).toEqual([id('项目乙')]);
@@ -809,10 +927,11 @@ describe('合同管理', () => {
 
   it('合同价异常输入：负数、小数分、字符串、null、超大值一律 400，不落库（新增与编辑都校验）', async () => {
     const id = await importProjects([row('', '项目甲'), row('', '项目乙')]);
-    const c = (await post('/api/contracts', { contractNo: 'HT-1', projects: [{ projectId: id('项目甲'), contractPrice: 100 }] })).json();
+    const b = await mkBatch(1);
+    const c = (await mkContract(b, 'HT-1', [{ projectId: id('项目甲'), contractPrice: 100 }])).json();
     const bads: unknown[] = [-1, 1.5, '100', null, undefined, true, [], 1e15, Number.MAX_SAFE_INTEGER, 10_000_000_000 * 100 + 1];
     for (const bad of bads) {
-      const body = { contractNo: 'HT-9', projects: [{ projectId: id('项目乙'), contractPrice: bad }] };
+      const body = { batchId: b, contractNo: 'HT-9', projects: [{ projectId: id('项目乙'), contractPrice: bad }] };
       expect((await post('/api/contracts', body)).statusCode, `create ${String(bad)}`).toBe(400);
       expect((await patch(`/api/contracts/${c.id}`, { ...body, contractNo: 'HT-1' })).statusCode, `update ${String(bad)}`).toBe(400);
     }
@@ -833,10 +952,9 @@ describe('合同管理', () => {
 
   it('编辑合同：改合同编号同步到项目，改各项目合同价后总价随之变化', async () => {
     const id = await importProjects([row('', '项目甲'), row('', '项目乙'), row('', '项目丙')]);
-    const c = (await post('/api/contracts', {
-      contractNo: 'HT-1', projects: [{ projectId: id('项目甲'), contractPrice: 300 }, { projectId: id('项目乙'), contractPrice: 700 }]
-    })).json();
-    await post('/api/contracts', { contractNo: 'HT-2', projects: [{ projectId: id('项目丙'), contractPrice: 50 }] });
+    const b = await mkBatch(1);
+    const c = (await mkContract(b, 'HT-1', [{ projectId: id('项目甲'), contractPrice: 300 }, { projectId: id('项目乙'), contractPrice: 700 }])).json();
+    await mkContract(b, 'HT-2', [{ projectId: id('项目丙'), contractPrice: 50 }]);
 
     const res = await patch(`/api/contracts/${c.id}`, {
       contractNo: 'HT-1B', projects: [{ projectId: id('项目甲'), contractPrice: 400 }, { projectId: id('项目乙'), contractPrice: 700 }]
@@ -851,32 +969,111 @@ describe('合同管理', () => {
     expect(await get(`/api/projects/${id('项目丙')}`)).toMatchObject({ contractPrice: 50 }); // 失败不改动
   });
 
-  it('删除合同 = 归档：项目与其流水保留，项目合同归属清空回到未结算；合同编号可复用；写审计', async () => {
-    const id = await importProjects([row('', '项目甲')]);
-    const c = (await post('/api/contracts', { contractNo: 'HT-1', projects: [{ projectId: id('项目甲'), contractPrice: 300 }] })).json();
+  it('移动合同到其他批次：合同连同其下项目一起移动，项目批次号同步；批次不存在 404 不落库；省略 batchId 保持不变', async () => {
+    const id = await importProjects([row('', '项目甲'), row('', '项目乙')]);
+    const b1 = await mkBatch(1);
+    const b2 = await mkBatch(2);
+    const c = (await mkContract(b1, 'HT-1', [{ projectId: id('项目甲'), contractPrice: 300 }, { projectId: id('项目乙'), contractPrice: 700 }])).json();
+    const keep = [{ projectId: id('项目甲'), contractPrice: 300 }, { projectId: id('项目乙'), contractPrice: 700 }];
+
+    expect((await patch(`/api/contracts/${c.id}`, { batchId: 'nope', contractNo: 'HT-1', projects: keep })).statusCode).toBe(404);
+    expect(await get(`/api/contracts/${c.id}`)).toMatchObject({ batchId: b1, batchNo: 1 });
+
+    const moved = await patch(`/api/contracts/${c.id}`, { batchId: b2, contractNo: 'HT-1', projects: keep });
+    expect(moved.statusCode).toBe(200);
+    expect(moved.json()).toMatchObject({ batchId: b2, batchNo: 2, totalPrice: 1000 });
+    expect(await get(`/api/projects/${id('项目乙')}`)).toMatchObject({ batchNo: 2 });
+    expect(await get(`/api/contracts?batchId=${b1}`)).toEqual([]);
+    expect(await get(`/api/batches/${b1}`)).toMatchObject({ contractCount: 0, projectCount: 0 });
+    expect(await get(`/api/batches/${b2}`)).toMatchObject({ contractCount: 1, projectCount: 2, totalPrice: 1000 });
+
+    expect((await patch(`/api/contracts/${c.id}`, { contractNo: 'HT-1', projects: keep })).json()).toMatchObject({ batchId: b2 }); // 省略 -> 不变
+  });
+
+  it('修改批次号：同步到其下合同的项目；「未分批」批次不能改号/删除，但可改备注', async () => {
+    // 导入时合同编号有、批次为空 -> 落入 0 号「未分批」
+    await importProjects([row('HT-X', '项目甲')]);
+    const batches = (await get('/api/batches')) as Array<{ id: string; batchNo: number }>;
+    const zero = batches.find((x) => x.batchNo === 0)!;
+    expect((await patch(`/api/batches/${zero.id}`, { batchNo: 9 })).statusCode).toBe(403);
+    expect((await post(`/api/batches/${zero.id}/archive`, {})).statusCode).toBe(403);
+    expect((await patch(`/api/batches/${zero.id}`, { batchNo: 0, note: '待整理' })).json()).toMatchObject({ batchNo: 0, note: '待整理' });
+
+    const b = await mkBatch(4);
+    const c = (await get('/api/contracts'))[0] as { id: string };
+    await patch(`/api/contracts/${c.id}`, { batchId: b, contractNo: 'HT-X', projects: [] });
+    const pid = ((await get('/api/projects')) as Array<{ id: string }>)[0]!.id;
+    expect(await get(`/api/projects/${pid}`)).toMatchObject({ batchNo: 4 });
+    expect((await patch(`/api/batches/${b}`, { batchNo: 40 })).statusCode).toBe(200);
+    expect(await get(`/api/projects/${pid}`)).toMatchObject({ batchNo: 40 });
+  });
+
+  it('删除合同：合同下还有项目时拒绝（409 CONTRACT_HAS_PROJECTS）且不落库，项目与合同归属原样保留', async () => {
+    const id = await importProjects([row('', '项目甲'), row('', '项目乙')]);
+    const b = await mkBatch(1);
+    const c = (await mkContract(b, 'HT-1', [{ projectId: id('项目甲'), contractPrice: 300 }, { projectId: id('项目乙'), contractPrice: 700 }])).json();
+
+    const blocked = await post(`/api/contracts/${c.id}/archive`, {});
+    expect(blocked.statusCode).toBe(409);
+    expect(blocked.json()).toMatchObject({ code: 'CONTRACT_HAS_PROJECTS', message: expect.stringContaining('2 个项目') });
+    expect(ctx.db.prepare('SELECT archived FROM contract WHERE id = ?').get(c.id)).toEqual({ archived: 0 });
+    expect(await get(`/api/contracts/${c.id}`)).toMatchObject({ projectCount: 2, totalPrice: 1000 });
+    expect(await get(`/api/projects/${id('项目甲')}`)).toMatchObject({ contractId: c.id, contractNo: 'HT-1', batchNo: 1, contractPrice: 300 });
+    expect(ctx.db.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE entity='contract' AND action='archive'").get()).toEqual({ n: 0 });
+
+    // 只删掉一个项目后仍有项目，继续拒绝；剩余项目也删除后才允许
+    await post(`/api/projects/${id('项目甲')}/archive`, {});
+    expect((await post(`/api/contracts/${c.id}/archive`, {})).statusCode).toBe(409);
+    expect((await post(`/api/contracts/${c.id}/archive`, {})).json().message).toContain('1 个项目');
+  });
+
+  it('删除合同 = 归档：合同内没有项目时才允许；合同编号可复用；写审计；不存在返回 404', async () => {
+    const id = await importProjects([row('', '项目甲'), row('', '项目乙')]);
+    const b = await mkBatch(1);
+    // 空合同：没有任何项目（新增合同本身要求至少一个项目，所以通过「删光项目」得到）
+    const c = (await mkContract(b, 'HT-1', [{ projectId: id('项目甲'), contractPrice: 300 }])).json();
+    expect((await post(`/api/projects/${id('项目甲')}/archive`, {})).statusCode).toBe(200);
+
     const del = await post(`/api/contracts/${c.id}/archive`, {});
     expect(del.statusCode).toBe(200);
     expect((await get('/api/contracts')).length).toBe(0);
     expect((await ctx.app.inject({ url: `/api/contracts/${c.id}` })).statusCode).toBe(404);
     expect((await post(`/api/contracts/${c.id}/archive`, {})).statusCode).toBe(404);
-    expect(await get(`/api/projects/${id('项目甲')}`)).toMatchObject({ contractId: null, contractNo: '', contractPrice: 300 });
+    expect((await post('/api/contracts/nope/archive', {})).statusCode).toBe(404);
     expect(ctx.db.prepare('SELECT archived FROM contract WHERE id = ?').get(c.id)).toEqual({ archived: 1 }); // 物理上仍在
     expect(ctx.db.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE entity='contract' AND action='archive'").get()).toEqual({ n: 1 });
-    expect((await post('/api/contracts', { contractNo: 'HT-1', projects: [{ projectId: id('项目甲'), contractPrice: 1 }] })).statusCode).toBe(201);
+    expect((await mkContract(b, 'HT-1', [{ projectId: id('项目乙'), contractPrice: 1 }])).statusCode).toBe(201); // 编号可复用
   });
 
-  it('Excel 导入：合同编号不存在时自动创建合同并归入；已存在则复用；编号为空保持未结算；合同总价随之汇总', async () => {
-    await importProjects([row('HT-1', '项目甲', 100), row('HT-1', '项目乙', 200), row('HT-2', '项目丙', 50), row('', '项目丁', 9)]);
-    const list = (await get('/api/contracts')) as Array<{ contractNo: string; totalPrice: number; projectCount: number }>;
+  it('已入账的项目不能删除，因此其所在合同也不能删除（先回退入账、删除项目后才行）', async () => {
+    const acc = await makeAccount('入账户', 0);
+    const id = await importProjects([['', '', '天水', '入账项目', 0, 800, 0, 0, 0, '否', '否', '否']]);
+    const b = await mkBatch(1);
+    const c = (await mkContract(b, 'HT-1', [{ projectId: id('入账项目'), contractPrice: 1000 }])).json();
+    const base = { region: '天水', name: '入账项目', contractPrice: 1000, qxReceived: 800, qxSubcontractFee: 0, chenPei: 0, qxProfit: 0, paidSubcontractor: false, paidChenPei: false };
+    expect((await patch(`/api/projects/${id('入账项目')}`, { ...base, qxMoneyReceived: true, postingAccountId: acc.id })).statusCode).toBe(200);
+
+    expect((await post(`/api/contracts/${c.id}/archive`, {})).json()).toMatchObject({ code: 'CONTRACT_HAS_PROJECTS' });
+    expect((await post(`/api/projects/${id('入账项目')}/archive`, {})).json()).toMatchObject({ code: 'PROJECT_HAS_POSTINGS' });
+    expect(ctx.db.prepare('SELECT archived FROM contract WHERE id = ?').get(c.id)).toEqual({ archived: 0 });
+  });
+
+  it('Excel 导入：合同编号不存在时自动创建合同（及批次）并归入；已存在则复用且批次不被 Excel 改动；编号为空保持未结算；合同总价随之汇总', async () => {
+    const r = (no: string, batch: string, name: string, price: number) => [no, batch, '', name, price, 0, 0, 0, 0, '否', '否', '否'];
+    await importProjects([r('HT-1', '第3批', '项目甲', 100), r('HT-1', '第3批', '项目乙', 200), r('HT-2', '第4批', '项目丙', 50), r('', '', '项目丁', 9)]);
+    const list = (await get('/api/contracts')) as Array<{ contractNo: string; batchNo: number; totalPrice: number; projectCount: number }>;
     expect(list.map((c) => c.contractNo).sort()).toEqual(['HT-1', 'HT-2']);
-    expect(list.find((c) => c.contractNo === 'HT-1')).toMatchObject({ totalPrice: 30_000, projectCount: 2 }); // 100、200 元 = 整数分
+    expect(list.find((c) => c.contractNo === 'HT-1')).toMatchObject({ batchNo: 3, totalPrice: 30_000, projectCount: 2 }); // 100、200 元 = 整数分
+    expect(list.find((c) => c.contractNo === 'HT-2')).toMatchObject({ batchNo: 4 });
     const unsettled = ((await get('/api/projects')) as Array<{ name: string; contractId: string | null }>).filter((p) => !p.contractId);
     expect(unsettled.map((p) => p.name)).toEqual(['项目丁']);
 
-    // 再次导入同一合同编号：复用，不重复创建
-    await importProjects([row('HT-1', '项目戊', 1)]);
+    // 再次导入同一合同编号：复用，不重复创建；Excel 里写了别的批次也不会改变已有合同的批次
+    await importProjects([r('HT-1', '第9批', '项目戊', 1)]);
     expect((await get('/api/contracts')).length).toBe(2);
-    expect(((await get('/api/contracts')) as Array<{ contractNo: string; projectCount: number }>).find((c) => c.contractNo === 'HT-1')!.projectCount).toBe(3);
+    expect(((await get('/api/contracts')) as Array<{ contractNo: string; projectCount: number; batchNo: number }>).find((c) => c.contractNo === 'HT-1')).toMatchObject({ projectCount: 3, batchNo: 3 });
+    expect(await get('/api/projects')).toEqual(expect.arrayContaining([expect.objectContaining({ name: '项目戊', batchNo: 3 })]));
+    expect(((await get('/api/batches')) as Array<{ batchNo: number }>).map((b) => b.batchNo)).toEqual([4, 3]); // 没有为被忽略的第9批建批次
     expect(ctx.db.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE entity='contract' AND action='import_create'").get()).toEqual({ n: 2 });
   });
 });

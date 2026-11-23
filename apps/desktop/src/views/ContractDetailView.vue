@@ -1,17 +1,24 @@
 <script setup lang="ts">
-import type { ContractDetail, Project } from '@fm/shared';
+import type { Batch, ContractDetail, Project } from '@fm/shared';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { computed, onMounted, reactive, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { api } from '@/api';
+import ProjectBreadcrumb from '@/components/ProjectBreadcrumb.vue';
 import { contractPriceToCents, sumContractPrices, validateContractPrice } from '@/utils/contractPrice';
 import { errorMessage, formatMoney, fromCents } from '@/utils/format';
 
 const route = useRoute();
 const router = useRouter();
-const id = route.params.id as string;
+const id = route.params.contractId as string;
+/** 进入编辑页时所在的批次（合同被移到别的批次后，以合同当前所属批次为准） */
+const fromBatchId = route.params.batchId as string;
 
 const contract = ref<ContractDetail | null>(null);
+/** 可选批次（用于「所属批次」下拉） */
+const batches = ref<Batch[]>([]);
+const batchId = ref('');
+const batchLabel = (b: Batch) => (b.batchNo === 0 ? '未分批' : `第 ${b.batchNo} 批`);
 const loading = ref(false);
 const saving = ref(false);
 
@@ -22,19 +29,20 @@ const prices = reactive<Record<string, string>>({});
 const pending = ref<Project[]>([]);
 
 /** 表格展示的项目：已有项目 + 待加入项目 */
-type Row = { id: string; name: string; batchNo: number | null; region: string; isNew: boolean };
+type Row = { id: string; name: string; region: string; isNew: boolean };
 const rows = computed<Row[]>(() => {
   const c = contract.value;
   if (!c) return [];
   return [
-    ...c.projects.map((p) => ({ id: p.id, name: p.name, batchNo: p.batchNo, region: p.region, isNew: false })),
-    ...pending.value.map((p) => ({ id: p.id, name: p.name, batchNo: p.batchNo, region: p.region, isNew: true }))
+    ...c.projects.map((p) => ({ id: p.id, name: p.name, region: p.region, isNew: false })),
+    ...pending.value.map((p) => ({ id: p.id, name: p.name, region: p.region, isNew: true }))
   ];
 });
 
 function fill(c: ContractDetail) {
   contract.value = c;
   contractNo.value = c.contractNo;
+  batchId.value = c.batchId;
   pending.value = [];
   for (const k of Object.keys(prices)) delete prices[k];
   for (const p of c.projects) prices[p.id] = fromCents(p.contractPrice);
@@ -43,13 +51,29 @@ function fill(c: ContractDetail) {
 async function load() {
   loading.value = true;
   try {
-    fill(await api.contracts.get(id));
+    const [c, list] = await Promise.all([api.contracts.get(id), api.batches.list()]);
+    batches.value = list;
+    fill(c);
   } catch (e) {
     ElMessage.error(errorMessage(e));
+    router.replace({ name: 'contracts', params: { batchId: fromBatchId } });
   } finally {
     loading.value = false;
   }
 }
+
+/** 面包屑：批次管理 / 第N批 / 合同编号 / 编辑（批次以合同当前所属批次为准） */
+const crumbs = computed(() => {
+  const c = contract.value;
+  const bid = c?.batchId ?? fromBatchId;
+  const b = batches.value.find((x) => x.id === bid);
+  return [
+    { label: '批次管理', to: { name: 'batches' } },
+    { label: b ? batchLabel(b) : '…', to: { name: 'contracts', params: { batchId: bid } } },
+    { label: c?.contractNo ?? '…', to: { name: 'projects', params: { batchId: bid, contractId: id } } },
+    { label: '编辑' }
+  ];
+});
 
 const priceError = (v: string | undefined) => validateContractPrice(v);
 const priceValid = (v: string | undefined) => priceError(v) === null;
@@ -68,6 +92,7 @@ const dirty = computed(() => {
   const c = contract.value;
   if (!c) return false;
   if (pending.value.length > 0) return true;
+  if (batchId.value !== c.batchId) return true;
   if (contractNo.value.trim() !== c.contractNo) return true;
   return c.projects.some((p) => !priceValid(prices[p.id]) || contractPriceToCents(prices[p.id]!) !== p.contractPrice);
 });
@@ -83,6 +108,7 @@ async function save() {
   try {
     fill(
       await api.contracts.update(id, {
+        batchId: batchId.value,
         contractNo: no,
         projects: rows.value.map((r) => ({ projectId: r.id, contractPrice: contractPriceToCents(prices[r.id]!) }))
       })
@@ -108,7 +134,7 @@ const shownCandidates = computed(() => {
   const k = add.keyword.trim();
   const taken = new Set(pending.value.map((p) => p.id));
   const list = candidates.value.filter((p) => !taken.has(p.id));
-  return k ? list.filter((p) => p.name.includes(k) || p.region.includes(k) || String(p.batchNo ?? '').includes(k)) : list;
+  return k ? list.filter((p) => p.name.includes(k) || p.region.includes(k)) : list;
 });
 
 async function openAdd() {
@@ -148,11 +174,15 @@ async function back() {
       return;
     }
   }
-  router.push({ name: 'contracts' });
+  router.push({ name: 'projects', params: { batchId: contract.value?.batchId ?? fromBatchId, contractId: id } });
 }
 
 function openProject(projectId: string) {
-  router.push({ name: 'project-detail', params: { id: projectId } });
+  router.push({
+    name: 'project-detail',
+    params: { id: projectId },
+    query: { batchId: contract.value?.batchId ?? fromBatchId, contractId: id }
+  });
 }
 
 onMounted(load);
@@ -160,8 +190,10 @@ onMounted(load);
 
 <template>
   <div v-loading="loading">
+    <ProjectBreadcrumb :items="crumbs" />
+
     <div class="page-toolbar">
-      <el-button icon="Back" @click="back">返回合同列表</el-button>
+      <el-button icon="Back" @click="back">返回项目进度</el-button>
       <span class="spacer" />
       <el-button :disabled="!contract || !dirty" @click="reset">重置</el-button>
       <el-button type="primary" icon="Check" :loading="saving" :disabled="!contract || !dirty" @click="save">保存</el-button>
@@ -169,6 +201,12 @@ onMounted(load);
 
     <el-card v-if="contract" shadow="never">
       <el-form label-width="110px" style="max-width: 880px" @submit.prevent>
+        <el-form-item label="所属批次" required>
+          <el-select v-model="batchId" style="width: 320px" placeholder="请选择批次">
+            <el-option v-for="b in batches" :key="b.id" :label="batchLabel(b)" :value="b.id" />
+          </el-select>
+          <span v-if="batchId !== contract.batchId" class="hint">保存后，合同及其下项目将移到所选批次</span>
+        </el-form-item>
         <el-form-item label="合同编号" required>
           <el-input v-model="contractNo" maxlength="50" style="width: 320px" />
         </el-form-item>
@@ -181,7 +219,6 @@ onMounted(load);
             <el-button icon="Plus" style="margin-bottom: 8px" @click="openAdd">添加项目</el-button>
             <el-table :data="rows" border style="width: 100%" empty-text="该合同下暂无项目">
               <el-table-column type="index" label="序号" width="60" />
-              <el-table-column prop="batchNo" label="批次号" width="80" />
               <el-table-column prop="region" label="区域" width="80" />
               <el-table-column label="项目名称" min-width="240">
                 <template #default="{ row }">
@@ -214,7 +251,7 @@ onMounted(load);
       <el-input
         v-model="add.keyword"
         clearable
-        placeholder="按项目名称 / 区域 / 批次号筛选（仅显示项目结算为否、且未归入合同的项目）"
+        placeholder="按项目名称 / 区域筛选（仅显示项目结算为否、且未归入合同的项目）"
         style="margin-bottom: 8px"
       />
       <el-table
@@ -227,7 +264,6 @@ onMounted(load);
         @selection-change="picked = $event"
       >
         <el-table-column type="selection" width="50" :reserve-selection="true" />
-        <el-table-column prop="batchNo" label="批次号" width="80" />
         <el-table-column prop="region" label="区域" width="80" />
         <el-table-column prop="name" label="项目名称" min-width="220" show-overflow-tooltip />
         <el-table-column label="原合同价" width="130" align="right">

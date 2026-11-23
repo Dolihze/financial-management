@@ -1,4 +1,4 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import type { ProjectImportPreview } from '@fm/shared';
 import { ElMessage, type UploadFile } from 'element-plus';
 import { ref } from 'vue';
@@ -34,7 +34,7 @@ async function commit() {
     ElMessage.success(`导入成功：新增 ${r.created} 个，更新 ${r.updated} 个项目${kept}`);
     file.value = null;
     preview.value = null;
-    router.push({ name: 'projects' });
+    router.push({ name: 'batches' }); // 导入后回到项目管理入口（批次 → 合同 → 项目）
   } catch (e) {
     ElMessage.error(errorMessage(e));
   } finally {
@@ -59,7 +59,7 @@ async function commit() {
       <span v-if="file">{{ file.name }}</span>
     </div>
     <el-text type="info" size="small">
-      第 1 行为表头，只有「项目名称」「合同价」两列必须有，其余列（区域、批次、合同编号、备注等）都可以没有：新增项目时缺的列取默认值，更新已有项目时缺的列保持原值、不会被清零。项目名称为「合计」的行（以及重复表头的说明行）会被忽略，其余行为项目数据。「批次」写作「第15批」，导入后记为批次号 15。以项目名称为准：项目名称已存在的项目会被更新，否则新增（合同编号可以重复）；「项目结算 / 支付下家 / 支付陈沛」只有填「是」才记为是，其他内容一律记为否（旧版表头「企信是否收到钱」仍可识别为「项目结算」）。
+      第 1 行为表头，只有「项目名称」「合同价」两列必须有，其余列（区域、批次、合同编号、备注等）都可以没有：新增项目时缺的列取默认值，更新已有项目时缺的列保持原值、不会被清零。项目名称为「合计」的行（以及重复表头的说明行）会被忽略，其余行为项目数据。「批次」写作「第15批」或数字 15，批次随合同走：合同编号在系统中不存在时，会自动新建合同并归入该批次（批次不存在也会自动新建，批次留空则归入「未分批」）；合同编号已存在的，沿用合同原来的批次，不会被 Excel 里的批次改动；没有合同编号的项目不属于任何批次。以项目名称为准：项目名称已存在的项目会被更新，否则新增（合同编号可以重复）；「项目结算 / 支付下家 / 支付陈沛」只有填「是」才记为是，其他内容一律记为否（旧版表头「企信是否收到钱」仍可识别为「项目结算」）。
     </el-text>
 
     <div v-if="preview" v-loading="busy" style="margin-top: 16px">

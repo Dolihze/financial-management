@@ -7,7 +7,7 @@ import { AppError } from '../utils';
 const cents = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 
 const updateSchema = z.object({
-  batchNo: z.number().int().min(0).nullable(),
+  // 批次号随所属合同派生，不能通过项目接口修改：即使请求里带了 batchNo 也会被忽略（zod 默认剔除未声明字段）
   region: z.string().trim().max(50),
   name: z.string().trim().min(1).max(100),
   contractPrice: cents,
@@ -35,7 +35,11 @@ const updateSchema = z.object({
 });
 
 export function registerProjectRoutes(app: FastifyInstance, { projects }: Services): void {
-  app.get('/api/projects', async () => projects.list());
+  /** 项目列表；?contractId=xxx 只返回该合同下的项目 */
+  app.get('/api/projects', async (req) => {
+    const { contractId } = z.object({ contractId: z.string().min(1).optional() }).parse(req.query);
+    return projects.list(contractId);
+  });
 
   // 注意：固定路径必须先于 /api/projects/:id 注册
   app.get('/api/projects/import/template', async (_req, reply) => {

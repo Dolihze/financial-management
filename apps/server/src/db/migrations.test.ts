@@ -401,6 +401,80 @@ describe('迁移 v5：支出分类收敛为 7 个内置默认项', () => {
     db.close();
   });
 
+  it('v15：合同按项目批次号多数归属批次（并列取最小）；混批写审计；无批次号的合同归入 0 号「未分批」；不丢任何项目/合同', () => {
+    const db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    migrateTo(db, 14);
+    const insC = db.prepare(`INSERT INTO contract (id,contract_no,archived,created_at,updated_at,device_id) VALUES (?,?,?,'t','t','d')`);
+    const insP = db.prepare(
+      `INSERT INTO project (id,contract_id,contract_no,batch_no,name,contract_price,archived,created_at,updated_at,device_id) VALUES (?,?,?,?,?,?,?,'t','t','d')`
+    );
+    insC.run('c1', 'HT-1', 0); // 纯第 3 批
+    insP.run('p1', 'c1', 'HT-1', 3, '甲', 100, 0);
+    insP.run('p2', 'c1', 'HT-1', 3, '乙', 200, 0);
+    insC.run('c2', 'HT-2', 0); // 混批：第 5 批 2 个、第 4 批 1 个 -> 多数 = 5
+    insP.run('p3', 'c2', 'HT-2', 5, '丙', 1, 0);
+    insP.run('p4', 'c2', 'HT-2', 5, '丁', 1, 0);
+    insP.run('p5', 'c2', 'HT-2', 4, '戊', 1, 0);
+    insC.run('c3', 'HT-3', 0); // 并列：第 8 批 1 个、第 6 批 1 个 -> 取最小 6
+    insP.run('p6', 'c3', 'HT-3', 8, '己', 1, 0);
+    insP.run('p7', 'c3', 'HT-3', 6, '庚', 1, 0);
+    insC.run('c4', 'HT-4', 0); // 项目都没有批次号 -> 0 号
+    insP.run('p8', 'c4', 'HT-4', null, '辛', 1, 0);
+    insC.run('c5', 'HT-5', 0); // 没有任何项目的空合同 -> 0 号
+    insC.run('c6', 'HT-6', 1); // 已归档合同：不参与，不建批次
+    insC.run('c7', 'HT-7', 0); // 已归档项目的批次号不参与统计：只有 p10（第 2 批）算数
+    insP.run('p9', 'c7', 'HT-7', 9, '壬', 1, 1);
+    insP.run('p10', 'c7', 'HT-7', 2, '癸', 1, 0);
+    insP.run('p11', null, '', 12, '未归属', 1, 0); // 没有合同的项目：不动
+
+    migrateTo(db, 15, 14);
+
+    const batchOf = Object.fromEntries(
+      (db.prepare('SELECT c.contract_no AS no, b.batch_no AS bn, c.archived AS a FROM contract c LEFT JOIN batch b ON b.id = c.batch_id').all() as Array<{
+        no: string; bn: number | null; a: number;
+      }>).map((r) => [r.no, r.a ? null : r.bn])
+    );
+    expect(batchOf).toEqual({ 'HT-1': 3, 'HT-2': 5, 'HT-3': 6, 'HT-4': 0, 'HT-5': 0, 'HT-6': null, 'HT-7': 2 });
+
+    // 批次表：只为用到的批次号建批次，批次号唯一；0 号带说明备注
+    const nos = (db.prepare('SELECT batch_no FROM batch WHERE archived = 0 ORDER BY batch_no').all() as Array<{ batch_no: number }>).map((r) => r.batch_no);
+    expect(nos).toEqual([0, 2, 3, 5, 6]);
+    expect((db.prepare('SELECT note FROM batch WHERE batch_no = 0').get() as { note: string }).note).toContain('未分批');
+    expect(() => db.prepare("INSERT INTO batch (id,batch_no,archived,created_at,updated_at,device_id) VALUES ('x',3,0,'t','t','d')").run()).toThrow(/UNIQUE/);
+
+    // 项目批次号以合同所属批次为准：混批的项目被统一；0 号对应 NULL；没有合同的项目不动；项目一个都没丢
+    const pb = Object.fromEntries((db.prepare('SELECT id, batch_no FROM project').all() as Array<{ id: string; batch_no: number | null }>).map((r) => [r.id, r.batch_no]));
+    expect(pb).toEqual({ p1: 3, p2: 3, p3: 5, p4: 5, p5: 5, p6: 6, p7: 6, p8: null, p9: 2, p10: 2, p11: 12 });
+    expect((db.prepare('SELECT COUNT(*) AS n FROM project').get() as { n: number }).n).toBe(11);
+    expect((db.prepare('SELECT COUNT(*) AS n FROM contract').get() as { n: number }).n).toBe(7);
+    expect(db.prepare('SELECT SUM(contract_price) AS s FROM project').get()).toEqual({ s: 309 }); // 金额不变：100+200 + 9 个各 1
+
+    // 混批合同写审计（c2、c3），纯批次合同不写
+    const audited = (db.prepare("SELECT entity_id FROM audit_log WHERE action = 'migrate_mixed_batch' ORDER BY entity_id").all() as Array<{ entity_id: string }>).map((r) => r.entity_id);
+    expect(audited).toEqual(['c2', 'c3']);
+    const payload = JSON.parse((db.prepare("SELECT payload FROM audit_log WHERE action='migrate_mixed_batch' AND entity_id='c2'").get() as { payload: string }).payload) as {
+      assignedBatchNo: number; batchNos: number[];
+    };
+    expect(payload.assignedBatchNo).toBe(5);
+    expect([...payload.batchNos].sort()).toEqual([4, 5]);
+
+    // 迁移不遗留临时表
+    expect(db.prepare("SELECT name FROM sqlite_temp_master WHERE name = '_contract_batch'").get()).toBeUndefined();
+    db.close();
+  });
+
+  it('v15：空库/没有合同时只建表，不凭空建批次', () => {
+    const db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    migrateTo(db, 14);
+    migrateTo(db, 15, 14);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM batch').get()).toEqual({ n: 0 });
+    const cols = (db.pragma('table_info(contract)') as Array<{ name: string }>).map((c) => c.name);
+    expect(cols).toContain('batch_id');
+    db.close();
+  });
+
   it('runMigrations 可从空库一路迁移到最新版本', () => {
     const db = new Database(':memory:');
     db.pragma('foreign_keys = ON');

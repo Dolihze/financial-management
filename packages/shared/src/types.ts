@@ -132,7 +132,10 @@ export interface Project {
   contractId: string | null;
   /** 所属合同的编号（冗余文本，随合同同步；未归入合同为空字符串） */
   contractNo: string;
-  /** 批次号：Excel 中写作「第15批」，这里存数字 15；未填写为 null */
+  /**
+   * 批次号（只读，由所属合同的批次派生）：Excel 中写作「第15批」，这里存数字 15。
+   * 未归入合同、或合同属于「未分批」兜底批次时为 null。不能通过项目接口修改，改批次请移动合同。
+   */
   batchNo: number | null;
   /** 区域 */
   region: string;
@@ -168,9 +171,11 @@ export interface Project {
 export const PROJECT_POSTING_KINDS = ['qx_received', 'paid_subcontractor', 'paid_chen_pei'] as const;
 export type ProjectPostingKind = (typeof PROJECT_POSTING_KINDS)[number];
 
-/** 修改项目的入参：金额为整数分。所有字段必填（详情页表单整体保存）。合同归属不能通过本接口修改（由合同管理维护）。 */
+/**
+ * 修改项目的入参：金额为整数分。所有字段必填（详情页表单整体保存）。
+ * 合同归属、批次号都不能通过本接口修改（批次随合同走，由合同管理维护）。
+ */
 export interface UpdateProjectInput {
-  batchNo: number | null;
   region: string;
   name: string;
   contractPrice: number;
@@ -193,12 +198,50 @@ export interface UpdateProjectInput {
   postingDate?: string;
 }
 
+/** 批次汇总金额：均为整数分之和（只统计未归档合同下未归档项目） */
+export interface BatchTotals {
+  /** 合同数 */
+  contractCount: number;
+  /** 项目数 */
+  projectCount: number;
+  /** 合同总价（分）= 其下项目合同价之和 */
+  totalPrice: number;
+  /** 企信实收（分） */
+  qxReceived: number;
+  /** 企信利润（分） */
+  qxProfit: number;
+}
+
+/**
+ * 批次：项目管理的第一层（批次 → 合同 → 项目）。批次号为正整数（>= 1），在未归档批次中唯一。
+ * 「删除」批次 = 归档，只有其下没有任何合同时才允许；不物理删除。
+ */
+export interface Batch extends BatchTotals {
+  id: string;
+  batchNo: number;
+  /** 备注，可为空字符串 */
+  note: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** 新增/修改批次 */
+export interface BatchInput {
+  batchNo: number;
+  note?: string;
+}
+
 /**
  * 合同：独立创建/删除。合同总价不单独录入，等于其下各项目「合同价」之和（整数分求和）。
+ * 每个合同必须属于一个批次。
  * 「删除」合同 = 归档，并清空其下项目的合同归属（项目回到未结算），不物理删除。
  */
 export interface Contract {
   id: string;
+  /** 所属批次 id */
+  batchId: string;
+  /** 所属批次号（0 表示迁移产生的「未分批」兜底批次） */
+  batchNo: number;
   contractNo: string;
   /** 合同总价（分）= 其下项目合同价之和 */
   totalPrice: number;
@@ -219,19 +262,23 @@ export interface ContractProjectInput {
   contractPrice: number;
 }
 
-/** 新增合同：从未结算项目里挑选项目，并给每个项目设置合同价；合同总价由此求和得到 */
+/** 新增合同：归属某个批次；从未结算项目里挑选项目，并给每个项目设置合同价；合同总价由此求和得到 */
 export interface CreateContractInput {
+  /** 所属批次 id（必填） */
+  batchId: string;
   contractNo: string;
   projects: ContractProjectInput[];
 }
 
 /**
- * 修改合同：合同编号，以及项目的合同价。
+ * 修改合同：合同编号、所属批次，以及项目的合同价。
+ * - batchId：省略保持不变；指定其他批次即把合同（连同其下项目）移到该批次；
  * - 本合同已有的项目：只修改合同价；
  * - 不属于本合同的项目：必须是「未归入任何合同且项目结算 = 否」的项目，会被加入本合同并设置合同价；
  * - 请求里没出现的已有项目保持不变（这里不移除项目）。
  */
 export interface UpdateContractInput {
+  batchId?: string;
   contractNo: string;
   projects: ContractProjectInput[];
 }

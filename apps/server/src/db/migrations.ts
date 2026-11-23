@@ -425,5 +425,70 @@ export const migrations: Migration[] = [
       -- 项目备注：Excel 导入「备注」列、项目详情页可编辑。默认空字符串，已有项目不受影响。
       ALTER TABLE project ADD COLUMN note TEXT NOT NULL DEFAULT '';
     `
+  },
+  {
+    version: 15,
+    name: 'batch',
+    sql: `
+      -- 批次：项目管理的第一层（批次 -> 合同 -> 项目）。批次号为正整数，在未归档批次中唯一；删除=归档，不物理删除。
+      CREATE TABLE batch (
+        id         TEXT PRIMARY KEY,
+        batch_no   INTEGER NOT NULL,
+        note       TEXT NOT NULL DEFAULT '',
+        archived   INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        device_id  TEXT NOT NULL
+      );
+      CREATE UNIQUE INDEX uq_batch_no ON batch(batch_no) WHERE archived = 0;
+
+      -- 合同归属的批次（一个合同只属于一个批次）。project.batch_no 保留为冗余列，由合同所属批次派生并同步维护。
+      ALTER TABLE contract ADD COLUMN batch_id TEXT REFERENCES batch(id);
+      CREATE INDEX idx_contract_batch_id ON contract(batch_id);
+
+      -- 回填 1：合同的批次号 = 其下（未归档）项目里出现次数最多的批次号；次数并列取最小批次号。
+      -- 其下没有任何带批次号的项目的合同，暂记为 0，下面统一归入「0 号批次」兜底（见回填 3）。
+      CREATE TEMP TABLE _contract_batch AS
+        SELECT c.id AS contract_id,
+               COALESCE((
+                 SELECT p.batch_no FROM project p
+                 WHERE p.contract_id = c.id AND p.archived = 0 AND p.batch_no IS NOT NULL
+                 GROUP BY p.batch_no
+                 ORDER BY COUNT(*) DESC, p.batch_no ASC
+                 LIMIT 1
+               ), 0) AS batch_no
+        FROM contract c WHERE c.archived = 0;
+
+      -- 回填 2：为用到的每个批次号建一条批次
+      INSERT INTO batch (id, batch_no, note, archived, created_at, updated_at, device_id)
+        SELECT lower(hex(randomblob(16))), t.batch_no,
+               CASE WHEN t.batch_no = 0 THEN '未分批（迁移时合同下没有批次号的项目）' ELSE '' END,
+               0, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'), 'migration'
+        FROM (SELECT DISTINCT batch_no FROM _contract_batch) t;
+
+      UPDATE contract SET batch_id = (
+        SELECT b.id FROM batch b
+        JOIN _contract_batch t ON t.batch_no = b.batch_no
+        WHERE t.contract_id = contract.id AND b.archived = 0
+      ) WHERE archived = 0;
+
+      -- 回填 3：混批的合同（其下项目有多个不同批次号）记审计，便于人工核对；项目自身数据不丢
+      INSERT INTO audit_log (id, entity, entity_id, action, payload, device_id, created_at)
+        SELECT lower(hex(randomblob(16))), 'contract', c.id, 'migrate_mixed_batch',
+               json_object('assignedBatchNo', t.batch_no,
+                           'batchNos', (SELECT json_group_array(DISTINCT p.batch_no) FROM project p
+                                        WHERE p.contract_id = c.id AND p.archived = 0 AND p.batch_no IS NOT NULL)),
+               'migration', strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        FROM contract c JOIN _contract_batch t ON t.contract_id = c.id
+        WHERE (SELECT COUNT(DISTINCT p.batch_no) FROM project p
+               WHERE p.contract_id = c.id AND p.archived = 0 AND p.batch_no IS NOT NULL) > 1;
+
+      -- 项目批次号以合同所属批次为准：0 号兜底批次对应「未分批」，项目批次号置空
+      UPDATE project SET batch_no = (
+        SELECT NULLIF(b.batch_no, 0) FROM contract c JOIN batch b ON b.id = c.batch_id WHERE c.id = project.contract_id
+      ) WHERE contract_id IS NOT NULL;
+
+      DROP TABLE _contract_batch;
+    `
   }
 ];

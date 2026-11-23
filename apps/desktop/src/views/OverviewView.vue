@@ -60,20 +60,29 @@ type DimTab = 'category' | 'counterparty';
 const expenseTab = ref<DimTab>('category');
 const incomeTab = ref<DimTab>('category');
 
+/** 按占比由高到低（占比 = 金额 / 合计，合计相同，所以直接按金额降序）；不改原数组，先排序再分页 */
+const byAmountDesc = <T extends { amount: number }>(rows: T[]) => [...rows].sort((a, b) => b.amount - a.amount);
+
 const expenseRows = computed<DetailRow[]>(() => {
   const p = period.value;
   if (!p) return [];
-  return expenseTab.value === 'category'
-    ? p.expenseByCategory.map((x) => ({ name: x.categoryName, amount: x.amount, count: x.count }))
-    : p.expenseByCounterparty;
+  return byAmountDesc(
+    expenseTab.value === 'category'
+      ? p.expenseByCategory.map((x) => ({ name: x.categoryName, amount: x.amount, count: x.count }))
+      : p.expenseByCounterparty
+  );
 });
 const incomeRows = computed<DetailRow[]>(() => {
   const p = period.value;
   if (!p) return [];
-  return incomeTab.value === 'category'
-    ? p.incomeByCategory.map((x) => ({ name: x.categoryName, amount: x.amount, count: x.count }))
-    : p.incomeByCounterparty;
+  return byAmountDesc(
+    incomeTab.value === 'category'
+      ? p.incomeByCategory.map((x) => ({ name: x.categoryName, amount: x.amount, count: x.count }))
+      : p.incomeByCounterparty
+  );
 });
+/** 资金分布：占比按「正余额 / 正余额合计」计算（负余额占比为 0），所以按余额降序，负余额自然沉底 */
+const accountRows = computed(() => [...(data.value?.accounts ?? [])].sort((a, b) => b.balance - a.balance));
 const expenseTotal = computed(() => expenseRows.value.reduce((s, r) => s + r.amount, 0));
 const incomeTotal = computed(() => incomeRows.value.reduce((s, r) => s + r.amount, 0));
 
@@ -86,7 +95,7 @@ const accountPage = ref(1);
 const incomePage = ref(1);
 const expensePage = ref(1);
 const slicePage = <T,>(rows: T[], page: number) => rows.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
-const accountPageRows = computed(() => slicePage(data.value?.accounts ?? [], accountPage.value));
+const accountPageRows = computed(() => slicePage(accountRows.value, accountPage.value));
 const incomePageRows = computed(() => slicePage(incomeRows.value, incomePage.value));
 const expensePageRows = computed(() => slicePage(expenseRows.value, expensePage.value));
 /** 序号需跨页连续 */

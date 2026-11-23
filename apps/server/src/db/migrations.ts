@@ -538,5 +538,18 @@ export const migrations: Migration[] = [
                json_object('name', u.name), 'migration', strftime('%Y-%m-%dT%H:%M:%fZ','now')
         FROM unsettled_project u WHERE u.archived = 0;
     `
+  },
+  {
+    version: 18,
+    name: 'income_category_project_income',
+    sql: `
+      -- 收入分类新增内置分类「项目结算」入账使用的「项目收入」（不可编辑/删除）。
+      -- 仅处理已有分类数据的老库（新库由程序 seedDefaults 生成）；已存在同名的直接复用并置为内置、取消归档。
+      INSERT INTO category (id, name, kind, parent_id, created_at, builtin)
+        SELECT lower(hex(randomblob(16))), '项目收入', 'income', NULL, strftime('%Y-%m-%dT%H:%M:%fZ','now'), 1
+        WHERE EXISTS (SELECT 1 FROM category)
+          AND NOT EXISTS (SELECT 1 FROM category WHERE kind = 'income' AND name = '项目收入');
+      UPDATE category SET builtin = 1, archived = 0 WHERE kind = 'income' AND name = '项目收入';
+    `
   }
 ];

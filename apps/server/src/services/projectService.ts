@@ -16,6 +16,7 @@ import type { Db } from '../db/database';
 import { AppError, newId, nowIso } from '../utils';
 import { writeAudit } from './audit';
 import { MAX_BATCH_NO, UNBATCHED_NO } from './batchService';
+import { CategoryService } from './categoryService';
 import { TransactionService } from './transactionService';
 
 /**
@@ -153,12 +154,14 @@ const parseYesNo = (v: ExcelJS.CellValue): boolean => cellText(v) === '是';
 
 export class ProjectService {
   private readonly txService: TransactionService;
+  private readonly categories: CategoryService;
 
   constructor(
     private readonly db: Db,
     private readonly deviceId: string
   ) {
     this.txService = new TransactionService(db, deviceId);
+    this.categories = new CategoryService(db, deviceId);
   }
 
   /** 各项目当前「有效入账」的字段（有对应未作废流水） */
@@ -251,7 +254,8 @@ export class ProjectService {
       type: rule.txType,
       amount: project.qxReceived,
       accountId: posting.accountId,
-      note: `项目「${project.name}」${rule.label}（收入）`
+      categoryId: this.categories.projectIncomeId(), // 内置「项目收入」；往来单位、备注置空
+      note: ''
     });
     this.db.prepare('UPDATE project SET qx_money_received = 1, updated_at = ? WHERE id = ?').run(now, project.id);
     this.db

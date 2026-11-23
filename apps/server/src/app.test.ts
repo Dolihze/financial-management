@@ -1077,6 +1077,12 @@ describe('合同管理', () => {
       { type: 'income', d: '2026-03-15', status: 'normal' },
       { type: 'income', d: '2026-03-15', status: 'normal' }
     ]);
+    // 入账流水记入记账流水：分类为内置「项目收入」，往来单位和备注置空
+    const listed = ((await get('/api/transactions?limit=100')) as {
+      items: Array<{ categoryName: string; counterparty: string; counterpartyId: string | null; note: string }>;
+    }).items;
+    expect(listed).toHaveLength(2);
+    for (const t of listed) expect(t).toMatchObject({ categoryName: '项目收入', counterparty: '', counterpartyId: null, note: '' });
     expect(((await get('/api/accounts')) as Array<{ id: string; balance: number }>).find((a) => a.id === acc)!.balance).toBe(160_000);
     // 未选的项目不受影响：仍是未结算、不归属合同
     expect(await get(`/api/projects/${id('项目丙')}`)).toMatchObject({ contractId: null, contractNo: '', batchNo: null, qxMoneyReceived: false, postedKinds: [] });
@@ -1755,17 +1761,24 @@ describe('收入分类管理', () => {
       (c) => c.kind === 'income'
     );
 
-  it('默认只有内置的「其他收入」', async () => {
+  it('默认只有内置的「项目收入」和「其他收入」，均不可编辑/删除', async () => {
     const list = await incomeCats();
-    expect(list).toHaveLength(1);
-    expect(list[0]).toMatchObject({ name: '其他收入', builtin: true });
+    expect(list.map((c) => c.name).sort()).toEqual(['其他收入', '项目收入'].sort());
+    expect(list.every((c) => c.builtin)).toBe(true);
+    const projectIncome = list.find((c) => c.name === '项目收入')!;
+    expect((await patchJson(`/api/categories/${projectIncome.id}`, { name: '改名' })).statusCode).toBe(403);
+    expect((await ctx.app.inject({ method: 'DELETE', url: `/api/categories/${projectIncome.id}` })).statusCode).toBe(403);
+    // 名称被内置分类占用，不能新建同名分类
+    expect((await post('/api/categories', { name: '项目收入', kind: 'income' })).statusCode).toBe(409);
   });
 
   it('列表中内置分类在前，自定义分类按新增时间倒序', async () => {
     await post('/api/categories', { name: '甲收入', kind: 'income' });
     await post('/api/categories', { name: '乙收入', kind: 'income' });
     await post('/api/categories', { name: '丙收入', kind: 'income' });
-    expect((await incomeCats()).map((c) => c.name)).toEqual(['其他收入', '丙收入', '乙收入', '甲收入']);
+    const names = (await incomeCats()).map((c) => c.name);
+    expect(names.slice(0, 2).sort()).toEqual(['其他收入', '项目收入'].sort()); // 内置在前
+    expect(names.slice(2)).toEqual(['丙收入', '乙收入', '甲收入']);
   });
 
   it('可新增、重命名自定义分类；重名被拒绝；内置分类不可编辑', async () => {
@@ -1815,7 +1828,7 @@ describe('删除收入分类（归档式）', () => {
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ movedTransactions: 0 });
 
-    expect((await incomeCats()).map((c) => c.name)).toEqual(['其他收入']);
+    expect((await incomeCats()).map((c) => c.name).sort()).toEqual(['其他收入', '项目收入'].sort());
     // 行仍保留（不物理删除）
     expect(ctx.db.prepare('SELECT archived FROM category WHERE id = ?').get(cat.id)).toEqual({ archived: 1 });
     expect(ctx.db.prepare("SELECT action FROM audit_log WHERE entity='category' AND entity_id=? ORDER BY created_at").all(cat.id)).toEqual([

@@ -21,9 +21,12 @@ const toCategory = (r: CategoryRow): Category => ({
   ...(r.usage !== undefined ? { usageCount: r.usage } : {})
 });
 
+/** 内置收入分类「项目收入」：未结算项目归入合同（结算）入账时使用 */
+export const PROJECT_INCOME_CATEGORY_NAME = '项目收入';
+
 /** 默认分类（均为内置，不可编辑/删除），其余由用户自行新增 */
 const DEFAULT_CATEGORIES: Array<{ kind: 'income' | 'expense'; names: string[] }> = [
-  { kind: 'income', names: ['其他收入'] },
+  { kind: 'income', names: [PROJECT_INCOME_CATEGORY_NAME, '其他收入'] },
   { kind: 'expense', names: ['工资薪酬', '社保', '差旅费', '房租水电', '经营费', '员工报销', '其他支出'] }
 ];
 
@@ -148,6 +151,11 @@ export class CategoryService {
       .prepare(`SELECT ${COLUMNS} FROM category WHERE kind = ? AND name = ? AND archived = 0`)
       .get(kind, name) as CategoryRow | undefined;
     return row ? toCategory(row) : undefined;
+  }
+
+  /** 内置「项目收入」分类 id；不存在（极端情况，如被手工改库）返回 null，入账仍可进行但不带分类 */
+  projectIncomeId(): string | null {
+    return this.findByName('income', PROJECT_INCOME_CATEGORY_NAME)?.id ?? null;
   }
 
   private assertNameFree(kind: 'income' | 'expense', name: string): void {

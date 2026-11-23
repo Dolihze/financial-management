@@ -320,8 +320,8 @@ onMounted(load);
               <el-table-column type="selection" width="50" :reserve-selection="true" />
               <el-table-column prop="region" label="区域" width="80" />
               <el-table-column prop="name" label="项目名称" min-width="220" show-overflow-tooltip />
-              <el-table-column label="原合同价" width="120" align="right">
-                <template #default="{ row }">{{ formatMoney(row.contractPrice) }}</template>
+              <el-table-column label="企信实收" width="120" align="right">
+                <template #default="{ row }">{{ formatMoney(row.qxReceived) }}</template>
               </el-table-column>
             </el-table>
           </div>

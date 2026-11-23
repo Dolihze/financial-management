@@ -223,26 +223,23 @@ onMounted(load);
       </span>
     </div>
     <el-table :data="items" v-loading="loading" border>
-      <el-table-column prop="occurredOn" label="日期" width="110" />
-      <el-table-column label="类型" width="80">
+      <el-table-column prop="occurredOn" label="日期" width="130" align="left" header-align="left" />
+      <el-table-column label="类型" width="90" align="left" header-align="left">
         <template #default="{ row }">{{ TRANSACTION_TYPE_LABELS[row.type as TransactionType] }}</template>
       </el-table-column>
-      <el-table-column label="资金流向（账户）" min-width="200">
+      <el-table-column label="资金流向（账户）" min-width="220" align="left" header-align="left">
         <template #default="{ row }">{{ flowText(row) }}</template>
       </el-table-column>
-      <el-table-column prop="categoryName" label="分类" width="120" />
-      <el-table-column prop="counterparty" label="往来单位" width="140" />
-      <el-table-column label="金额" align="right" width="140">
+      <el-table-column prop="categoryName" label="分类" width="130" align="left" header-align="left" />
+      <el-table-column prop="counterparty" label="往来单位" min-width="160" align="left" header-align="left" />
+      <el-table-column label="金额" width="160" align="left" header-align="left">
         <template #default="{ row }">
           <span :class="{ 'tx-income': amountOf(row) > 0, 'tx-expense': amountOf(row) < 0 }" :style="row.status === 'voided' ? 'text-decoration: line-through; opacity: .5' : ''">
             {{ formatMoney(amountOf(row)) }}
           </span>
         </template>
       </el-table-column>
-      <el-table-column label="状态" width="80">
-        <template #default="{ row }"><el-tag v-if="row.status === 'voided'" type="info" size="small">已作废</el-tag></template>
-      </el-table-column>
-      <el-table-column label="操作" width="80">
+      <el-table-column label="操作" width="90" align="left" header-align="left">
         <template #default="{ row }"><el-button v-if="row.status === 'normal'" link type="danger" @click="voidTx(row)">作废</el-button></template>
       </el-table-column>
     </el-table>

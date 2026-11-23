@@ -475,6 +475,33 @@ describe('迁移 v5：支出分类收敛为 7 个内置默认项', () => {
     db.close();
   });
 
+  it('迁移 v18：老库补建内置收入分类「项目收入」；已存在同名的复用并置为内置；空库不写入（交给 seedDefaults）', () => {
+    // 老库：已有分类，没有「项目收入」
+    const old = new Database(':memory:');
+    old.pragma('foreign_keys = ON');
+    migrateTo(old, 17);
+    old.prepare(`INSERT INTO category (id,name,kind,created_at,builtin) VALUES ('c1','其他收入','income','x',1)`).run();
+    migrateTo(old, 18, 17);
+    expect(old.prepare("SELECT builtin, archived FROM category WHERE kind='income' AND name='项目收入'").all()).toEqual([{ builtin: 1, archived: 0 }]);
+    old.close();
+
+    // 已存在同名的自定义（甚至已归档）分类：复用，置为内置并取消归档
+    const dup = new Database(':memory:');
+    dup.pragma('foreign_keys = ON');
+    migrateTo(dup, 17);
+    dup.prepare(`INSERT INTO category (id,name,kind,created_at,builtin,archived) VALUES ('c9','项目收入','income','x',0,1)`).run();
+    migrateTo(dup, 18, 17);
+    expect(dup.prepare("SELECT id, builtin, archived FROM category WHERE name='项目收入'").all()).toEqual([{ id: 'c9', builtin: 1, archived: 0 }]);
+    dup.close();
+
+    // 空库：不插入
+    const empty = new Database(':memory:');
+    empty.pragma('foreign_keys = ON');
+    migrateTo(empty, 18);
+    expect(empty.prepare('SELECT COUNT(*) AS n FROM category').get()).toEqual({ n: 0 });
+    empty.close();
+  });
+
   it('runMigrations 可从空库一路迁移到最新版本', () => {
     const db = new Database(':memory:');
     db.pragma('foreign_keys = ON');

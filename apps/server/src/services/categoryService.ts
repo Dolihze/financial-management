@@ -64,7 +64,7 @@ export class CategoryService {
         .prepare(
           `SELECT c.id,c.name,c.kind,c.parent_id,c.builtin,
                   (SELECT COUNT(*) FROM tx t WHERE t.category_id = c.id) AS usage
-           FROM category c WHERE c.archived = 0 ORDER BY c.kind, c.builtin DESC, c.created_at, c.name`
+           FROM category c WHERE c.archived = 0 ORDER BY c.kind, c.builtin DESC, c.created_at DESC, c.rowid DESC`
         )
         .all() as CategoryRow[]
     ).map(toCategory);

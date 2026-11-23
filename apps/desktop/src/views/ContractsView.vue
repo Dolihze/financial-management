@@ -4,7 +4,8 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import { computed, onMounted, reactive, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { api } from '@/api';
-import { errorMessage, formatMoney, fromCents, toCents } from '@/utils/format';
+import { contractPriceToCents, sumContractPrices, validateContractPrice } from '@/utils/contractPrice';
+import { errorMessage, formatMoney, fromCents } from '@/utils/format';
 
 const router = useRouter();
 const contracts = ref<Contract[]>([]);
@@ -71,16 +72,8 @@ const shown = computed(() => {
 });
 const selectedProjects = computed(() => unsettled.value.filter((p) => selectedIds.value.includes(p.id)));
 
-/** 合同总价 = 已选项目合同价之和（整数分求和）；任一价格不合法时为 null */
-const totalCents = computed<number | null>(() => {
-  let sum = 0;
-  for (const p of selectedProjects.value) {
-    const v = (prices[p.id] ?? '').trim();
-    if (!/^\d+(\.\d{1,2})?$/.test(v)) return null;
-    sum += toCents(v);
-  }
-  return sum;
-});
+/** 合同总价 = 已选项目合同价之和（整数分求和）；任一价格不合法或总价越界时为 null */
+const totalCents = computed<number | null>(() => sumContractPrices(selectedProjects.value.map((p) => prices[p.id])));
 
 async function openCreate() {
   dlg.visible = true;
@@ -108,12 +101,16 @@ async function submitCreate() {
   const no = contractNo.value.trim();
   if (!no) return ElMessage.warning('请输入合同编号');
   if (selectedProjects.value.length === 0) return ElMessage.warning('请至少选择一个项目');
-  if (totalCents.value === null) return ElMessage.warning('请为每个已选项目填写正确的合同价（非负，最多两位小数）');
+  for (const p of selectedProjects.value) {
+    const err = validateContractPrice(prices[p.id]);
+    if (err) return ElMessage.warning(`「${p.name}」：${err}`);
+  }
+  if (totalCents.value === null) return ElMessage.warning('合同总价超出允许范围，请检查各项目合同价');
   dlg.saving = true;
   try {
     await api.contracts.create({
       contractNo: no,
-      projects: selectedProjects.value.map((p) => ({ projectId: p.id, contractPrice: toCents(prices[p.id]!.trim()) }))
+      projects: selectedProjects.value.map((p) => ({ projectId: p.id, contractPrice: contractPriceToCents(prices[p.id]!) }))
     });
     ElMessage.success('合同已创建');
     dlg.visible = false;
@@ -193,9 +190,15 @@ onMounted(load);
           <div class="pick">
             <div v-for="p in selectedProjects" :key="p.id" class="price-row">
               <span class="price-name" :title="p.name">{{ p.name }}</span>
-              <el-input v-model="prices[p.id]" class="price-input" placeholder="合同价（元）">
+              <el-input
+                v-model="prices[p.id]"
+                class="price-input"
+                :class="{ invalid: validateContractPrice(prices[p.id]) !== null }"
+                placeholder="合同价（元）"
+              >
                 <template #prepend>¥</template>
               </el-input>
+              <span v-if="validateContractPrice(prices[p.id])" class="err">{{ validateContractPrice(prices[p.id]) }}</span>
             </div>
           </div>
         </el-form-item>
@@ -240,6 +243,13 @@ onMounted(load);
 }
 .price-input {
   width: 220px;
+}
+.err {
+  font-size: 12px;
+  color: var(--el-color-danger);
+}
+.invalid :deep(.el-input__wrapper) {
+  box-shadow: 0 0 0 1px var(--el-color-danger) inset;
 }
 .total {
   font-size: 18px;

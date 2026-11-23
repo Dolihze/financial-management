@@ -225,7 +225,12 @@ export interface CreateContractInput {
   projects: ContractProjectInput[];
 }
 
-/** 修改合同：合同编号，以及其下已有项目的合同价（不能在这里增减项目） */
+/**
+ * 修改合同：合同编号，以及项目的合同价。
+ * - 本合同已有的项目：只修改合同价；
+ * - 不属于本合同的项目：必须是「未归入任何合同且项目结算 = 否」的项目，会被加入本合同并设置合同价；
+ * - 请求里没出现的已有项目保持不变（这里不移除项目）。
+ */
 export interface UpdateContractInput {
   contractNo: string;
   projects: ContractProjectInput[];

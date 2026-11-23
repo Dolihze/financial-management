@@ -765,7 +765,73 @@ describe('合同管理', () => {
     expect((await ctx.app.inject({ url: '/api/contracts/nope' })).statusCode).toBe(404);
   });
 
-  it('编辑合同：改合同编号同步到项目，改各项目合同价后总价随之变化；不能改不属于本合同的项目', async () => {
+  it('编辑合同：可加入未结算且未归属的已有项目；已归属其他合同/已结算/不存在的被拒绝，且整体不落库', async () => {
+    await ctx.app.inject({
+      method: 'POST', url: '/api/projects/import/commit',
+      ...multipart(await projectXlsx([
+        ['', '第1批', '天水', '项目甲', 0, 0, 0, 0, 0, '否', '否', '否'],
+        ['', '第1批', '天水', '项目乙', 250, 0, 0, 0, 0, '否', '否', '否'],
+        ['', '第1批', '天水', '项目丙', 0, 0, 0, 0, 0, '否', '否', '否'],
+        ['', '第1批', '天水', '已结算项目', 0, 0, 0, 0, 0, '是', '否', '否']
+      ]))
+    });
+    const list = (await get('/api/projects')) as Array<{ id: string; name: string }>;
+    const id = (n: string) => list.find((p) => p.name === n)!.id;
+    const c = (await post('/api/contracts', { contractNo: 'HT-1', projects: [{ projectId: id('项目甲'), contractPrice: 1_000 }] })).json();
+    const other = (await post('/api/contracts', { contractNo: 'HT-2', projects: [{ projectId: id('项目丙'), contractPrice: 50 }] })).json();
+
+    // 失败：已归属其他合同 409、已结算 409、不存在 404；同一请求里合法的新增项目也不应落库
+    const bad = (projectId: string) => patch(`/api/contracts/${c.id}`, {
+      contractNo: 'HT-1', projects: [{ projectId: id('项目甲'), contractPrice: 1_000 }, { projectId: id('项目乙'), contractPrice: 1 }, { projectId, contractPrice: 1 }]
+    });
+    expect((await bad(id('项目丙'))).json()).toMatchObject({ code: 'PROJECT_ALREADY_IN_CONTRACT' });
+    expect((await bad(id('已结算项目'))).json()).toMatchObject({ code: 'PROJECT_ALREADY_SETTLED' });
+    expect((await bad('nope')).statusCode).toBe(404);
+    expect(await get(`/api/projects/${id('项目乙')}`)).toMatchObject({ contractId: null, contractNo: '', contractPrice: 25_000 });
+    expect(await get(`/api/contracts/${c.id}`)).toMatchObject({ projectCount: 1, totalPrice: 1_000 });
+    expect(await get(`/api/contracts/${other.id}`)).toMatchObject({ projectCount: 1, totalPrice: 50 });
+
+    // 成功：加入项目乙并改编号；总价 = 各项目合同价之和；项目结算状态不变、不产生流水
+    const ok = await patch(`/api/contracts/${c.id}`, {
+      contractNo: 'HT-1B', projects: [{ projectId: id('项目甲'), contractPrice: 1_000 }, { projectId: id('项目乙'), contractPrice: 30_005 }]
+    });
+    expect(ok.statusCode).toBe(200);
+    expect(ok.json()).toMatchObject({ contractNo: 'HT-1B', projectCount: 2, totalPrice: 31_005 });
+    expect(await get(`/api/projects/${id('项目乙')}`)).toMatchObject({ contractId: c.id, contractNo: 'HT-1B', contractPrice: 30_005, qxMoneyReceived: false });
+    expect(ctx.db.prepare('SELECT COUNT(*) AS n FROM tx').get()).toEqual({ n: 0 });
+    const audit = ctx.db.prepare("SELECT payload FROM audit_log WHERE entity='contract' AND entity_id=? AND action='update'").get(c.id) as { payload: string };
+    expect(JSON.parse(audit.payload).addedProjects).toEqual([id('项目乙')]);
+
+    // 请求里未出现的已有项目保持不变（不会被移除）
+    const keep = await patch(`/api/contracts/${c.id}`, { contractNo: 'HT-1B', projects: [{ projectId: id('项目乙'), contractPrice: 1 }] });
+    expect(keep.json()).toMatchObject({ projectCount: 2, totalPrice: 1_001 });
+  });
+
+  it('合同价异常输入：负数、小数分、字符串、null、超大值一律 400，不落库（新增与编辑都校验）', async () => {
+    const id = await importProjects([row('', '项目甲'), row('', '项目乙')]);
+    const c = (await post('/api/contracts', { contractNo: 'HT-1', projects: [{ projectId: id('项目甲'), contractPrice: 100 }] })).json();
+    const bads: unknown[] = [-1, 1.5, '100', null, undefined, true, [], 1e15, Number.MAX_SAFE_INTEGER, 10_000_000_000 * 100 + 1];
+    for (const bad of bads) {
+      const body = { contractNo: 'HT-9', projects: [{ projectId: id('项目乙'), contractPrice: bad }] };
+      expect((await post('/api/contracts', body)).statusCode, `create ${String(bad)}`).toBe(400);
+      expect((await patch(`/api/contracts/${c.id}`, { ...body, contractNo: 'HT-1' })).statusCode, `update ${String(bad)}`).toBe(400);
+    }
+    // 非法 JSON 数值（NaN / 溢出）不会进入服务层：返回 4xx 而不是 500
+    for (const raw of ['{"contractNo":"HT-9","projects":[{"projectId":"x","contractPrice":NaN}]}', '{"contractNo":"HT-9","projects":[{"projectId":"x","contractPrice":1e999}]}']) {
+      const res = await ctx.app.inject({ method: 'POST', url: '/api/contracts', headers: { 'content-type': 'application/json' }, payload: raw });
+      expect(res.statusCode).toBeGreaterThanOrEqual(400);
+      expect(res.statusCode).toBeLessThan(500);
+    }
+    expect((await get('/api/contracts')).length).toBe(1);
+    expect(await get(`/api/projects/${id('项目乙')}`)).toMatchObject({ contractId: null });
+    expect(await get(`/api/contracts/${c.id}`)).toMatchObject({ totalPrice: 100, projectCount: 1 });
+
+    // 边界值合法：0 与上限
+    expect((await patch(`/api/contracts/${c.id}`, { contractNo: 'HT-1', projects: [{ projectId: id('项目甲'), contractPrice: 0 }] })).statusCode).toBe(200);
+    expect((await patch(`/api/contracts/${c.id}`, { contractNo: 'HT-1', projects: [{ projectId: id('项目甲'), contractPrice: 10_000_000_000 * 100 }] })).statusCode).toBe(200);
+  });
+
+  it('编辑合同：改合同编号同步到项目，改各项目合同价后总价随之变化', async () => {
     const id = await importProjects([row('', '项目甲'), row('', '项目乙'), row('', '项目丙')]);
     const c = (await post('/api/contracts', {
       contractNo: 'HT-1', projects: [{ projectId: id('项目甲'), contractPrice: 300 }, { projectId: id('项目乙'), contractPrice: 700 }]
@@ -780,7 +846,7 @@ describe('合同管理', () => {
     expect(await get(`/api/projects/${id('项目乙')}`)).toMatchObject({ contractNo: 'HT-1B', contractPrice: 700 });
 
     expect((await patch(`/api/contracts/${c.id}`, { contractNo: 'HT-2', projects: [] })).statusCode).toBe(409); // 与其他合同重号
-    expect((await patch(`/api/contracts/${c.id}`, { contractNo: 'HT-1B', projects: [{ projectId: id('项目丙'), contractPrice: 1 }] })).statusCode).toBe(400);
+    expect((await patch(`/api/contracts/${c.id}`, { contractNo: 'HT-1B', projects: [{ projectId: id('项目丙'), contractPrice: 1 }] })).statusCode).toBe(409); // 项目丙属于其他合同，不能抢过来
     expect((await patch('/api/contracts/nope', { contractNo: 'X', projects: [] })).statusCode).toBe(404);
     expect(await get(`/api/projects/${id('项目丙')}`)).toMatchObject({ contractPrice: 50 }); // 失败不改动
   });
@@ -1048,6 +1114,13 @@ describe('收入分类管理', () => {
     expect(list[0]).toMatchObject({ name: '其他收入', builtin: true });
   });
 
+  it('列表中内置分类在前，自定义分类按新增时间倒序', async () => {
+    await post('/api/categories', { name: '甲收入', kind: 'income' });
+    await post('/api/categories', { name: '乙收入', kind: 'income' });
+    await post('/api/categories', { name: '丙收入', kind: 'income' });
+    expect((await incomeCats()).map((c) => c.name)).toEqual(['其他收入', '丙收入', '乙收入', '甲收入']);
+  });
+
   it('可新增、重命名自定义分类；重名被拒绝；内置分类不可编辑', async () => {
     const created = await post('/api/categories', { name: '咨询收入', kind: 'income' });
     expect(created.statusCode).toBe(201);
@@ -1134,6 +1207,13 @@ describe('往来单位管理', () => {
   const list = async () => (await ctx.app.inject({ url: '/api/counterparties' })).json() as Array<{ id: string; name: string; usageCount: number }>;
   const mk = async (name: string) => (await post('/api/counterparties', { name })).json() as { id: string };
 
+  it('列表按新增时间倒序，最新新增的排在最前', async () => {
+    await mk('甲公司');
+    await mk('乙公司');
+    await mk('丙公司');
+    expect((await list()).map((c) => c.name)).toEqual(['丙公司', '乙公司', '甲公司']);
+  });
+
   it('新增、重命名、重名与空名校验', async () => {
     const cp = await mk('杭州云岚');
     expect((await post('/api/counterparties', { name: '杭州云岚' })).statusCode).toBe(409);
@@ -1200,7 +1280,7 @@ describe('往来单位管理', () => {
 
     expect((await ctx.app.inject({ method: 'POST', url: '/api/imports/commit', ...m })).statusCode).toBe(201);
     const cps = await list();
-    expect(cps.map((c) => c.name)).toEqual(['A公司', 'B公司']);
+    expect(cps.map((c) => c.name)).toEqual(['B公司', 'A公司']); // 倒序：导入时新建的 B公司 在最前
     expect(cps.find((c) => c.id === existing.id)!.usageCount).toBe(1);
     expect(cps.find((c) => c.name === 'B公司')!.usageCount).toBe(2);
   });

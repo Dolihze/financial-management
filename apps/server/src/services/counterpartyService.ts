@@ -32,7 +32,7 @@ export class CounterpartyService {
       this.db
         .prepare(
           `SELECT c.id, c.name, (SELECT COUNT(*) FROM tx t WHERE t.counterparty_id = c.id) AS usage
-           FROM counterparty c WHERE c.archived = 0 ORDER BY c.created_at, c.name`
+           FROM counterparty c WHERE c.archived = 0 ORDER BY c.created_at DESC, c.rowid DESC`
         )
         .all() as Row[]
     ).map(toCounterparty);

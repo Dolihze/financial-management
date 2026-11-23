@@ -72,6 +72,15 @@ export class ContractService {
     }
   }
 
+  /** 合同总价 = 各项目合同价（整数分）之和，不能超出安全整数范围 */
+  private assertTotalInRange(projects: Array<{ contractPrice: number }>): void {
+    let sum = 0;
+    for (const p of projects) {
+      sum += p.contractPrice;
+      if (!Number.isSafeInteger(sum)) throw new AppError('合同总价超出允许范围', 400, 'VALIDATION');
+    }
+  }
+
   private assertContractNoFree(contractNo: string, exceptId?: string): void {
     const clash = this.db
       .prepare('SELECT 1 FROM contract WHERE contract_no = ? AND archived = 0 AND id <> ?')
@@ -85,6 +94,7 @@ export class ContractService {
     if (!contractNo) throw new AppError('合同编号不能为空', 400, 'VALIDATION');
     if (input.projects.length === 0) throw new AppError('请至少选择一个未结算项目加入合同', 400, 'VALIDATION');
     this.assertNoDuplicateProjects(input.projects);
+    this.assertTotalInRange(input.projects);
     this.assertContractNoFree(contractNo);
 
     const now = nowIso();
@@ -112,7 +122,12 @@ export class ContractService {
     return this.get(id);
   }
 
-  /** 修改合同编号及其下项目的合同价（不在这里增减项目） */
+  /**
+   * 修改合同编号及项目合同价；也可加入新项目。
+   * - 本合同已有项目：只改合同价。
+   * - 其他项目：必须存在、未归档、未归入任何合同、项目结算 = 否，才能加入本合同（与新增合同同一规则）。
+   * - 不在这里移除项目。整个过程一个事务，任一校验失败都不落库。
+   */
   update(id: string, input: UpdateContractInput): ContractDetail {
     const current = this.get(id);
     const contractNo = input.contractNo.trim();
@@ -121,20 +136,39 @@ export class ContractService {
     this.assertContractNoFree(contractNo, id);
 
     const members = new Set(current.projects.map((p) => p.id));
-    for (const p of input.projects) {
-      if (!members.has(p.projectId)) throw new AppError('只能修改本合同已有项目的合同价', 400, 'VALIDATION');
-    }
+    const existing = input.projects.filter((p) => members.has(p.projectId));
+    const added = input.projects.filter((p) => !members.has(p.projectId));
+
+    // 最终总价 = 请求里的价格 + 请求里未出现的已有项目的原价
+    const sent = new Set(input.projects.map((p) => p.projectId));
+    this.assertTotalInRange([...input.projects, ...current.projects.filter((p) => !sent.has(p.id))]);
 
     const now = nowIso();
     this.db.transaction(() => {
+      // 待加入的项目：先全部校验再写库
+      const find = this.db.prepare(
+        'SELECT id, name, contract_id AS contractId, qx_money_received AS settled FROM project WHERE id = ? AND archived = 0'
+      );
+      for (const p of added) {
+        const hit = find.get(p.projectId) as { id: string; name: string; contractId: string | null; settled: number } | undefined;
+        if (!hit) throw new AppError('所选项目不存在', 404, 'NOT_FOUND');
+        if (hit.contractId) throw new AppError(`项目「${hit.name}」已归入其他合同`, 409, 'PROJECT_ALREADY_IN_CONTRACT');
+        if (hit.settled === 1) throw new AppError(`项目「${hit.name}」已结算，只能从未结算的项目中选择`, 409, 'PROJECT_ALREADY_SETTLED');
+      }
+
       this.db.prepare('UPDATE contract SET contract_no = ?, updated_at = ? WHERE id = ?').run(contractNo, now, id);
-      // 合同编号文本同步到其下全部项目
+      const attach = this.db.prepare(
+        'UPDATE project SET contract_id = ?, contract_no = ?, contract_price = ?, updated_at = ? WHERE id = ?'
+      );
+      for (const p of added) attach.run(id, contractNo, p.contractPrice, now, p.projectId);
+      // 合同编号文本同步到其下全部项目（含刚加入的）
       this.db.prepare('UPDATE project SET contract_no = ?, updated_at = ? WHERE contract_id = ? AND archived = 0').run(contractNo, now, id);
       const setPrice = this.db.prepare('UPDATE project SET contract_price = ?, updated_at = ? WHERE id = ? AND contract_id = ?');
-      for (const p of input.projects) setPrice.run(p.contractPrice, now, p.projectId, id);
+      for (const p of existing) setPrice.run(p.contractPrice, now, p.projectId, id);
       writeAudit(this.db, this.deviceId, 'contract', id, 'update', {
         before: { contractNo: current.contractNo, projects: current.projects.map((p) => ({ projectId: p.id, contractPrice: p.contractPrice })) },
-        after: { contractNo, projects: input.projects }
+        after: { contractNo, projects: input.projects },
+        addedProjects: added.map((p) => p.projectId)
       });
     })();
     return this.get(id);

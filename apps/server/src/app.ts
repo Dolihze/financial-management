@@ -66,6 +66,11 @@ export async function buildApp(config: AppConfig, opts: { logger?: boolean } = {
     if (err instanceof ZodError) {
       return reply.status(400).send({ code: 'VALIDATION', message: err.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ') });
     }
+    // Fastify 自身的客户端错误（如请求体不是合法 JSON）保持 4xx，不要吞成 500
+    const status = (err as { statusCode?: number }).statusCode;
+    if (typeof status === 'number' && status >= 400 && status < 500) {
+      return reply.status(status).send({ code: 'BAD_REQUEST', message: '请求格式不正确' });
+    }
     app.log.error(err);
     return reply.status(500).send({ code: 'INTERNAL', message: '服务器内部错误' });
   });

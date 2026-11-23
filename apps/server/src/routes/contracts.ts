@@ -2,8 +2,15 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Services } from '../app';
 
-/** 金额一律整数分（前端用 toCents 转换后再提交） */
-const cents = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
+/** 单个项目合同价上限（分）：100 亿元。与前端 MAX_CONTRACT_PRICE_YUAN 保持一致 */
+const MAX_CONTRACT_PRICE_CENTS = 10_000_000_000 * 100;
+
+/** 金额一律整数分（前端用 toCents 转换后再提交）；拒绝小数、负数、NaN/Infinity 与过大的值 */
+const cents = z
+  .number({ invalid_type_error: '合同价必须是数字' })
+  .int('合同价必须是整数分')
+  .min(0, '合同价不能为负数')
+  .max(MAX_CONTRACT_PRICE_CENTS, '合同价过大');
 
 const projectEntry = z.object({
   projectId: z.string().min(1),

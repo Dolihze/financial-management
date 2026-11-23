@@ -249,7 +249,7 @@ onMounted(load);
 
     <el-pagination v-model:current-page="page.current" v-model:page-size="page.size" :total="page.total" layout="total, prev, pager, next, sizes" style="margin-top: 16px; justify-content: flex-end" @change="load" />
 
-    <el-dialog v-model="dialog" title="记一笔" width="520px" draggable>
+    <el-dialog v-model="dialog" title="记一笔" width="520px" draggable align-center>
       <el-form :model="form" label-width="90px">
         <el-form-item label="类型">
           <el-radio-group v-model="form.type">

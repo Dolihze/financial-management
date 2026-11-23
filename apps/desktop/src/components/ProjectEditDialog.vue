@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { Account, Project, ProjectPostingKind } from '@fm/shared';
+import type { Account, Contract, Project, ProjectPostingKind } from '@fm/shared';
 import { ElDatePicker, ElMessage, ElMessageBox, ElOption, ElSelect, type FormInstance, type FormRules } from 'element-plus';
 import { computed, h, reactive, ref, watch } from 'vue';
 import { api } from '@/api';
@@ -40,12 +40,16 @@ const FLAGS: Record<FlagKey, { label: string; kind: ProjectPostingKind; directio
 const isPosted = (flag: FlagKey) => project.value?.postedKinds.includes(FLAGS[flag].kind) ?? false;
 
 const accounts = ref<Account[]>([]);
+/** 可选的合同（下拉）与已有区域（下拉）；批次号随所选合同显示，不单独编辑 */
+const contracts = ref<Contract[]>([]);
+const regionOptions = ref<string[]>([]);
 const accountId = ref<string>('');
 /** 入账日期（YYYY-MM-DD）：每次打开「切换为是」的弹窗都重置为今天，本次保存里的入账共用 */
 const postingDate = ref<string>(today());
 
 /** 表单里金额用「元」的字符串编辑，提交时用 toCents 转整数分，不做浮点运算 */
 interface FormState {
+  contractId: string;
   region: string;
   name: string;
   contractPrice: string;
@@ -61,7 +65,7 @@ const form = reactive<FormState>(emptyForm());
 
 function emptyForm(): FormState {
   return {
-    region: '', name: '',
+    contractId: '', region: '', name: '',
     contractPrice: '0.00', qxReceived: '0.00', qxSubcontractFee: '0.00', chenPei: '0.00', qxProfit: '0.00',
     paidSubcontractor: false, paidChenPei: false, note: ''
   };
@@ -69,7 +73,7 @@ function emptyForm(): FormState {
 
 function fillForm(p: Project) {
   Object.assign(form, {
-    region: p.region, name: p.name,
+    contractId: p.contractId ?? '', region: p.region, name: p.name,
     contractPrice: fromCents(p.contractPrice), qxReceived: fromCents(p.qxReceived),
     qxSubcontractFee: fromCents(p.qxSubcontractFee), chenPei: fromCents(p.chenPei), qxProfit: fromCents(p.qxProfit),
     paidSubcontractor: p.paidSubcontractor, paidChenPei: p.paidChenPei, note: p.note
@@ -94,6 +98,25 @@ const rules: FormRules<FormState> = {
   qxProfit: [moneyRule('企信利润')]
 };
 
+/** 合同下拉选项：确保项目当前合同一定在列表里（即使列表加载不全也能正常显示） */
+const contractOptions = computed(() => {
+  const p = project.value;
+  if (p?.contractId && !contracts.value.some((c) => c.id === p.contractId)) {
+    return [...contracts.value, { id: p.contractId, contractNo: p.contractNo } as Contract];
+  }
+  return contracts.value;
+});
+/** 区域下拉选项：已有区域 + 当前输入值（新输入的区域也要能显示） */
+const regionChoices = computed(() =>
+  form.region && !regionOptions.value.includes(form.region) ? [...regionOptions.value, form.region] : regionOptions.value
+);
+/** 批次号只读，随当前所选合同显示（0 号「未分批」兜底批次显示为未分批） */
+const batchText = computed(() => {
+  const c = contracts.value.find((x) => x.id === form.contractId);
+  if (!c) return project.value?.batchNo === null || project.value?.batchNo === undefined ? '（未分批）' : `第 ${project.value.batchNo} 批`;
+  return c.batchNo === 0 ? '（未分批）' : `第 ${c.batchNo} 批`;
+});
+
 /** 与服务端当前数据比较，判断是否有未保存的修改 */
 const dirty = computed(() => {
   const p = project.value;
@@ -102,7 +125,7 @@ const dirty = computed(() => {
     try { return toCents(s || '0'); } catch { return NaN; }
   };
   return (
-    form.region !== p.region || form.name !== p.name ||
+    form.contractId !== (p.contractId ?? '') || form.region !== p.region || form.name !== p.name ||
     cents(form.contractPrice) !== p.contractPrice || cents(form.qxReceived) !== p.qxReceived ||
     cents(form.qxSubcontractFee) !== p.qxSubcontractFee || cents(form.chenPei) !== p.chenPei || cents(form.qxProfit) !== p.qxProfit ||
     form.paidSubcontractor !== p.paidSubcontractor || form.paidChenPei !== p.paidChenPei ||
@@ -225,9 +248,13 @@ async function load() {
   project.value = null;
   accountId.value = '';
   try {
-    const [p, accs] = await Promise.all([api.projects.get(id.value), api.accounts.list()]);
+    const [p, accs, cons, regions] = await Promise.all([
+      api.projects.get(id.value), api.accounts.list(), api.contracts.list(), api.projects.regions()
+    ]);
     project.value = p;
     accounts.value = accs;
+    contracts.value = cons;
+    regionOptions.value = regions;
     fillForm(p);
     formRef.value?.clearValidate();
   } catch (e) {
@@ -256,6 +283,8 @@ async function save() {
   saving.value = true;
   try {
     project.value = await api.projects.update(id.value, {
+      // 未归入合同的项目不能在这里选合同（下拉禁用），所以不带 contractId
+      ...(form.contractId ? { contractId: form.contractId } : {}),
       region: form.region.trim(),
       name: form.name.trim(),
       contractPrice: toCents(form.contractPrice),
@@ -272,6 +301,7 @@ async function save() {
     fillForm(project.value);
     // 入账/回退会改变账户余额，刷新账户列表供下次选择
     accounts.value = await api.accounts.list();
+    regionOptions.value = await api.projects.regions();
     const after = project.value.postedKinds;
     const posted = after.filter((k) => !before.includes(k));
     const reverted = before.filter((k) => !after.includes(k));
@@ -372,29 +402,42 @@ function calculate() {
     v-model="visible"
     title="编辑项目"
     width="820px"
-    top="4vh"
     draggable
+    align-center
     :close-on-click-modal="false"
     :before-close="beforeClose"
   >
     <div v-loading="loading" class="body">
-      <el-form v-if="project" ref="formRef" :model="form" :rules="rules" label-width="150px" @submit.prevent>
+      <el-form v-if="project" ref="formRef" :model="form" :rules="rules" label-width="190px" class="project-form" @submit.prevent>
         <el-form-item label="合同编号">
-          <el-input :model-value="project.contractNo || '（未归入合同）'" disabled />
-          <div class="form-hint">合同归属请在合同管理列表的「编辑」中维护</div>
+          <el-select
+            v-model="form.contractId"
+            class="short-input"
+            filterable
+            placeholder="（未归入合同）"
+            :disabled="!project.contractId"
+          >
+            <el-option v-for="c in contractOptions" :key="c.id" :value="c.id" :label="c.contractNo" />
+          </el-select>
         </el-form-item>
         <el-form-item label="批次号">
-          <el-input :model-value="project.batchNo === null ? '（未分批）' : `第 ${project.batchNo} 批`" disabled />
-          <div class="form-hint">批次随所属合同走，要改批次请在合同管理列表的「编辑」里修改合同所属批次</div>
+          <el-input class="short-input" :model-value="batchText" disabled />
         </el-form-item>
         <el-form-item label="区域" prop="region">
-          <el-input v-model="form.region" maxlength="50" />
+          <el-select
+            v-model="form.region"
+            class="short-input"
+            filterable
+            allow-create
+            default-first-option
+            clearable
+            placeholder="请选择或输入区域"
+          >
+            <el-option v-for="r in regionChoices" :key="r" :value="r" :label="r" />
+          </el-select>
         </el-form-item>
         <el-form-item label="项目名称" prop="name">
-          <el-input v-model="form.name" type="textarea" :autosize="{ minRows: 1, maxRows: 4 }" maxlength="100" />
-          <el-text type="info" size="small">
-            项目名称是 Excel 导入时匹配项目的依据；手工修改的内容会在再次导入同名项目时被 Excel 的值覆盖。
-          </el-text>
+          <el-input v-model="form.name" class="name-input" type="textarea" :autosize="{ minRows: 1, maxRows: 4 }" maxlength="100" />
         </el-form-item>
         <el-form-item label="合同价" prop="contractPrice">
           <el-input v-model="form.contractPrice" class="money-input"><template #prepend>¥</template></el-input>
@@ -440,7 +483,7 @@ function calculate() {
       <el-button type="primary" :loading="saving" :disabled="!project || !dirty" @click="save">确定</el-button>
     </template>
 
-    <el-dialog v-model="formulaVisible" title="公式维护" width="520px" append-to-body draggable>
+    <el-dialog v-model="formulaVisible" title="公式维护" width="520px" append-to-body draggable align-center>
       <el-form label-width="150px" @submit.prevent>
         <el-form-item label="企信实收">
           <span>= 合同价 × {{ qxReceivedRateText }}</span>
@@ -485,11 +528,16 @@ function calculate() {
 .money-input {
   width: 200px;
 }
-.form-hint {
-  width: 100%;
-  margin-top: 4px;
-  font-size: 14px;
-  line-height: 1.4;
-  color: var(--el-text-color-secondary);
+/* 合同编号 / 批次号 / 区域：宽度约为原来的 1/3 */
+.short-input {
+  width: 200px;
+}
+/* 项目名称：右侧留出空白，不贴着弹窗右边 */
+.name-input {
+  width: calc(100% - 80px);
+}
+/* 标签单行显示，不因拥挤换行（label-width 已按最长的「企信支付下家分包费」留足） */
+.project-form :deep(.el-form-item__label) {
+  white-space: nowrap;
 }
 </style>

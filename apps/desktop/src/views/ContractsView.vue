@@ -229,7 +229,7 @@ onMounted(load);
       style="margin-top: 16px; justify-content: flex-end"
     />
 
-    <el-dialog v-model="edit.visible" title="编辑合同" width="480px" draggable :close-on-click-modal="false">
+    <el-dialog v-model="edit.visible" title="编辑合同" width="480px" draggable align-center :close-on-click-modal="false">
       <el-form label-width="90px" @submit.prevent>
         <el-form-item label="所属批次" required>
           <el-select v-model="edit.batchId" style="width: 100%" placeholder="请选择批次">
@@ -247,7 +247,7 @@ onMounted(load);
       </template>
     </el-dialog>
 
-    <el-dialog v-model="dlg.visible" :title="`新增合同（归属${batchTitle}）`" width="860px" draggable :close-on-click-modal="false">
+    <el-dialog v-model="dlg.visible" :title="`新增合同（归属${batchTitle}）`" width="860px" draggable align-center :close-on-click-modal="false">
       <el-form label-width="90px" @submit.prevent>
         <el-form-item label="合同编号" required>
           <el-input v-model="contractNo" maxlength="50" style="width: 320px" placeholder="如 HT-2026-001" />

@@ -173,9 +173,14 @@ export type ProjectPostingKind = (typeof PROJECT_POSTING_KINDS)[number];
 
 /**
  * 修改项目的入参：金额为整数分。所有字段必填（详情页表单整体保存）。
- * 合同归属、批次号都不能通过本接口修改（批次随合同走，由合同管理维护）。
+ * 批次号不能直接修改：它随所属合同派生，换合同时自动跟着变。
  */
 export interface UpdateProjectInput {
+  /**
+   * 改归属合同（必须是已有的未归档合同）：省略保持不变。
+   * 项目的合同编号文本、批次号会同步为新合同的值；不支持通过本接口把项目移出合同。
+   */
+  contractId?: string;
   region: string;
   name: string;
   contractPrice: number;

@@ -190,6 +190,14 @@ export class ProjectService {
     return rows.map((r) => toProject(r, posted.get(r.id) ?? []));
   }
 
+  /** 已有的区域（未归档项目里出现过的非空区域，去重，按名称排序），供下拉选择 */
+  regions(): string[] {
+    const rows = this.db
+      .prepare("SELECT DISTINCT region FROM project WHERE archived = 0 AND region <> '' ORDER BY region")
+      .all() as Array<{ region: string }>;
+    return rows.map((r) => r.region);
+  }
+
   get(id: string): Project {
     const row = this.db.prepare('SELECT * FROM project WHERE id = ? AND archived = 0').get(id) as ProjectRow | undefined;
     if (!row) throw new AppError('项目不存在', 404, 'NOT_FOUND');
@@ -210,6 +218,22 @@ export class ProjectService {
     if (!name) throw new AppError('项目名称不能为空', 400, 'VALIDATION');
     const clash = this.db.prepare('SELECT 1 FROM project WHERE name = ? AND archived = 0 AND id <> ?').get(name, id);
     if (clash) throw new AppError(`项目名称「${name}」已存在，请换一个名称`, 409, 'DUPLICATE_NAME');
+
+    // 换合同：只能换到已有的未归档合同；批次号随新合同派生。不支持通过此接口把未归合同的项目归入合同、或移出合同。
+    let moveTo: { id: string; contractNo: string; batchNo: number | null } | null = null;
+    if (input.contractId !== undefined && input.contractId !== current.contractId) {
+      if (!current.contractId) {
+        throw new AppError('项目尚未归入合同，请在合同管理中把它加入合同', 409, 'PROJECT_NOT_IN_CONTRACT');
+      }
+      const c = this.db
+        .prepare(
+          `SELECT c.id, c.contract_no AS contractNo, b.batch_no AS batchNo
+           FROM contract c JOIN batch b ON b.id = c.batch_id WHERE c.id = ? AND c.archived = 0`
+        )
+        .get(input.contractId) as { id: string; contractNo: string; batchNo: number } | undefined;
+      if (!c) throw new AppError('所选合同不存在', 404, 'NOT_FOUND');
+      moveTo = { id: c.id, contractNo: c.contractNo, batchNo: c.batchNo === UNBATCHED_NO ? null : c.batchNo };
+    }
 
     // 先算出需要入账/回退的字段并做业务校验（还没写库）
     const toPost: ProjectPostingKind[] = [];
@@ -251,6 +275,11 @@ export class ProjectService {
           (input.qxMoneyReceived ?? current.qxMoneyReceived) ? 1 : 0, input.paidSubcontractor ? 1 : 0, input.paidChenPei ? 1 : 0,
           input.note === undefined ? current.note : input.note.trim(), nowIso(), id
         );
+      if (moveTo) {
+        this.db
+          .prepare('UPDATE project SET contract_id = ?, contract_no = ?, batch_no = ?, updated_at = ? WHERE id = ?')
+          .run(moveTo.id, moveTo.contractNo, moveTo.batchNo, nowIso(), id);
+      }
 
       const now = nowIso();
       // 未指定时用服务器本地日期（不能用 toISOString，UTC 与本地时区会差一天）
@@ -294,7 +323,7 @@ export class ProjectService {
 
       writeAudit(this.db, this.deviceId, 'project', id, 'update', {
         before: current,
-        after: { ...input, name },
+        after: { ...input, name, ...(moveTo ? { contractNo: moveTo.contractNo, batchNo: moveTo.batchNo } : {}) },
         postings
       });
     })();

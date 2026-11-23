@@ -8,6 +8,8 @@ const cents = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 
 const updateSchema = z.object({
   // 批次号随所属合同派生，不能通过项目接口修改：即使请求里带了 batchNo 也会被忽略（zod 默认剔除未声明字段）
+  /** 改归属合同：省略保持不变；批次号随新合同自动同步 */
+  contractId: z.string().min(1).optional(),
   region: z.string().trim().max(50),
   name: z.string().trim().min(1).max(100),
   contractPrice: cents,
@@ -42,6 +44,9 @@ export function registerProjectRoutes(app: FastifyInstance, { projects }: Servic
   });
 
   // 注意：固定路径必须先于 /api/projects/:id 注册
+  /** 已有的区域列表（去重），供区域下拉选择 */
+  app.get('/api/projects/regions', async () => projects.regions());
+
   app.get('/api/projects/import/template', async (_req, reply) => {
     const buf = await projects.buildTemplate();
     return reply

@@ -155,7 +155,7 @@ onMounted(load);
       style="margin-top: 16px; justify-content: flex-end"
     />
 
-    <el-dialog v-model="dlg.visible" :title="dlg.editing ? '编辑批次' : '新增批次'" width="460px" draggable :close-on-click-modal="false">
+    <el-dialog v-model="dlg.visible" :title="dlg.editing ? '编辑批次' : '新增批次'" width="460px" draggable align-center :close-on-click-modal="false">
       <el-form label-width="80px" @submit.prevent>
         <el-form-item label="批次号" required :error="form.batchNo && batchNoError ? batchNoError : ''">
           <el-input

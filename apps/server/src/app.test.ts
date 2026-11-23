@@ -1101,6 +1101,48 @@ describe('合同管理', () => {
     expect(((await get('/api/batches')) as Array<{ batchNo: number }>).map((b) => b.batchNo)).toEqual([4, 3]); // 没有为被忽略的第9批建批次
     expect(ctx.db.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE entity='contract' AND action='import_create'").get()).toEqual({ n: 2 });
   });
+
+  it('编辑项目可换合同：合同编号、批次号随新合同同步；未归合同/不存在的合同被拒绝；写审计；不传 contractId 保持不变', async () => {
+    const id = await importProjects([row('', '项目甲'), row('', '项目乙'), row('', '项目丙')]);
+    const b1 = await mkBatch(1);
+    const b2 = await mkBatch(2);
+    const c1 = (await mkContract(b1, 'HT-1', [{ projectId: id('项目甲'), contractPrice: 100 }])).json();
+    const c2 = (await mkContract(b2, 'HT-2', [{ projectId: id('项目乙'), contractPrice: 200 }])).json();
+    const body = (name: string, extra: Record<string, unknown> = {}) => ({
+      region: '天水', name, contractPrice: 100, qxReceived: 0, qxSubcontractFee: 0, chenPei: 0, qxProfit: 0,
+      paidSubcontractor: false, paidChenPei: false, ...extra
+    });
+
+    // 不传 contractId：归属不变
+    expect((await patch(`/api/projects/${id('项目甲')}`, body('项目甲'))).json()).toMatchObject({ contractId: c1.id, contractNo: 'HT-1', batchNo: 1 });
+
+    // 换到 HT-2（第 2 批）：合同编号、批次号同步；合同汇总随之变化
+    const moved = await patch(`/api/projects/${id('项目甲')}`, body('项目甲', { contractId: c2.id }));
+    expect(moved.statusCode).toBe(200);
+    expect(moved.json()).toMatchObject({ contractId: c2.id, contractNo: 'HT-2', batchNo: 2 });
+    expect(await get(`/api/contracts/${c1.id}`)).toMatchObject({ projectCount: 0, totalPrice: 0 });
+    expect(await get(`/api/contracts/${c2.id}`)).toMatchObject({ projectCount: 2, totalPrice: 300 });
+    expect(ctx.db.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE entity='project' AND action='update'").get()).toEqual({ n: 2 });
+
+    // 合同不存在 -> 404，且不改动
+    const nope = await patch(`/api/projects/${id('项目甲')}`, body('项目甲', { contractId: 'nope', region: '不应保存' }));
+    expect(nope.statusCode).toBe(404);
+    expect(await get(`/api/projects/${id('项目甲')}`)).toMatchObject({ contractId: c2.id, region: '天水' });
+
+    // 未归入合同的项目不能通过这里归入合同
+    const loose = await patch(`/api/projects/${id('项目丙')}`, body('项目丙', { contractId: c1.id }));
+    expect(loose.statusCode).toBe(409);
+    expect(loose.json()).toMatchObject({ code: 'PROJECT_NOT_IN_CONTRACT' });
+    expect(await get(`/api/projects/${id('项目丙')}`)).toMatchObject({ contractId: null });
+  });
+
+  it('已有区域列表：未归档项目里出现过的非空区域，去重并排序；项目归档后不再出现', async () => {
+    const r = (name: string, region: string) => ['', '', region, name, 0, 0, 0, 0, 0, '否', '否', '否'];
+    const id = await importProjects([r('项目甲', '天水'), r('项目乙', '陇南'), r('项目丙', '天水'), r('项目丁', '')]);
+    expect(await get('/api/projects/regions')).toEqual(['天水', '陇南'].sort());
+    await post(`/api/projects/${id('项目乙')}/archive`, {});
+    expect(await get('/api/projects/regions')).toEqual(['天水']);
+  });
 });
 
 describe('账户类型限制', () => {

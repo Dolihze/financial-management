@@ -99,6 +99,8 @@ export const api = {
   projects: {
     /** 传 contractId 只取该合同下的项目 */
     list: (contractId?: string) => get<Project[]>(contractId ? `/api/projects?contractId=${encodeURIComponent(contractId)}` : '/api/projects'),
+    /** 已有的区域（去重），供下拉选择 */
+    regions: () => get<string[]>('/api/projects/regions'),
     get: (id: string) => get<Project>(`/api/projects/${id}`),
     update: (id: string, body: UpdateProjectInput) => patch<Project>(`/api/projects/${id}`, body),
     /** 「删除」：后端只归档，不物理删除 */

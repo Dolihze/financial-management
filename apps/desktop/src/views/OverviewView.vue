@@ -1,42 +1,15 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import type { OverviewSummary, PeriodSummary } from '@fm/shared';
 import { ElMessage } from 'element-plus';
 import { computed, onMounted, ref, watch } from 'vue';
 import { api } from '@/api';
 import { errorMessage, formatMoney } from '@/utils/format';
+import { monthRange, PERIOD_TABS, presetRange, type PeriodKey } from '@/utils/period';
 
 const data = ref<OverviewSummary | null>(null);
 const integrityOk = ref(true);
 
 // ---------- 指定时间段统计 ----------
-const pad = (n: number) => String(n).padStart(2, '0');
-const ymd = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-/** 用本地时间计算日期（不能用 toISOString，会因时区差一天） */
-function monthRange(offset = 0): [string, string] {
-  const n = new Date();
-  return [ymd(new Date(n.getFullYear(), n.getMonth() + offset, 1)), ymd(new Date(n.getFullYear(), n.getMonth() + offset + 1, 0))];
-}
-/** 预设范围，每次调用按「当前日期」重新计算 */
-function presetRange(key: Exclude<PeriodKey, 'custom'>): [string, string] {
-  const n = new Date();
-  switch (key) {
-    case 'month': return monthRange(0);
-    case 'lastMonth': return monthRange(-1);
-    case 'quarter': {
-      const q = Math.floor(n.getMonth() / 3) * 3;
-      return [ymd(new Date(n.getFullYear(), q, 1)), ymd(new Date(n.getFullYear(), q + 3, 0))];
-    }
-    default: return [ymd(new Date(n.getFullYear(), 0, 1)), ymd(new Date(n.getFullYear(), 11, 31))];
-  }
-}
-type PeriodKey = 'month' | 'lastMonth' | 'quarter' | 'year' | 'custom';
-const PERIOD_TABS: Array<{ key: PeriodKey; label: string }> = [
-  { key: 'month', label: '本月' },
-  { key: 'lastMonth', label: '上月' },
-  { key: 'quarter', label: '本季度' },
-  { key: 'year', label: '今年' },
-  { key: 'custom', label: '自定义' }
-];
 const periodKey = ref<PeriodKey>('month');
 /** 自定义范围的「暂存值」：只有点「查询」才会真正用于统计 */
 const customRange = ref<[string, string] | null>(monthRange(0));

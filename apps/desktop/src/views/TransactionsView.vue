@@ -14,6 +14,7 @@ import { api, type TransactionSummary } from '@/api';
 import NameManagerDialog from '@/components/NameManagerDialog.vue';
 import { useBaseStore } from '@/stores/base';
 import { errorMessage, formatMoney, fromCents, toCents, today } from '@/utils/format';
+import { monthRange, PERIOD_TABS, presetRange, type PeriodKey } from '@/utils/period';
 
 const base = useBaseStore();
 
@@ -22,8 +23,25 @@ const filter = reactive({
   type: '' as TransactionType | '',
   categoryId: '' as string,
   counterpartyId: '' as string,
-  range: null as [string, string] | null
+  /** 当前生效的日期范围，默认本月（null = 全部时间） */
+  range: presetRange('month') as [string, string] | null
 });
+
+// ---- 日期筛选：本月 / 上月 / 本季度 / 今年 / 自定义（与总览一致） ----
+const periodKey = ref<PeriodKey>('month');
+/** 自定义范围的「暂存值」：只有点「查询」才会真正用于筛选 */
+const customRange = ref<[string, string] | null>(monthRange(0));
+
+function selectPeriod(key: PeriodKey) {
+  periodKey.value = key;
+  if (key === 'custom') return; // 自定义：等用户选日期后点「查询」
+  filter.range = presetRange(key);
+  search();
+}
+function queryCustom() {
+  filter.range = customRange.value;
+  search();
+}
 const page = reactive({ current: 1, size: 20, total: 0 });
 const items = ref<Transaction[]>([]);
 const loading = ref(false);
@@ -59,14 +77,37 @@ async function load() {
   }
 }
 
-/** 分类筛选只在类型为收入/支出时显示，并只列出对应类型的分类；其余类型（全部/借款/贷款）不显示 */
-const filterCategories = computed(() =>
-  filter.type === 'income' ? base.incomeCategories : filter.type === 'expense' ? base.expenseCategories : null
-);
+// ---- 表头筛选（服务端筛选，每列单选；column-key 即 filter 里的字段名） ----
+const typeFilters = TRANSACTION_TYPES.map((t) => ({ text: TRANSACTION_TYPE_LABELS[t], value: t }));
+const accountFilters = computed(() => base.accounts.map((a) => ({ text: a.name, value: a.id })));
+/** 分类筛选：收入、支出分类可能重名，未选类型时选项文字带上类型区分；已选收入/支出类型时只列出对应类型的分类 */
+const categoryFilters = computed(() => {
+  const plain = (list: Category[]) => list.map((c) => ({ text: c.name, value: c.id }));
+  if (filter.type === 'income') return plain(base.incomeCategories);
+  if (filter.type === 'expense') return plain(base.expenseCategories);
+  return [
+    ...base.incomeCategories.map((c) => ({ text: `${c.name}（收入）`, value: c.id })),
+    ...base.expenseCategories.map((c) => ({ text: `${c.name}（支出）`, value: c.id }))
+  ];
+});
+const counterpartyFilters = computed(() => base.counterparties.map((c) => ({ text: c.name, value: c.id })));
 
-function onTypeChange() {
-  // 分类筛选被隐藏或换了类型后，已选分类不再适用，必须清空，避免带着看不见的筛选条件
-  if (!filterCategories.value?.some((c) => c.id === filter.categoryId)) filter.categoryId = '';
+/** 受控的已选值：分类被联动清空时，表头的选中状态同步取消 */
+const filteredValue = (v: string) => (v ? [v] : []);
+
+function onFilterChange(filters: Record<string, string[]>) {
+  const one = (key: string) => filters[key]?.[0] ?? '';
+  if ('type' in filters) {
+    filter.type = one('type') as TransactionType | '';
+    // 换了类型后，已选分类若不属于该类型则不再适用，清空避免带着看不见的筛选条件
+    if (filter.type === 'income' || filter.type === 'expense') {
+      const list = filter.type === 'income' ? base.incomeCategories : base.expenseCategories;
+      if (!list.some((c) => c.id === filter.categoryId)) filter.categoryId = '';
+    }
+  }
+  if ('accountId' in filters) filter.accountId = one('accountId');
+  if ('categoryId' in filters) filter.categoryId = one('categoryId');
+  if ('counterpartyId' in filters) filter.counterpartyId = one('counterpartyId');
   search();
 }
 function search() {
@@ -345,29 +386,29 @@ onMounted(load);
   <div>
     <div class="page-toolbar">
       <el-button type="primary" icon="Plus" @click="openDialog">记一笔</el-button>
-      <el-select v-model="filter.accountId" placeholder="全部账户" clearable style="width: 180px" @change="search">
-        <el-option v-for="a in base.accounts" :key="a.id" :label="a.name" :value="a.id" />
-      </el-select>
-      <el-select v-model="filter.type" placeholder="全部类型" clearable style="width: 120px" @change="onTypeChange">
-        <el-option v-for="t in TRANSACTION_TYPES" :key="t" :label="TRANSACTION_TYPE_LABELS[t]" :value="t" />
-      </el-select>
-      <el-select v-if="filterCategories" v-model="filter.categoryId" placeholder="全部分类" clearable filterable style="width: 130px" @change="search">
-        <el-option v-for="c in filterCategories" :key="c.id" :label="c.name" :value="c.id" />
-      </el-select>
-      <el-select v-model="filter.counterpartyId" placeholder="全部往来单位" clearable filterable style="width: 150px" @change="search">
-        <el-option v-for="c in base.counterparties" :key="c.id" :label="c.name" :value="c.id" />
-      </el-select>
-      <el-date-picker
-        v-model="filter.range"
-        type="daterange"
-        unlink-panels
-        value-format="YYYY-MM-DD"
-        range-separator="~"
-        start-placeholder="开始日期"
-        end-placeholder="结束日期"
-        style="width: 240px"
-        @change="search"
-      />
+      <div class="period-tabs">
+        <span
+          v-for="t in PERIOD_TABS"
+          :key="t.key"
+          class="period-tab"
+          :class="{ active: periodKey === t.key }"
+          @click="selectPeriod(t.key)"
+        >{{ t.label }}</span>
+      </div>
+      <template v-if="periodKey === 'custom'">
+        <el-date-picker
+          v-model="customRange"
+          type="daterange"
+          unlink-panels
+          clearable
+          value-format="YYYY-MM-DD"
+          range-separator="~"
+          start-placeholder="开始日期"
+          end-placeholder="结束日期"
+        />
+        <el-button type="primary" :loading="loading" @click="queryCustom">查询</el-button>
+        <el-text v-if="!customRange" type="info" size="small">未选日期：显示全部时间</el-text>
+      </template>
     </div>
 
     <div class="summary-bar">
@@ -379,16 +420,58 @@ onMounted(load);
         <b :class="summary.profit > 0 ? 'tx-income' : summary.profit < 0 ? 'tx-expense' : ''">{{ formatMoney(summary.profit) }}</b>
       </span>
     </div>
-    <el-table :data="items" v-loading="loading" border>
+    <el-table :data="items" v-loading="loading" border class="tx-table" @filter-change="onFilterChange">
       <el-table-column prop="occurredOn" label="日期" width="130" align="left" header-align="left" />
-      <el-table-column label="类型" width="90" align="left" header-align="left">
+      <el-table-column
+        column-key="type"
+        label="类型"
+        width="110"
+        align="left"
+        header-align="left"
+        :filters="typeFilters"
+        :filter-method="() => true"
+        :filter-multiple="false"
+        :filtered-value="filteredValue(filter.type)"
+      >
         <template #default="{ row }">{{ TRANSACTION_TYPE_LABELS[row.type as TransactionType] }}</template>
       </el-table-column>
-      <el-table-column label="资金流向（账户）" min-width="220" align="left" header-align="left">
+      <el-table-column
+        column-key="accountId"
+        label="资金流向（账户）"
+        min-width="240"
+        align="left"
+        header-align="left"
+        :filters="accountFilters"
+        :filter-method="() => true"
+        :filter-multiple="false"
+        :filtered-value="filteredValue(filter.accountId)"
+      >
         <template #default="{ row }">{{ flowText(row) }}</template>
       </el-table-column>
-      <el-table-column prop="categoryName" label="分类" width="130" align="left" header-align="left" />
-      <el-table-column prop="counterparty" label="往来单位" min-width="160" align="left" header-align="left" />
+      <el-table-column
+        prop="categoryName"
+        column-key="categoryId"
+        label="分类"
+        width="130"
+        align="left"
+        header-align="left"
+        :filters="categoryFilters"
+        :filter-method="() => true"
+        :filter-multiple="false"
+        :filtered-value="filteredValue(filter.categoryId)"
+      />
+      <el-table-column
+        prop="counterparty"
+        column-key="counterpartyId"
+        label="往来单位"
+        min-width="170"
+        align="left"
+        header-align="left"
+        :filters="counterpartyFilters"
+        :filter-method="() => true"
+        :filter-multiple="false"
+        :filtered-value="filteredValue(filter.counterpartyId)"
+      />
       <el-table-column label="金额" width="160" align="left" header-align="left">
         <template #default="{ row }">
           <span :class="{ 'tx-income': amountOf(row) > 0, 'tx-expense': amountOf(row) < 0 }">
@@ -561,6 +644,56 @@ onMounted(load);
   margin-right: 8px;
 }
 .file-link-text {
+  margin-left: 4px;
+}
+/* 时间段 Tab：文字 + 选中底部蓝条（与总览一致） */
+.period-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+.period-tab {
+  position: relative;
+  padding: 0 14px;
+  line-height: 32px;
+  cursor: pointer;
+  color: var(--el-text-color-regular);
+  user-select: none;
+}
+.period-tab:hover {
+  color: var(--el-color-primary);
+}
+.period-tab.active {
+  color: var(--el-color-primary);
+  font-weight: 600;
+}
+.period-tab.active::after {
+  content: '';
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  bottom: -2px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--el-color-primary);
+}
+/* 日期范围选择器宽度：用官方变量控制，并禁止在 flex 行里被拉伸 */
+.page-toolbar :deep(.el-date-editor.el-input__wrapper) {
+  --el-date-editor-width: 350px;
+  width: 350px;
+  flex: none;
+}
+/* 表头文字 + 筛选箭头始终同一行：不换行，空间不足时文字省略而不是把箭头挤到下一行 */
+.tx-table :deep(th.el-table__cell > .cell) {
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+}
+.tx-table :deep(th.el-table__cell > .cell .caret-wrapper),
+.tx-table :deep(th.el-table__cell > .cell .el-table__column-filter-trigger) {
+  flex: none;
+}
+.tx-table :deep(th.el-table__cell > .cell .el-table__column-filter-trigger) {
   margin-left: 4px;
 }
 /* 文件名过长时显示省略号：链接占满单元格宽度（min-width: 0 允许 flex 子项收缩），文字在链接内部截断 */

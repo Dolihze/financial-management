@@ -1,6 +1,7 @@
-import type { Batch, BatchInput } from '@fm/shared';
+import type { Batch, BatchAttachment, BatchInput } from '@fm/shared';
 import type { Db } from '../db/database';
 import { AppError, newId, nowIso } from '../utils';
+import { toBatchAttachment } from './attachmentService';
 import { writeAudit } from './audit';
 
 interface BatchRow {
@@ -21,10 +22,11 @@ export const UNBATCHED_NO = 0;
 /** 批次号上限：防止误输入，且远小于安全整数 */
 export const MAX_BATCH_NO = 100_000;
 
-const toBatch = (r: BatchRow): Batch => ({
+const toBatch = (r: BatchRow, attachments: BatchAttachment[] = []): Batch => ({
   id: r.id,
   batchNo: r.batch_no,
   note: r.note,
+  attachments,
   contractCount: r.contract_count,
   projectCount: r.project_count,
   totalPrice: r.total_price,
@@ -60,16 +62,32 @@ export class BatchService {
     private readonly deviceId: string
   ) {}
 
+  /** 一次性取多个批次的附件（按上传时间先后），避免 N+1 查询 */
+  private attachmentsOf(ids: string[]): Map<string, BatchAttachment[]> {
+    const map = new Map<string, BatchAttachment[]>();
+    if (ids.length === 0) return map;
+    const rows = this.db
+      .prepare(`SELECT * FROM batch_attachment WHERE batch_id IN (${ids.map(() => '?').join(',')}) AND deleted_at IS NULL ORDER BY created_at, rowid`)
+      .all(...ids) as Array<Parameters<typeof toBatchAttachment>[0]>;
+    for (const a of rows) {
+      const arr = map.get(a.batch_id) ?? [];
+      arr.push(toBatchAttachment(a));
+      map.set(a.batch_id, arr);
+    }
+    return map;
+  }
+
   list(): Batch[] {
     // 批次号倒序：最新的批次排在最前；0 号兜底批次天然排在最后
     const rows = this.db.prepare(`${SELECT_BATCH} WHERE b.archived = 0 ORDER BY b.batch_no DESC`).all() as BatchRow[];
-    return rows.map(toBatch);
+    const files = this.attachmentsOf(rows.map((r) => r.id));
+    return rows.map((r) => toBatch(r, files.get(r.id) ?? []));
   }
 
   get(id: string): Batch {
     const row = this.db.prepare(`${SELECT_BATCH} WHERE b.id = ? AND b.archived = 0`).get(id) as BatchRow | undefined;
     if (!row) throw new AppError('批次不存在', 404, 'NOT_FOUND');
-    return toBatch(row);
+    return toBatch(row, this.attachmentsOf([id]).get(id) ?? []);
   }
 
   /** 按批次号取可用批次（导入用） */

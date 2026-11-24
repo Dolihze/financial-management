@@ -389,7 +389,7 @@ onMounted(load);
             :auto-upload="false"
             :limit="MAX_FILES + 1"
             :on-change="onFileChange"
-            class="file-upload"
+            class="compact-upload"
           >
             <el-icon class="el-icon--upload"><UploadFilled /></el-icon>
             <div class="el-upload__text">拖拽文件到此处，或<em>点击选择</em></div>
@@ -498,9 +498,6 @@ onMounted(load);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.file-upload {
-  width: 100%;
 }
 .form-tip {
   color: var(--el-text-color-secondary);

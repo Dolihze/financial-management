@@ -545,6 +545,36 @@ describe('迁移 v5：支出分类收敛为 7 个内置默认项', () => {
     db.close();
   });
 
+  it('迁移 v21：新增 batch_attachment 表，外键指向 batch，既有批次不受影响', () => {
+    const db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    migrateTo(db, 20);
+    const now = '2026-01-01T00:00:00.000Z';
+    db.prepare(`INSERT INTO batch (id,batch_no,note,archived,created_at,updated_at,device_id) VALUES ('b1',1,'',0,?,?,'d')`).run(now, now);
+    migrateTo(db, 21, 20);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM batch WHERE id = ?').get('b1')).toEqual({ n: 1 });
+    const ins = db.prepare(
+      `INSERT INTO batch_attachment (id,batch_id,file_name,stored_name,mime_type,size,created_at,device_id) VALUES (?,?,?,?,?,?,?,'d')`
+    );
+    ins.run('f1', 'b1', 'a.png', 'f1.png', 'image/png', 3, now);
+    expect(() => ins.run('f2', 'no-such-batch', 'b.png', 'f2.png', 'image/png', 3, now)).toThrow(); // 外键
+    db.close();
+  });
+
+  it('迁移 v22：batch_attachment 新增 deleted_at，既有附件默认未删除', () => {
+    const db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    migrateTo(db, 21);
+    const now = '2026-01-01T00:00:00.000Z';
+    db.prepare(`INSERT INTO batch (id,batch_no,note,archived,created_at,updated_at,device_id) VALUES ('b1',1,'',0,?,?,'d')`).run(now, now);
+    db.prepare(
+      `INSERT INTO batch_attachment (id,batch_id,file_name,stored_name,mime_type,size,created_at,device_id) VALUES ('f1','b1','a.png','f1.png','image/png',3,?,'d')`
+    ).run(now);
+    migrateTo(db, 22, 21);
+    expect(db.prepare('SELECT deleted_at FROM batch_attachment WHERE id = ?').get('f1')).toEqual({ deleted_at: null });
+    db.close();
+  });
+
   it('runMigrations 可从空库一路迁移到最新版本', () => {
     const db = new Database(':memory:');
     db.pragma('foreign_keys = ON');

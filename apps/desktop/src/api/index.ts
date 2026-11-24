@@ -2,6 +2,7 @@ import type {
   Account,
   ActiveAccountType,
   Batch,
+  BatchAttachment,
   BatchInput,
   Category,
   Contract,
@@ -89,7 +90,19 @@ export const api = {
     create: (body: BatchInput) => post<Batch>('/api/batches', body),
     update: (id: string, body: BatchInput) => patch<Batch>(`/api/batches/${id}`, body),
     /** 「删除」：后端只归档；批次下还有合同时会被拒绝 */
-    remove: (id: string) => post<Batch>(`/api/batches/${id}/archive`)
+    remove: (id: string) => post<Batch>(`/api/batches/${id}/archive`),
+    /** 给批次上传一个相关文件（图片/PDF/其他），单个不超过 20 MB */
+    addAttachment: (batchId: string, file: File) => upload<BatchAttachment>(`/api/batches/${batchId}/attachments`, file),
+    /** 「删除」文件：后端只做软删除（保留记录与磁盘文件），列表中不再出现 */
+    removeAttachment: (id: string) => post<BatchAttachment>(`/api/batch-attachments/${id}/remove`),
+    /** 用系统默认程序打开 */
+    openAttachment: async (a: Pick<BatchAttachment, 'id' | 'fileName'>) => {
+      const blob = await get<Blob>(`/api/batch-attachments/${a.id}/file`);
+      await openFileWithSystem(blob, a.fileName, `${getBaseUrl()}/api/batch-attachments/${a.id}/file`);
+    },
+    /** 下载到用户选择的位置；返回 false 表示用户取消 */
+    downloadAttachment: async (a: Pick<BatchAttachment, 'id' | 'fileName'>) =>
+      saveFileWithSystem(await get<Blob>(`/api/batch-attachments/${a.id}/file`), a.fileName)
   },
 
   contracts: {

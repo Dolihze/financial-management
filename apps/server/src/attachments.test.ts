@@ -138,3 +138,112 @@ describe('流水附件（图片/文件）', () => {
     expect((await ctx.app.inject({ url: '/api/attachments/nope/file' })).statusCode).toBe(404);
   });
 });
+
+describe('批次附件（相关文件）', () => {
+  const makeBatch = async (batchNo = 1): Promise<string> => {
+    const res = await post('/api/batches', { batchNo, note: '' });
+    expect(res.statusCode).toBe(201);
+    return (res.json() as { id: string }).id;
+  };
+  const uploadBatch = (batchId: string, data: Buffer, name: string, mime: string) =>
+    ctx.app.inject({ method: 'POST', url: `/api/batches/${batchId}/attachments`, ...multipart(data, name, mime) });
+
+  it('新增批次默认没有附件', async () => {
+    const id = await makeBatch();
+    const b = (await ctx.app.inject({ url: `/api/batches/${id}` })).json() as { attachments: unknown[] };
+    expect(b.attachments).toEqual([]);
+  });
+
+  it('上传：返回元数据，落盘，批次列表与详情带出附件，按上传顺序，写审计', async () => {
+    const id = await makeBatch();
+    const res = await uploadBatch(id, Buffer.from('%PDF-1.4'), '合同.pdf', 'application/pdf');
+    expect(res.statusCode).toBe(201);
+    expect(res.json()).toMatchObject({ batchId: id, fileName: '合同.pdf', mimeType: 'application/pdf', size: 8 });
+    await uploadBatch(id, Buffer.from('a,b'), '明细.csv', 'text/csv');
+
+    expect(readdirSync(dir)).toHaveLength(2);
+    const list = (await ctx.app.inject({ url: '/api/batches' })).json() as Array<{ id: string; attachments: Array<{ fileName: string }> }>;
+    expect(list.find((b) => b.id === id)!.attachments.map((a) => a.fileName)).toEqual(['合同.pdf', '明细.csv']);
+    const one = (await ctx.app.inject({ url: `/api/batches/${id}/attachments` })).json() as Array<{ fileName: string }>;
+    expect(one.map((a) => a.fileName)).toEqual(['合同.pdf', '明细.csv']);
+    expect(ctx.db.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE entity='batch' AND action='attach' AND entity_id=?").get(id)).toEqual({ n: 2 });
+  });
+
+  it('下载：内容一致；PDF 内联，HTML 强制下载；带 nosniff；不存在 404；文件丢失 FILE_MISSING', async () => {
+    const id = await makeBatch();
+    const pdf = Buffer.from('%PDF-1.4 x');
+    const a = (await uploadBatch(id, pdf, '合同.pdf', 'application/pdf')).json() as { id: string };
+    const ok = await ctx.app.inject({ url: `/api/batch-attachments/${a.id}/file` });
+    expect(ok.statusCode).toBe(200);
+    expect(ok.rawPayload.equals(pdf)).toBe(true);
+    expect(ok.headers['content-type']).toBe('application/pdf');
+    expect(ok.headers['x-content-type-options']).toBe('nosniff');
+
+    const h = (await uploadBatch(id, Buffer.from('<script>1</script>'), 'x.html', 'text/html')).json() as { id: string };
+    const html = await ctx.app.inject({ url: `/api/batch-attachments/${h.id}/file` });
+    expect(html.headers['content-type']).toBe('application/octet-stream');
+    expect(String(html.headers['content-disposition'])).toMatch(/^attachment;/);
+
+    expect((await ctx.app.inject({ url: '/api/batch-attachments/nope/file' })).statusCode).toBe(404);
+    rmSync(dir, { recursive: true, force: true });
+    const missing = await ctx.app.inject({ url: `/api/batch-attachments/${a.id}/file` });
+    expect(missing.statusCode).toBe(404);
+    expect(missing.json()).toMatchObject({ code: 'FILE_MISSING' });
+  });
+
+  it('校验：批次不存在 404；空文件 400；超过 20MB 413 且不落盘不入库；最多 20 个', async () => {
+    expect((await uploadBatch('nope', Buffer.from('x'), 'a.png', 'image/png')).statusCode).toBe(404);
+    const id = await makeBatch();
+    expect((await uploadBatch(id, Buffer.alloc(0), 'a.png', 'image/png')).statusCode).toBe(400);
+    const big = await uploadBatch(id, Buffer.alloc(20 * 1024 * 1024 + 1, 1), 'big.bin', 'application/octet-stream');
+    expect(big.statusCode).toBe(413);
+    expect(readdirSync(dir)).toHaveLength(0);
+    expect(ctx.db.prepare('SELECT COUNT(*) AS n FROM batch_attachment').get()).toEqual({ n: 0 });
+
+    for (let i = 0; i < 20; i++) expect((await uploadBatch(id, Buffer.from(String(i)), `${i}.txt`, 'text/plain')).statusCode).toBe(201);
+    const over = await uploadBatch(id, Buffer.from('x'), 'over.txt', 'text/plain');
+    expect(over.statusCode).toBe(400);
+    expect(over.json()).toMatchObject({ code: 'TOO_MANY_ATTACHMENTS' });
+  });
+
+  it('删除文件 = 软删除：列表/下载不再返回，记录与磁盘文件保留，写审计，释放名额；重复删除 404', async () => {
+    const id = await makeBatch();
+    const a = (await uploadBatch(id, Buffer.from('aaa'), 'a.txt', 'text/plain')).json() as { id: string };
+    const b = (await uploadBatch(id, Buffer.from('bbb'), 'b.txt', 'text/plain')).json() as { id: string };
+
+    const res = await post(`/api/batch-attachments/${a.id}/remove`, {});
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ id: a.id, fileName: 'a.txt' });
+
+    const detail = (await ctx.app.inject({ url: `/api/batches/${id}` })).json() as { attachments: Array<{ id: string }> };
+    expect(detail.attachments.map((x) => x.id)).toEqual([b.id]);
+    const list = (await ctx.app.inject({ url: `/api/batches/${id}/attachments` })).json() as Array<{ id: string }>;
+    expect(list.map((x) => x.id)).toEqual([b.id]);
+    expect((await ctx.app.inject({ url: `/api/batch-attachments/${a.id}/file` })).statusCode).toBe(404);
+
+    // 不物理删除：行和磁盘文件都还在
+    expect(ctx.db.prepare('SELECT deleted_at IS NOT NULL AS d FROM batch_attachment WHERE id = ?').get(a.id)).toEqual({ d: 1 });
+    expect(readdirSync(dir)).toHaveLength(2);
+    expect(ctx.db.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE entity='batch' AND action='detach' AND entity_id=?").get(id)).toEqual({ n: 1 });
+
+    expect((await post(`/api/batch-attachments/${a.id}/remove`, {})).statusCode).toBe(404);
+    expect((await post('/api/batch-attachments/nope/remove', {})).statusCode).toBe(404);
+  });
+
+  it('已删除的文件不占 20 个名额，删除后可补传', async () => {
+    const id = await makeBatch();
+    const first = (await uploadBatch(id, Buffer.from('0'), '0.txt', 'text/plain')).json() as { id: string };
+    for (let i = 1; i < 20; i++) expect((await uploadBatch(id, Buffer.from(String(i)), `${i}.txt`, 'text/plain')).statusCode).toBe(201);
+    expect((await uploadBatch(id, Buffer.from('x'), 'over.txt', 'text/plain')).statusCode).toBe(400);
+    await post(`/api/batch-attachments/${first.id}/remove`, {});
+    expect((await uploadBatch(id, Buffer.from('x'), 'again.txt', 'text/plain')).statusCode).toBe(201);
+  });
+
+  it('批次删除（归档）后附件记录仍保留', async () => {
+    const id = await makeBatch();
+    const a = (await uploadBatch(id, Buffer.from('hello'), 'a.txt', 'text/plain')).json() as { id: string };
+    expect((await post(`/api/batches/${id}/archive`, {})).statusCode).toBe(200);
+    expect(ctx.db.prepare('SELECT COUNT(*) AS n FROM batch_attachment WHERE id = ?').get(a.id)).toEqual({ n: 1 });
+    expect((await ctx.app.inject({ url: `/api/batch-attachments/${a.id}/file` })).statusCode).toBe(200);
+  });
+});

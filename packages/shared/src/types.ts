@@ -222,6 +222,18 @@ export interface UpdateProjectInput {
   postingDate?: string;
 }
 
+/** 批次的相关文件（图片/PDF/其他文件）：文件存在本机磁盘，这里只是元数据 */
+export interface BatchAttachment {
+  id: string;
+  batchId: string;
+  /** 上传时的原始文件名 */
+  fileName: string;
+  mimeType: string;
+  /** 字节数 */
+  size: number;
+  createdAt: string;
+}
+
 /** 批次汇总金额：均为整数分之和（只统计未归档合同下未归档项目） */
 export interface BatchTotals {
   /** 合同数 */
@@ -245,6 +257,8 @@ export interface Batch extends BatchTotals {
   batchNo: number;
   /** 备注，可为空字符串 */
   note: string;
+  /** 相关文件（按上传时间先后） */
+  attachments: BatchAttachment[];
   createdAt: string;
   updatedAt: string;
 }

@@ -602,5 +602,32 @@ export const migrations: Migration[] = [
       );
       CREATE INDEX idx_tx_attachment_tx ON tx_attachment(tx_id);
     `
+  },
+  {
+    version: 21,
+    name: 'batch_attachment',
+    sql: `
+      -- 批次的相关文件：与 tx_attachment 同样的做法，文件本体存磁盘（同一个附件目录），这里只存元数据。
+      -- 不物理删除：没有删除接口；批次归档后附件仍保留。
+      CREATE TABLE batch_attachment (
+        id          TEXT PRIMARY KEY,
+        batch_id    TEXT NOT NULL REFERENCES batch(id),
+        file_name   TEXT NOT NULL,
+        stored_name TEXT NOT NULL,
+        mime_type   TEXT NOT NULL,
+        size        INTEGER NOT NULL,
+        created_at  TEXT NOT NULL,
+        device_id   TEXT NOT NULL
+      );
+      CREATE INDEX idx_batch_attachment_batch ON batch_attachment(batch_id);
+    `
+  },
+  {
+    version: 22,
+    name: 'batch_attachment_soft_delete',
+    sql: `
+      -- 批次文件的「删除」= 软删除：记录与磁盘文件都保留（不物理删除财务数据），列表/下载不再返回。
+      ALTER TABLE batch_attachment ADD COLUMN deleted_at TEXT;
+    `
   }
 ];

@@ -51,7 +51,7 @@ async function commit() {
 
 async function revert(b: ImportBatch) {
   try {
-    await ElMessageBox.confirm(`确认撤销批次「${b.fileName}」？该批次的 ${b.importedCount} 条流水将被作废。`, '撤销导入', { type: 'warning' });
+    await ElMessageBox.confirm(`确认撤销批次「${b.fileName}」？该批次的 ${b.importedCount} 条流水将被删除。`, '撤销导入', { type: 'warning' });
     await api.imports.revert(b.id);
     ElMessage.success('已撤销');
     await Promise.all([loadBatches(), base.loadAccounts()]);

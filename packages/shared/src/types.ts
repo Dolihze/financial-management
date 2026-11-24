@@ -42,8 +42,6 @@ export const TRANSACTION_TYPE_IS_INFLOW: Record<TransactionType, boolean> = {
   loan: true
 };
 
-export type TransactionStatus = 'normal' | 'voided';
-
 export interface Account {
   id: string;
   name: string;
@@ -55,7 +53,7 @@ export interface Account {
   bankName: string;
   /** 银行卡号（仅银行账户使用，其他类型为空串） */
   accountNo: string;
-  /** 当前余额（分）= 期初 + 所有未作废分录之和，由后端实时计算 */
+  /** 当前余额（分）= 期初 + 所有分录之和，由后端实时计算 */
   balance: number;
   note: string;
   archived: boolean;
@@ -71,7 +69,7 @@ export interface Category {
   parentId: string | null;
   /** 内置分类（如「其他收入」）：不可编辑 */
   builtin: boolean;
-  /** 被多少笔流水使用（仅列表接口返回，含已作废流水） */
+  /** 被多少笔流水使用（仅列表接口返回） */
   usageCount?: number;
 }
 
@@ -109,8 +107,9 @@ export interface Transaction {
   /** 往来单位名称快照 */
   counterparty: string;
   note: string;
-  status: TransactionStatus;
   importBatchId: string | null;
+  /** 由项目入账自动生成（有未回退的项目入账关联）：不能单独编辑/删除，需在项目里回退 */
+  linkedToProject: boolean;
   lines: TransactionLine[];
   /** 相关文件（按上传时间先后） */
   attachments: TransactionAttachment[];
@@ -135,7 +134,7 @@ export interface CreateTransactionInput {
 export interface Counterparty {
   id: string;
   name: string;
-  /** 被多少笔流水关联（仅列表接口返回，含已作废流水） */
+  /** 被多少笔流水关联（仅列表接口返回） */
   usageCount?: number;
 }
 
@@ -421,7 +420,7 @@ export interface OverviewSummary {
   expenseByCategory: Array<{ categoryId: string | null; categoryName: string; amount: number }>;
 }
 
-/** 指定时间段（含首尾日期）内的收支统计，只统计未作废的收入/支出；金额单位：分 */
+/** 指定时间段（含首尾日期）内的收支统计，只统计收入/支出；金额单位：分 */
 export interface PeriodSummary {
   from: string | null;
   to: string | null;

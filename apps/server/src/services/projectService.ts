@@ -166,9 +166,10 @@ export class ProjectService {
 
   constructor(
     private readonly db: Db,
-    private readonly deviceId: string
+    private readonly deviceId: string,
+    attachmentsDir?: string
   ) {
-    this.txService = new TransactionService(db, deviceId);
+    this.txService = new TransactionService(db, deviceId, attachmentsDir);
     this.categories = new CategoryService(db, deviceId);
   }
 
@@ -178,14 +179,13 @@ export class ProjectService {
     return this.categories.findByName(rule.txType, rule.category)?.id ?? null;
   }
 
-  /** 各项目当前「有效入账」的字段（有对应未作废流水） */
+  /** 各项目当前「有效入账」的字段（有对应流水；流水被删除时入账关联一并删除） */
   private postedKindsOf(ids: string[]): Map<string, ProjectPostingKind[]> {
     const map = new Map<string, ProjectPostingKind[]>();
     if (ids.length === 0) return map;
     const rows = this.db
       .prepare(
         `SELECT p.project_id AS projectId, p.kind AS kind FROM project_posting p
-         JOIN tx t ON t.id = p.tx_id AND t.status = 'normal'
          WHERE p.active = 1 AND p.project_id IN (${ids.map(() => '?').join(',')})`
       )
       .all(...ids) as Array<{ projectId: string; kind: ProjectPostingKind }>;
@@ -298,7 +298,7 @@ export class ProjectService {
   /**
    * 修改项目（详情页整体保存），并在同一个数据库事务内完成入账/回退：
    * - 字段从「否」切到「是」：按规则生成一笔流水（需 postingAccountId），记录关联；
-   * - 字段从「是」切到「否」：作废之前生成的那笔流水（不物理删除），解除关联；
+   * - 字段从「是」切到「否」：删除之前生成的那笔流水（物理删除，写审计），解除关联；
    * - 字段保持「是」且已入账：对应金额不能直接修改（先切回「否」回退，再改金额再入账）；
    * 任何一步失败整体回滚，项目与流水不会出现只改了一半。
    * 项目名称是 Excel 导入的匹配键，不能与其他未归档项目重名。
@@ -354,6 +354,7 @@ export class ProjectService {
       throw new AppError('切换为「是」会入账，请选择入账账户', 400, 'POSTING_ACCOUNT_REQUIRED');
     }
 
+    const revertedFiles: string[] = [];
     this.db.transaction(() => {
       this.db
         .prepare(
@@ -386,11 +387,10 @@ export class ProjectService {
         const link = this.db
           .prepare('SELECT id, tx_id AS txId FROM project_posting WHERE project_id = ? AND kind = ? AND active = 1')
           .get(id, kind) as { id: string; txId: string };
-        // 作废流水（若已被手工作废则跳过，仍解除关联）
+        // 删除入账流水（物理删除，连带 project_posting 关联一并删除；回退记录保留在本次项目审计的 postings 里）
         const tx = this.txService.get(link.txId);
         const amount = Math.abs(tx.lines.reduce((s, l) => s + l.amount, 0));
-        if (tx.status === 'normal') this.txService.void(link.txId, `项目「${name}」${POSTING_RULES[kind].label}切换为否，回退入账`);
-        this.db.prepare('UPDATE project_posting SET active = 0, reverted_at = ? WHERE id = ?').run(now, link.id);
+        revertedFiles.push(...this.txService.removeWithinTx(link.txId));
         postings.push({ kind, action: 'revert', txId: link.txId, amount });
       }
 
@@ -419,6 +419,7 @@ export class ProjectService {
         postings
       });
     })();
+    this.txService.deleteFiles(revertedFiles); // 事务提交后清理被删流水的附件文件
     return this.get(id);
   }
   /**

@@ -47,17 +47,18 @@ export interface BuiltApp {
 
 export async function buildApp(config: AppConfig, opts: { logger?: boolean } = {}): Promise<BuiltApp> {
   const db = openDatabase(config.dbPath);
+  const attachmentsDir = config.attachmentsDir ?? defaultAttachmentsDir(config.dbPath);
   const services: Services = {
     accounts: new AccountService(db, config.deviceId),
-    attachments: new AttachmentService(db, config.deviceId, config.attachmentsDir ?? defaultAttachmentsDir(config.dbPath)),
+    attachments: new AttachmentService(db, config.deviceId, attachmentsDir),
     batches: new BatchService(db, config.deviceId),
     categories: new CategoryService(db, config.deviceId),
     contracts: new ContractService(db, config.deviceId),
     counterparties: new CounterpartyService(db, config.deviceId),
-    transactions: new TransactionService(db, config.deviceId),
-    imports: new ImportService(db, config.deviceId),
+    transactions: new TransactionService(db, config.deviceId, attachmentsDir),
+    imports: new ImportService(db, config.deviceId, attachmentsDir),
     overview: new OverviewService(db, config.deviceId),
-    projects: new ProjectService(db, config.deviceId)
+    projects: new ProjectService(db, config.deviceId, attachmentsDir)
   };
   services.categories.seedDefaults();
 

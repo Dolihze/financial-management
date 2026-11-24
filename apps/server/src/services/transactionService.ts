@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import { unlinkSync } from 'node:fs';
+import { join } from 'node:path';
 import type {
   CreateTransactionInput,
   Transaction,
@@ -21,7 +23,6 @@ interface TxRow {
   counterparty_id: string | null;
   counterparty: string;
   note: string;
-  status: 'normal' | 'voided';
   import_batch_id: string | null;
   created_at: string;
   updated_at: string;
@@ -43,7 +44,6 @@ export interface TransactionQuery {
   from?: string;
   to?: string;
   keyword?: string;
-  includeVoided?: boolean;
   limit?: number;
   offset?: number;
 }
@@ -90,11 +90,16 @@ export function buildLines(input: CreateTransactionInput): Array<{ accountId: st
 export class TransactionService {
   constructor(
     private readonly db: Db,
-    private readonly deviceId: string
+    private readonly deviceId: string,
+    /** 附件目录：删除流水时清理磁盘上的附件文件；不传则只删记录（导入/项目等内部使用的实例不需要） */
+    private readonly attachmentsDir?: string
   ) {}
 
-  /** 在已有事务内插入一笔交易（导入批量调用复用） */
-  insertWithinTx(input: CreateTransactionInput, extra: { importBatchId?: string; fingerprint?: string } = {}): string {
+  /** 校验入参并展开分录；返回分录与往来单位名称快照（新增与编辑共用） */
+  private prepare(input: CreateTransactionInput): {
+    lines: Array<{ accountId: string; amount: number }>;
+    counterpartyName: string;
+  } {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(input.occurredOn)) throw new AppError('日期格式应为 YYYY-MM-DD');
 
     const lines = buildLines(input);
@@ -115,6 +120,12 @@ export class TransactionService {
       if (!cp) throw new AppError('往来单位不存在或已删除', 404, 'NOT_FOUND');
       counterpartyName = cp.name;
     }
+    return { lines, counterpartyName };
+  }
+
+  /** 在已有事务内插入一笔交易（导入批量调用复用） */
+  insertWithinTx(input: CreateTransactionInput, extra: { importBatchId?: string; fingerprint?: string } = {}): string {
+    const { lines, counterpartyName } = this.prepare(input);
 
     const id = newId();
     const now = nowIso();
@@ -163,7 +174,6 @@ export class TransactionService {
   private buildFilter(q: TransactionQuery): { whereSql: string; params: unknown[] } {
     const where: string[] = [];
     const params: unknown[] = [];
-    if (!q.includeVoided) where.push("t.status = 'normal'");
     if (q.type) {
       where.push('t.type = ?');
       params.push(q.type);
@@ -210,10 +220,10 @@ export class TransactionService {
 
   /**
    * 按与 list 相同的筛选条件统计盈亏（忽略分页）：
-   * 收入合计、支出合计（正数）、盈亏 = 收入 − 支出。只统计未作废的收入/支出；借款/贷款是资金往来，不计入盈亏。
+   * 收入合计、支出合计（正数）、盈亏 = 收入 − 支出。只统计收入/支出；借款/贷款是资金往来，不计入盈亏。
    */
   summary(q: TransactionQuery = {}): { income: number; expense: number; profit: number; count: number } {
-    const { whereSql, params } = this.buildFilter({ ...q, includeVoided: false });
+    const { whereSql, params } = this.buildFilter(q);
     const extra = whereSql ? `${whereSql} AND` : 'WHERE';
     const row = this.db
       .prepare(
@@ -227,17 +237,110 @@ export class TransactionService {
       .get(...params) as { income: number; expense: number; count: number };
     return { income: row.income, expense: row.expense, profit: row.income - row.expense, count: row.count };
   }
-  /** 作废交易（不物理删除）。分录保留，仅不再计入余额。 */
-  void(id: string, reason = ''): Transaction {
-    const tx = this.get(id);
-    if (tx.status === 'voided') throw new AppError('交易已作废', 409, 'ALREADY_VOIDED');
+
+  /**
+   * 编辑流水（全部字段）：校验规则与新增一致；分录整体重写（金额/账户/类型可变），余额由流水实时推导。
+   * 审计里同时记录修改前后的内容。
+   */
+  update(id: string, input: CreateTransactionInput): Transaction {
+    const before = this.get(id);
+    this.assertNotProjectPosting(id);
+    const { lines, counterpartyName } = this.prepare(input);
     this.db.transaction(() => {
       this.db
-        .prepare("UPDATE tx SET status = 'voided', updated_at = ?, version = version + 1 WHERE id = ?")
-        .run(nowIso(), id);
-      writeAudit(this.db, this.deviceId, 'tx', id, 'void', { reason });
+        .prepare(
+          `UPDATE tx SET occurred_on = ?, type = ?, category_id = ?, counterparty_id = ?, counterparty = ?, note = ?,
+                  updated_at = ?, version = version + 1 WHERE id = ?`
+        )
+        .run(
+          input.occurredOn,
+          input.type,
+          input.categoryId ?? null,
+          input.counterpartyId ?? null,
+          counterpartyName,
+          input.note ?? '',
+          nowIso(),
+          id
+        );
+      this.db.prepare('DELETE FROM tx_line WHERE tx_id = ?').run(id);
+      const insertLine = this.db.prepare('INSERT INTO tx_line (id,tx_id,account_id,amount) VALUES (?,?,?,?)');
+      for (const l of lines) insertLine.run(newId(), id, l.accountId, l.amount);
+      writeAudit(this.db, this.deviceId, 'tx', id, 'update', {
+        before: {
+          occurredOn: before.occurredOn,
+          type: before.type,
+          categoryId: before.categoryId,
+          counterpartyId: before.counterpartyId,
+          note: before.note,
+          lines: before.lines.map((l) => ({ accountId: l.accountId, amount: l.amount }))
+        },
+        after: input
+      });
     })();
     return this.get(id);
+  }
+
+  /**
+   * 在调用方的事务内物理删除一笔流水：分录、附件记录、项目入账关联一并删除，写审计（审计保留删除前的内容）。
+   * 返回被删除附件在磁盘上的文件名，由调用方在事务提交后清理磁盘文件。
+   */
+  removeWithinTx(id: string): string[] {
+    const tx = this.get(id);
+    const files = (
+      this.db.prepare('SELECT stored_name FROM tx_attachment WHERE tx_id = ?').all(id) as Array<{ stored_name: string }>
+    ).map((r) => r.stored_name);
+    this.db.prepare('DELETE FROM project_posting WHERE tx_id = ?').run(id);
+    this.db.prepare('DELETE FROM tx_attachment WHERE tx_id = ?').run(id);
+    this.db.prepare('DELETE FROM tx_line WHERE tx_id = ?').run(id);
+    this.db.prepare('DELETE FROM tx WHERE id = ?').run(id);
+    writeAudit(this.db, this.deviceId, 'tx', id, 'delete', {
+      occurredOn: tx.occurredOn,
+      type: tx.type,
+      categoryId: tx.categoryId,
+      counterpartyId: tx.counterpartyId,
+      counterparty: tx.counterparty,
+      note: tx.note,
+      importBatchId: tx.importBatchId,
+      lines: tx.lines.map((l) => ({ accountId: l.accountId, amount: l.amount })),
+      attachments: tx.attachments.map((a) => ({ fileName: a.fileName, size: a.size }))
+    });
+    return files;
+  }
+
+  /**
+   * 由项目入账生成的流水（有未回退的 project_posting 关联）不能单独编辑/删除：
+   * 否则项目的「是/否」标记与账上金额会不一致。需要在项目里把对应字段切回「否」来回退入账。
+   * 只用于用户直接操作的入口；项目回退、导入撤销走 removeWithinTx，不受此限制。
+   */
+  private assertNotProjectPosting(id: string): void {
+    const linked = this.db.prepare('SELECT 1 FROM project_posting WHERE tx_id = ? AND active = 1').get(id);
+    if (linked) {
+      throw new AppError(
+        '该流水由项目入账自动生成，不能单独编辑或删除。请在项目中把对应字段切换为「否」回退入账',
+        409,
+        'TX_LINKED_TO_PROJECT'
+      );
+    }
+  }
+
+  /** 删除流水（物理删除）。磁盘上的附件文件在提交后清理（清理失败不影响删除结果）。 */
+  remove(id: string): void {
+    this.get(id); // 不存在时 404
+    this.assertNotProjectPosting(id);
+    const files = this.db.transaction(() => this.removeWithinTx(id))();
+    this.deleteFiles(files);
+  }
+
+  /** 清理磁盘文件（事务提交后调用）；文件已不存在等情况忽略 */
+  deleteFiles(storedNames: string[]): void {
+    if (!this.attachmentsDir) return;
+    for (const f of storedNames) {
+      try {
+        unlinkSync(join(this.attachmentsDir, f));
+      } catch {
+        /* ignore */
+      }
+    }
   }
 
   private hydrate(rows: TxRow[]): Transaction[] {
@@ -257,7 +360,7 @@ export class TransactionService {
       byTx.set(l.tx_id, arr);
     }
     const attachmentRows = this.db
-      .prepare(`SELECT * FROM tx_attachment WHERE tx_id IN (${placeholders}) ORDER BY created_at, rowid`)
+      .prepare(`SELECT * FROM tx_attachment WHERE tx_id IN (${placeholders}) AND deleted_at IS NULL ORDER BY created_at, rowid`)
       .all(...ids) as Array<Parameters<typeof toAttachment>[0]>;
     const attachmentsByTx = new Map<string, TransactionAttachment[]>();
     for (const a of attachmentRows) {
@@ -265,6 +368,10 @@ export class TransactionService {
       arr.push(toAttachment(a));
       attachmentsByTx.set(a.tx_id, arr);
     }
+    const linkedRows = this.db
+      .prepare(`SELECT DISTINCT tx_id FROM project_posting WHERE active = 1 AND tx_id IN (${placeholders})`)
+      .all(...ids) as Array<{ tx_id: string }>;
+    const linked = new Set(linkedRows.map((r) => r.tx_id));
     return rows.map((r) => ({
       id: r.id,
       occurredOn: r.occurred_on,
@@ -275,8 +382,8 @@ export class TransactionService {
       counterpartyId: r.counterparty_id,
       counterparty: r.counterparty,
       note: r.note,
-      status: r.status,
       importBatchId: r.import_batch_id,
+      linkedToProject: linked.has(r.id),
       lines: byTx.get(r.id) ?? [],
       attachments: attachmentsByTx.get(r.id) ?? [],
       createdAt: r.created_at,

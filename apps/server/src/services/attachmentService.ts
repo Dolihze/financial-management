@@ -90,14 +90,14 @@ export class AttachmentService {
     this.assertTxExists(txId);
     return (
       this.db
-        .prepare('SELECT * FROM tx_attachment WHERE tx_id = ? ORDER BY created_at, rowid')
+        .prepare('SELECT * FROM tx_attachment WHERE tx_id = ? AND deleted_at IS NULL ORDER BY created_at, rowid')
         .all(txId) as AttachmentRow[]
     ).map(toAttachment);
   }
 
   /**
    * 给流水添加一个附件：先把文件落盘，再在事务里写元数据与审计；元数据写失败时删除刚落盘的文件，
-   * 保证不会留下「库里有记录但没有文件」的坏数据。作废的流水也允许补传凭证。
+   * 保证不会留下「库里有记录但没有文件」的坏数据。
    */
   add(txId: string, file: { fileName: string; mimeType: string; data: Buffer }): TransactionAttachment {
     this.assertTxExists(txId);
@@ -105,7 +105,7 @@ export class AttachmentService {
     if (file.data.length > MAX_ATTACHMENT_BYTES) {
       throw new AppError(`文件过大，单个文件不能超过 ${MAX_ATTACHMENT_BYTES / 1024 / 1024} MB`, 413, 'FILE_TOO_LARGE');
     }
-    const count = (this.db.prepare('SELECT COUNT(*) AS c FROM tx_attachment WHERE tx_id = ?').get(txId) as { c: number }).c;
+    const count = (this.db.prepare('SELECT COUNT(*) AS c FROM tx_attachment WHERE tx_id = ? AND deleted_at IS NULL').get(txId) as { c: number }).c;
     if (count >= MAX_ATTACHMENTS_PER_TX) {
       throw new AppError(`一笔流水最多上传 ${MAX_ATTACHMENTS_PER_TX} 个文件`, 400, 'TOO_MANY_ATTACHMENTS');
     }
@@ -139,14 +139,27 @@ export class AttachmentService {
   }
 
   get(id: string): TransactionAttachment {
-    const row = this.db.prepare('SELECT * FROM tx_attachment WHERE id = ?').get(id) as AttachmentRow | undefined;
+    const row = this.db.prepare('SELECT * FROM tx_attachment WHERE id = ? AND deleted_at IS NULL').get(id) as AttachmentRow | undefined;
     if (!row) throw new AppError('文件不存在', 404, 'NOT_FOUND');
     return toAttachment(row);
   }
 
+  /**
+   * 「删除」流水文件 = 软删除（与批次文件一致）：只标记 deleted_at 并写审计，记录与磁盘文件保留。
+   * 之后列表、下载都不再返回它，也不占用「最多 20 个」的名额。整笔流水被删除时才会连文件一并清理。
+   */
+  remove(id: string): TransactionAttachment {
+    const cur = this.get(id);
+    this.db.transaction(() => {
+      this.db.prepare('UPDATE tx_attachment SET deleted_at = ? WHERE id = ?').run(nowIso(), id);
+      writeAudit(this.db, this.deviceId, 'tx', cur.txId, 'detach', { attachmentId: id, fileName: cur.fileName, size: cur.size });
+    })();
+    return cur;
+  }
+
   /** 打开文件内容用于下载/预览：返回元数据、读取流与是否可内联预览 */
   open(id: string): { meta: TransactionAttachment; stream: NodeJS.ReadableStream; inline: boolean } {
-    const row = this.db.prepare('SELECT * FROM tx_attachment WHERE id = ?').get(id) as AttachmentRow | undefined;
+    const row = this.db.prepare('SELECT * FROM tx_attachment WHERE id = ? AND deleted_at IS NULL').get(id) as AttachmentRow | undefined;
     if (!row) throw new AppError('文件不存在', 404, 'NOT_FOUND');
     const path = this.pathOf(row.stored_name);
     if (!existsSync(path)) throw new AppError('文件已丢失（磁盘上找不到该文件）', 404, 'FILE_MISSING');

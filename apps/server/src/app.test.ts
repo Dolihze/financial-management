@@ -593,8 +593,8 @@ describe('项目管理（Excel 导入）', () => {
     };
     const balance = async (accId: string) => ((await ctx.app.inject({ url: `/api/accounts/${accId}` })).json() as { balance: number }).balance;
     const txOf = async (accId: string) =>
-      ((await ctx.app.inject({ url: `/api/transactions?accountId=${accId}&includeVoided=true&limit=100` })).json() as {
-        items: Array<{ id: string; type: string; status: string; lines: Array<{ amount: number }>; note: string }>;
+      ((await ctx.app.inject({ url: `/api/transactions?accountId=${accId}&limit=100` })).json() as {
+        items: Array<{ id: string; type: string; lines: Array<{ amount: number }>; note: string }>;
       }).items;
 
     it('否 -> 是：企信收到钱记收入、支付下家/陈沛记支出，金额取对应列，余额随之变化', async () => {
@@ -642,7 +642,7 @@ describe('项目管理（Excel 导入）', () => {
       expect(items[0]!.lines[0]!.amount).toBe(-5_000);
     });
 
-    it('是 -> 否：作废对应流水（不物理删除），余额回退，其他字段的流水不受影响', async () => {
+    it('是 -> 否：删除对应流水（物理删除，写审计），余额回退，其他字段的流水不受影响', async () => {
       const { acc, id } = await setup();
       await patch(id, full({ qxMoneyReceived: true, paidSubcontractor: true, postingAccountId: acc }));
       expect(await balance(acc)).toBe(1_000_000 + 80_000 - 40_000);
@@ -653,12 +653,31 @@ describe('项目管理（Excel 导入）', () => {
       expect(await balance(acc)).toBe(1_000_000 - 40_000); // 收入回退，支出保留
 
       const txs = await txOf(acc);
-      expect(txs).toHaveLength(2); // 流水还在
-      expect(txs.find((t) => t.type === 'income')!.status).toBe('voided'); // 只是作废
-      expect(txs.find((t) => t.type === 'expense')!.status).toBe('normal');
-      const link = ctx.db.prepare("SELECT active, reverted_at AS r FROM project_posting WHERE project_id=? AND kind='qx_received'").get(id) as { active: number; r: string | null };
-      expect(link.active).toBe(0);
-      expect(link.r).not.toBeNull();
+      expect(txs).toHaveLength(1); // 收入流水已被删除，只剩支出
+      expect(txs[0]!.type).toBe('expense');
+      expect(ctx.db.prepare("SELECT COUNT(*) AS n FROM project_posting WHERE project_id=? AND kind='qx_received'").get(id)).toEqual({ n: 0 });
+      expect(ctx.db.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE entity='tx' AND action='delete'").get()).toEqual({ n: 1 });
+    });
+
+    it('项目入账生成的流水不能单独编辑/删除（409 TX_LINKED_TO_PROJECT）；回退后项目状态与流水一致', async () => {
+      const { acc, id } = await setup();
+      await patch(id, full({ paidSubcontractor: true, postingAccountId: acc }));
+      const [tx] = await txOf(acc);
+      expect((await ctx.app.inject({ url: `/api/transactions/${tx!.id}` })).json()).toMatchObject({ linkedToProject: true });
+      const body = { occurredOn: '2026-01-10', type: 'expense', amount: 1, accountId: acc };
+
+      const edit = await patchJson(`/api/transactions/${tx!.id}`, body);
+      expect(edit.statusCode).toBe(409);
+      expect(edit.json()).toMatchObject({ code: 'TX_LINKED_TO_PROJECT' });
+      expect((await delJson(`/api/transactions/${tx!.id}`)).statusCode).toBe(409);
+      expect(await balance(acc)).toBe(1_000_000 - 40_000); // 都没改动
+      expect(await txOf(acc)).toHaveLength(1);
+
+      // 在项目里回退后，流水才被删除，项目状态同步
+      const res = await patch(id, full({ paidSubcontractor: false }));
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ paidSubcontractor: false, postedKinds: [] });
+      expect(await txOf(acc)).toHaveLength(0);
     });
 
     it('回退后可再次入账，且按当时的金额重新生成一笔新流水', async () => {
@@ -669,8 +688,8 @@ describe('项目管理（Excel 导入）', () => {
       await patch(id, full({ qxMoneyReceived: true, qxReceived: 90_000, postingAccountId: acc }));
       expect(await balance(acc)).toBe(1_000_000 + 90_000);
       const txs = await txOf(acc);
-      expect(txs).toHaveLength(2);
-      expect(txs.filter((t) => t.status === 'normal').map((t) => t.lines[0]!.amount)).toEqual([90_000]);
+      expect(txs).toHaveLength(1); // 回退时旧流水已删除，只有重新入账的这一笔
+      expect(txs.map((t) => t.lines[0]!.amount)).toEqual([90_000]);
     });
 
     it('缺少入账账户 / 金额为 0 / 账户已归档：拒绝，且项目与流水都不变（原子性）', async () => {
@@ -1573,7 +1592,7 @@ describe('账户类型限制', () => {
 });
 
 describe('流水盈亏统计', () => {
-  it('按与列表相同的筛选条件统计全部命中数据（不受分页影响）：盈亏 = 收入 − 支出，借贷与作废不计入', async () => {
+  it('按与列表相同的筛选条件统计全部命中数据（不受分页影响）：盈亏 = 收入 − 支出，借贷不计入', async () => {
     const a = await makeAccount('甲');
     const b = await makeAccount('乙');
     await post('/api/transactions', { occurredOn: '2026-11-01', type: 'income', amount: 100_000, accountId: a.id });
@@ -1582,16 +1601,15 @@ describe('流水盈亏统计', () => {
     await post('/api/transactions', { occurredOn: '2026-12-01', type: 'expense', amount: 200_000, accountId: a.id });
     await post('/api/transactions', { occurredOn: '2026-11-04', type: 'loan', amount: 900_000, accountId: a.id });
     await post('/api/transactions', { occurredOn: '2026-11-05', type: 'borrow', amount: 700_000, accountId: a.id });
-    const voided = (await post('/api/transactions', { occurredOn: '2026-11-06', type: 'income', amount: 12_345, accountId: a.id })).json() as { id: string };
-    await post(`/api/transactions/${voided.id}/void`, { reason: '测试' });
+    // 已删除的流水不计入盈亏
+    const removed = (await post('/api/transactions', { occurredOn: '2026-11-06', type: 'income', amount: 12_345, accountId: a.id })).json() as { id: string };
+    expect((await delJson(`/api/transactions/${removed.id}`)).statusCode).toBe(200);
 
     const get = async (qs = '') => (await ctx.app.inject({ url: `/api/transactions/summary${qs}` })).json() as { income: number; expense: number; profit: number; count: number };
 
     expect(await get()).toEqual({ income: 150_050, expense: 230_025, profit: -79_975, count: 4 });
     // 分页参数不影响统计
     expect(await get('?limit=1&offset=2')).toMatchObject({ income: 150_050, expense: 230_025 });
-    // 勾选「显示已作废」也不把作废流水计入盈亏
-    expect(await get('?includeVoided=true')).toMatchObject({ income: 150_050, profit: -79_975 });
     // 日期、账户、类型筛选
     expect(await get('?from=2026-11-01&to=2026-11-30')).toEqual({ income: 150_050, expense: 30_025, profit: 120_025, count: 3 });
     expect(await get(`?accountId=${b.id}`)).toEqual({ income: 50_050, expense: 0, profit: 50_050, count: 1 });
@@ -1602,7 +1620,7 @@ describe('流水盈亏统计', () => {
   });
 });
 describe('总览：指定时间段统计', () => {
-  it('统计时间段（含首尾）内的收入/支出及按分类、往来单位的去向；借贷与作废不计入', async () => {
+  it('统计时间段（含首尾）内的收入/支出及按分类、往来单位的去向；借贷不计入，已删除的流水不计入', async () => {
     const a = await makeAccount('甲');
     const cats = (await ctx.app.inject({ url: '/api/categories' })).json() as Array<{ id: string; name: string; kind: string }>;
     const exp1 = cats.find((c) => c.kind === 'expense')!;
@@ -1617,8 +1635,8 @@ describe('总览：指定时间段统计', () => {
     await tx({ occurredOn: '2026-11-20', type: 'income', amount: 80_000, categoryId: inc1.id });
     await tx({ occurredOn: '2026-11-21', type: 'loan', amount: 900_000 });
     await tx({ occurredOn: '2026-11-22', type: 'borrow', amount: 800_000 });
-    const voided = (await tx({ occurredOn: '2026-11-10', type: 'expense', amount: 999_999, categoryId: exp1.id })).json() as { id: string };
-    await post(`/api/transactions/${voided.id}/void`, { reason: '测试' });
+    const removed = (await tx({ occurredOn: '2026-11-10', type: 'expense', amount: 999_999, categoryId: exp1.id })).json() as { id: string };
+    expect((await delJson(`/api/transactions/${removed.id}`)).statusCode).toBe(200);
 
     type Period = {
       income: number; expense: number; profit: number; count: number;
@@ -1704,19 +1722,77 @@ describe('账户与余额', () => {
     expect((await post('/api/transactions', { occurredOn: '2026-01-10', type: 'loan', amount: 100 })).statusCode).toBe(400);
   });
 
-  it('作废交易后余额回退，且记录仍保留', async () => {
+  it('删除交易：物理删除，余额回退，分录一并删除，写审计；不存在的交易 404；作废接口已移除', async () => {
     const a = await makeAccount('银行A', 0);
     const tx = (await post('/api/transactions', { occurredOn: '2026-01-10', type: 'income', amount: 8_800, accountId: a.id })).json() as { id: string };
+    expect((await ctx.app.inject({ url: `/api/accounts/${a.id}` })).json()).toMatchObject({ balance: 8_800 });
 
-    const voided = await post(`/api/transactions/${tx.id}/void`, { reason: '录错' });
-    expect(voided.statusCode).toBe(200);
+    const res = await delJson(`/api/transactions/${tx.id}`);
+    expect(res.statusCode).toBe(200);
     expect((await ctx.app.inject({ url: `/api/accounts/${a.id}` })).json()).toMatchObject({ balance: 0 });
-
-    const withVoided = (await ctx.app.inject({ url: '/api/transactions?includeVoided=true' })).json() as { total: number };
-    expect(withVoided.total).toBe(1);
     expect(((await ctx.app.inject({ url: '/api/transactions' })).json() as { total: number }).total).toBe(0);
+    expect((await ctx.app.inject({ url: `/api/transactions/${tx.id}` })).statusCode).toBe(404);
+    expect(ctx.db.prepare('SELECT COUNT(*) AS n FROM tx').get()).toEqual({ n: 0 });
+    expect(ctx.db.prepare('SELECT COUNT(*) AS n FROM tx_line').get()).toEqual({ n: 0 });
+    // 审计保留删除前的内容
+    const audit = ctx.db.prepare("SELECT payload FROM audit_log WHERE entity='tx' AND action='delete' AND entity_id=?").get(tx.id) as { payload: string };
+    expect(JSON.parse(audit.payload)).toMatchObject({ type: 'income', lines: [{ amount: 8_800 }] });
 
-    expect((await post(`/api/transactions/${tx.id}/void`, {})).statusCode).toBe(409);
+    expect((await delJson(`/api/transactions/${tx.id}`)).statusCode).toBe(404);
+    expect((await post(`/api/transactions/${tx.id}/void`, {})).statusCode).toBe(404);
+  });
+
+  describe('编辑交易', () => {
+    const create = async (accountId: string, over: object = {}) =>
+      (await post('/api/transactions', { occurredOn: '2026-01-10', type: 'expense', amount: 5_000, accountId, ...over })).json() as { id: string };
+    const balance = async (id: string) => ((await ctx.app.inject({ url: `/api/accounts/${id}` })).json() as { balance: number }).balance;
+
+    it('可修改全部字段：类型/金额/账户/日期/分类/往来单位/备注；分录重写，余额随之变化，写含前后内容的审计', async () => {
+      const a = await makeAccount('银行A', 100_000);
+      const b = await makeAccount('银行B', 0);
+      const cp = (await post('/api/counterparties', { name: '甲公司' })).json() as { id: string; name: string };
+      const tx = await create(a.id);
+      expect(await balance(a.id)).toBe(95_000);
+
+      const res = await patchJson(`/api/transactions/${tx.id}`, {
+        occurredOn: '2026-02-03', type: 'income', amount: 12_300, accountId: b.id, counterpartyId: cp.id, note: '改成收入'
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({
+        id: tx.id, occurredOn: '2026-02-03', type: 'income', counterpartyId: cp.id, counterparty: '甲公司', note: '改成收入',
+        lines: [{ accountId: b.id, amount: 12_300 }]
+      });
+      expect(await balance(a.id)).toBe(100_000); // 原账户恢复
+      expect(await balance(b.id)).toBe(12_300);
+      expect(ctx.db.prepare('SELECT COUNT(*) AS n FROM tx_line WHERE tx_id = ?').get(tx.id)).toEqual({ n: 1 });
+      expect((await ctx.app.inject({ url: '/api/transactions/summary' })).json()).toMatchObject({ income: 12_300, expense: 0 });
+
+      const audit = ctx.db.prepare("SELECT payload FROM audit_log WHERE entity='tx' AND action='update' AND entity_id=?").get(tx.id) as { payload: string };
+      expect(JSON.parse(audit.payload)).toMatchObject({
+        before: { type: 'expense', lines: [{ accountId: a.id, amount: -5_000 }] },
+        after: { type: 'income', amount: 12_300 }
+      });
+    });
+
+    it('校验与新增一致：金额须为正整数分、账户已归档/不存在、日期格式、往来单位；交易不存在 404；失败时原数据不变', async () => {
+      const a = await makeAccount('银行A', 0);
+      const old = await makeAccount('旧账户', 0);
+      await post(`/api/accounts/${old.id}/archive`, {});
+      const tx = await create(a.id);
+      const body = { occurredOn: '2026-01-10', type: 'expense', amount: 5_000, accountId: a.id };
+
+      expect((await patchJson(`/api/transactions/${tx.id}`, { ...body, amount: 12.5 })).statusCode).toBe(400);
+      expect((await patchJson(`/api/transactions/${tx.id}`, { ...body, amount: 0 })).statusCode).toBe(400);
+      expect((await patchJson(`/api/transactions/${tx.id}`, { ...body, occurredOn: '2026/01/10' })).statusCode).toBe(400);
+      expect((await patchJson(`/api/transactions/${tx.id}`, { ...body, accountId: old.id })).statusCode).toBe(400);
+      expect((await patchJson(`/api/transactions/${tx.id}`, { ...body, accountId: 'nope' })).statusCode).toBe(404);
+      expect((await patchJson(`/api/transactions/${tx.id}`, { ...body, counterpartyId: 'nope' })).statusCode).toBe(404);
+      expect((await patchJson(`/api/transactions/${tx.id}`, { ...body, type: 'transfer' })).statusCode).toBe(400);
+      expect((await patchJson('/api/transactions/nope', body)).statusCode).toBe(404);
+
+      expect(await balance(a.id)).toBe(-5_000); // 都没改动
+      expect(ctx.db.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE action='update' AND entity='tx'").get()).toEqual({ n: 0 });
+    });
   });
 
   it('校验：金额必须为正整数分，余额非 0 不能归档', async () => {
@@ -1764,6 +1840,12 @@ describe('Excel 导入', () => {
     const revert = await post(`/api/imports/${batch.id}/revert`, {});
     expect(revert.statusCode).toBe(200);
     expect((await ctx.app.inject({ url: `/api/accounts/${acc.id}` })).json()).toMatchObject({ balance: 30_000 });
+    // 撤销 = 物理删除该批次的流水，导入批次记录保留为「已撤销」
+    expect(ctx.db.prepare('SELECT COUNT(*) AS n FROM tx WHERE import_batch_id = ?').get(batch.id)).toEqual({ n: 0 });
+    expect(ctx.db.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE entity='tx' AND action='delete'").get()).toEqual({ n: 2 });
+    expect(ctx.db.prepare('SELECT status FROM import_batch WHERE id = ?').get(batch.id)).toEqual({ status: 'reverted' });
+    // 已撤销的批次不能重复撤销
+    expect((await post(`/api/imports/${batch.id}/revert`, {})).statusCode).toBe(409);
   });
 
   it('有错误行时拒绝导入且不写入任何数据', async () => {
@@ -1784,6 +1866,7 @@ describe('Excel 导入', () => {
 async function patchJson(url: string, payload: unknown) {
   return ctx.app.inject({ method: 'PATCH', url, payload: payload as object });
 }
+const delJson = (url: string) => ctx.app.inject({ method: 'DELETE', url });
 
 describe('收入分类管理', () => {
   const incomeCats = async () =>
@@ -1870,20 +1953,19 @@ describe('删除收入分类（归档式）', () => {
     expect((await patchJson(`/api/categories/${cat.id}`, { name: 'x' })).statusCode).toBe(404);
   });
 
-  it('已被流水使用的分类删除后，流水（含已作废）改挂「其他收入」，余额不变', async () => {
+  it('已被流水使用的分类删除后，流水改挂「其他收入」，余额不变', async () => {
     const a = await makeAccount('银行A', 0);
     const cat = (await post('/api/categories', { name: '咨询收入', kind: 'income' })).json() as { id: string };
-    const t1 = (await post('/api/transactions', { occurredOn: '2026-01-10', type: 'income', amount: 100, accountId: a.id, categoryId: cat.id })).json() as { id: string };
+    await post('/api/transactions', { occurredOn: '2026-01-10', type: 'income', amount: 100, accountId: a.id, categoryId: cat.id });
     await post('/api/transactions', { occurredOn: '2026-01-11', type: 'income', amount: 200, accountId: a.id, categoryId: cat.id });
-    await post(`/api/transactions/${t1.id}/void`, {});
 
     expect((await incomeCats()).find((c) => c.id === cat.id)!.usageCount).toBe(2);
     const res = await del(cat.id);
     expect(res.json()).toEqual({ movedTransactions: 2 });
 
-    const items = ((await ctx.app.inject({ url: '/api/transactions?includeVoided=true' })).json() as { items: Array<{ categoryName: string }> }).items;
+    const items = ((await ctx.app.inject({ url: '/api/transactions' })).json() as { items: Array<{ categoryName: string }> }).items;
     expect(items.map((i) => i.categoryName)).toEqual(['其他收入', '其他收入']);
-    expect(((await ctx.app.inject({ url: `/api/accounts/${a.id}` })).json() as { balance: number }).balance).toBe(200);
+    expect(((await ctx.app.inject({ url: `/api/accounts/${a.id}` })).json() as { balance: number }).balance).toBe(300);
   });
 
   it('内置分类不可删除；不存在的分类 404', async () => {

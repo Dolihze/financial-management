@@ -58,9 +58,10 @@ export class ImportService {
 
   constructor(
     private readonly db: Db,
-    private readonly deviceId: string
+    private readonly deviceId: string,
+    attachmentsDir?: string
   ) {
-    this.txService = new TransactionService(db, deviceId);
+    this.txService = new TransactionService(db, deviceId, attachmentsDir);
     this.categories = new CategoryService(db, deviceId);
     this.counterparties = new CounterpartyService(db, deviceId);
   }
@@ -149,7 +150,7 @@ export class ImportService {
 
   private existingFingerprints(fps: string[]): Set<string> {
     const found = new Set<string>();
-    const stmt = this.db.prepare("SELECT 1 FROM tx WHERE fingerprint = ? AND status = 'normal' LIMIT 1");
+    const stmt = this.db.prepare('SELECT 1 FROM tx WHERE fingerprint = ? LIMIT 1');
     for (const fp of fps) if (stmt.get(fp)) found.add(fp);
     return found;
   }
@@ -202,17 +203,18 @@ export class ImportService {
     return this.getBatch(batchId);
   }
 
-  /** 撤销整批导入：批内所有交易作废（不物理删除） */
+  /** 撤销整批导入：批内所有交易删除（物理删除，逐笔写审计），导入批次记录保留并标记为已撤销 */
   revert(batchId: string): ImportBatch {
     const batch = this.getBatch(batchId);
     if (batch.status === 'reverted') throw new AppError('该批次已撤销', 409, 'ALREADY_REVERTED');
+    const files: string[] = [];
     this.db.transaction(() => {
-      this.db
-        .prepare("UPDATE tx SET status='voided', updated_at=?, version=version+1 WHERE import_batch_id=? AND status='normal'")
-        .run(nowIso(), batchId);
+      const ids = this.db.prepare('SELECT id FROM tx WHERE import_batch_id = ?').all(batchId) as Array<{ id: string }>;
+      for (const { id } of ids) files.push(...this.txService.removeWithinTx(id));
       this.db.prepare("UPDATE import_batch SET status='reverted' WHERE id=?").run(batchId);
-      writeAudit(this.db, this.deviceId, 'import_batch', batchId, 'revert');
+      writeAudit(this.db, this.deviceId, 'import_batch', batchId, 'revert', { deleted: ids.length });
     })();
+    this.txService.deleteFiles(files);
     return this.getBatch(batchId);
   }
 

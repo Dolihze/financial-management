@@ -6,7 +6,7 @@
 
 - 金额一律「整数分」，只用 `@fm/shared` 的 `toCents/fromCents/formatMoney` 转换；不要在任何地方用浮点做金额运算。
 - 余额由流水推导，不要新增存储余额的列。
-- 不物理删除财务数据：交易「作废」、账户「归档」；写操作需同时 `writeAudit`。
+- 删除规则：交易「删除」是物理删除（用 `TransactionService.remove/removeWithinTx`，分录/附件/项目入账关联一并删除，删除前内容写入审计）；账户、合同、批次、项目只「归档」；附件「删除」是软删除（`deleted_at`）。由项目入账生成的流水不能单独编辑/删除（只能在项目里切回「否」回退）。写操作需同时 `writeAudit`。`tx.status` 列已不再使用（恒为 `normal`），不要再引入「作废」概念。
 - `apps/server/src/db/migrations.ts` 只追加新 version，不修改已有迁移。
 - 新增/修改接口需在 `apps/server/src/app.test.ts`（或同目录新测试）补测试。
 - 前端不直接写 fetch，统一走 `apps/desktop/src/api/`。

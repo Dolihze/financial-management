@@ -39,7 +39,6 @@ export interface TransactionFilter {
   from?: string;
   to?: string;
   keyword?: string;
-  includeVoided?: boolean;
   limit?: number;
   offset?: number;
 }
@@ -141,23 +140,20 @@ export const api = {
 
   transactions: {
     list: (filter: TransactionFilter = {}) =>
-      get<{ items: Transaction[]; total: number }>('/api/transactions', {
-        ...filter,
-        includeVoided: filter.includeVoided ? 'true' : undefined
-      }),
+      get<{ items: Transaction[]; total: number }>('/api/transactions', { ...filter }),
     /** 与 list 同样的筛选条件（忽略分页）下的收入/支出/盈亏合计，单位：分 */
     summary: (filter: TransactionFilter = {}) =>
-      get<TransactionSummary>('/api/transactions/summary', {
-        ...filter,
-        limit: undefined,
-        offset: undefined,
-        includeVoided: filter.includeVoided ? 'true' : undefined
-      }),
+      get<TransactionSummary>('/api/transactions/summary', { ...filter, limit: undefined, offset: undefined }),
     create: (body: CreateTransactionInput) => post<Transaction>('/api/transactions', body),
-    void: (id: string, reason?: string) => post<Transaction>(`/api/transactions/${id}/void`, { reason }),
+    /** 编辑：全部字段整体提交；附件的增删走 removeAttachment / addAttachment */
+    update: (id: string, body: CreateTransactionInput) => patch<Transaction>(`/api/transactions/${id}`, body),
+    /** 删除：后端物理删除（分录、附件一并删除） */
+    remove: (id: string) => del<{ ok: boolean }>(`/api/transactions/${id}`),
     /** 给流水上传一个相关文件（图片/PDF/其他），单个不超过 20 MB */
     addAttachment: (txId: string, file: File) =>
-      upload<TransactionAttachment>(`/api/transactions/${txId}/attachments`, file)
+      upload<TransactionAttachment>(`/api/transactions/${txId}/attachments`, file),
+    /** 「删除」文件：后端只做软删除（保留记录与磁盘文件），列表中不再出现 */
+    removeAttachment: (id: string) => post<TransactionAttachment>(`/api/attachments/${id}/remove`)
   },
 
   attachments: {

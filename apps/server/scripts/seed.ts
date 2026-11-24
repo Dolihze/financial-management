@@ -105,9 +105,6 @@ const SUPPLIERS = ['东莞精工五金', '宁波鑫达包装', '佛山永盛材�
 const STAFF = ['张伟', '王芳', '李娜', '刘洋', '陈静', '杨磊', '赵敏', '黄涛'];
 const CITIES = ['上海', '深圳', '北京', '成都', '杭州', '西安'];
 
-/** 固定月度支出（房租/工资等），作废环节需要排除它们；入库后摘要已移除，故按对象引用标记 */
-const fixedPlanned = new WeakSet<CreateTransactionInput>();
-
 type Kind = 'income' | 'expense';
 interface Template {
   kind: Kind;
@@ -256,7 +253,6 @@ async function main() {
         occurredOn: day(f.d), type: 'expense', amount: f.yuan * 100,
         accountId: A(f.acc), categoryId: catId.get(`expense:${f.cat}`) ?? null, counterpartyId: CP(f.who)
       };
-      fixedPlanned.add(tx);
       planned.push(tx);
     }
   }
@@ -319,37 +315,19 @@ async function main() {
   }
 
   // 3) 入库（整批一个事务，速度快且要么全成功）
-  const created: string[] = [];
   db.transaction(() => {
-    for (const p of ensured) created.push(txs.insertWithinTx(p));
+    for (const p of ensured) txs.insertWithinTx(p);
   })();
 
-  // 4) 几笔作废（演示"作废不删除"）。
-  //    只挑随机产生的日常收支：固定的月度支出（房租/工资/社保/税费/云服务）作废后该月会缺项，数据不自洽；
-  //    借款/贷款作废也不在这里演示（用于防透支的补充贷款作废会让余额变负）。
-  //    原因按收入/支出区分，保证"原因"与交易本身讲得通。
-  const voidable = created.filter((_, i) => {
-    const p = ensured[i]!;
-    return (p.type === 'income' || p.type === 'expense') && !fixedPlanned.has(p);
-  });
-  const expenseVoidReasons = ['重复录入', '金额录错', '供应商退款冲回'];
-  const incomeVoidReasons = ['重复录入', '客户退款冲回', '对方未实际付款'];
-  const voidCount = Math.min(6, Math.max(2, Math.floor(voidable.length / 30)), voidable.length);
-  for (let i = 0; i < voidCount; i++) {
-    const id = voidable[Math.floor(((i + 1) * voidable.length) / (voidCount + 1))]!;
-    const src = ensured[created.indexOf(id)]!;
-    txs.void(id, r.pick(src.type === 'income' ? incomeVoidReasons : expenseVoidReasons));
-  }
-
-  // 5) 归档一个零余额的旧账户，演示"归档"（不影响总览）
+  // 4) 归档一个零余额的旧账户，演示"归档"（不影响总览）
   const old = accounts.create({ name: '原中国银行账户（已销户）', type: 'bank', bankName: '中国银行杭州分行', accountNo: '368900000099001122', openingBalance: 0, note: '2024 年销户' });
   accounts.archive(old.id);
 
   // 汇总
   const list = accounts.list();
-  const all = txs.list({ includeVoided: true, limit: 1 });
+  const all = txs.list({ limit: 1 });
   console.log(`\n演示库: ${opt.db}`);
-  console.log(`种子=${opt.seed}  时间跨度=${opt.months} 个月  流水=${all.total} 笔（含 ${voidCount} 笔手工作废）\n`);
+  console.log(`种子=${opt.seed}  时间跨度=${opt.months} 个月  流水=${all.total} 笔\n`);
   console.log('账户余额：');
   for (const a of list) console.log(`  ${a.name.padEnd(14, '　')} ${(a.balance / 100).toFixed(2).padStart(14)} 元`);
   const total = list.reduce((s, a) => s + a.balance, 0);

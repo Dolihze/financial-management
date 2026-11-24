@@ -23,7 +23,6 @@ const querySchema = z.object({
   from: dateSchema.optional(),
   to: dateSchema.optional(),
   keyword: z.string().optional(),
-  includeVoided: z.enum(['true', 'false']).optional(),
   limit: z.coerce.number().int().min(1).max(500).optional(),
   offset: z.coerce.number().int().min(0).optional()
 });
@@ -31,13 +30,13 @@ const querySchema = z.object({
 export function registerTransactionRoutes(app: FastifyInstance, { transactions }: Services): void {
   app.get('/api/transactions', async (req) => {
     const q = querySchema.parse(req.query);
-    return transactions.list({ ...q, includeVoided: q.includeVoided === 'true' });
+    return transactions.list(q);
   });
 
   // 与列表相同的筛选条件，返回全部命中数据（不分页）的盈亏统计
   app.get('/api/transactions/summary', async (req) => {
     const q = querySchema.parse(req.query);
-    return transactions.summary({ ...q, includeVoided: q.includeVoided === 'true' });
+    return transactions.summary(q);
   });
 
   app.get('/api/transactions/:id', async (req) => transactions.get((req.params as { id: string }).id));
@@ -46,8 +45,14 @@ export function registerTransactionRoutes(app: FastifyInstance, { transactions }
     reply.status(201).send(transactions.create(createSchema.parse(req.body)))
   );
 
-  app.post('/api/transactions/:id/void', async (req) => {
-    const { reason } = z.object({ reason: z.string().max(200).optional() }).parse(req.body ?? {});
-    return transactions.void((req.params as { id: string }).id, reason);
+  // 编辑：全部字段整体提交（与新增同一套校验）；附件的增删走附件接口
+  app.patch('/api/transactions/:id', async (req) =>
+    transactions.update((req.params as { id: string }).id, createSchema.parse(req.body))
+  );
+
+  // 删除：物理删除（分录、附件一并删除），写审计
+  app.delete('/api/transactions/:id', async (req) => {
+    transactions.remove((req.params as { id: string }).id);
+    return { ok: true };
   });
 }

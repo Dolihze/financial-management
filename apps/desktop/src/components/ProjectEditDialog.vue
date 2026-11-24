@@ -136,7 +136,7 @@ const dirty = computed(() => {
 /**
  * 切换 是/否 时的二次确认：
  * - 切到「是」：提示会入账（生成一笔流水），并让用户选择入账账户（账户必填）；
- * - 切到「否」：若该字段已入账，提示会从账单中回退（对应流水作废）；
+ * - 切到「否」：若该字段已入账，提示会从账单中回退（对应流水删除）；
  *   若只是历史标记（无流水，如 Excel 导入的「是」），提示只修改标记、不影响账务。
  * 这里只确认并改表单，真正的入账/回退在点「保存」时由后端在同一事务里完成。
  */
@@ -201,7 +201,7 @@ async function confirmFlag(flag: ToggleKey, next: boolean): Promise<boolean> {
       });
     } else if (isPosted(flag)) {
       await ElMessageBox.confirm(
-        `切换为「否」并保存后，之前入账的这笔${meta.direction}（${amountText}）会从账单中回退（对应流水作废，账户余额随之恢复）。请确认不是误操作。`,
+        `切换为「否」并保存后，之前入账的这笔${meta.direction}（${amountText}）会从账单中回退（对应流水被删除，账户余额随之恢复）。请确认不是误操作。`,
         `确认切换「${meta.label}」为「否」？`,
         { type: 'warning', confirmButtonText: '确认切换', cancelButtonText: '取消' }
       );

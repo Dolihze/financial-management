@@ -575,6 +575,46 @@ describe('迁移 v5：支出分类收敛为 7 个内置默认项', () => {
     db.close();
   });
 
+  it('迁移 v23：tx_attachment 新增 deleted_at；历史上已作废的流水连同分录/附件/入账关联被清理，正常流水不受影响', () => {
+    const db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    migrateTo(db, 22);
+    const now = '2026-01-01T00:00:00.000Z';
+    db.prepare(`INSERT INTO account (id,name,type,created_at,updated_at,device_id) VALUES ('a1','A','bank',?,?,'d')`).run(now, now);
+    const insTx = db.prepare(`INSERT INTO tx (id,occurred_on,type,summary,status,created_at,updated_at,device_id) VALUES (?,?,?,?,?,?,?,'d')`);
+    insTx.run('ok', '2026-01-02', 'income', '', 'normal', now, now);
+    insTx.run('bad', '2026-01-03', 'income', '', 'voided', now, now);
+    const insLine = db.prepare('INSERT INTO tx_line (id,tx_id,account_id,amount) VALUES (?,?,?,?)');
+    insLine.run('l1', 'ok', 'a1', 100);
+    insLine.run('l2', 'bad', 'a1', 200);
+    const insAtt = db.prepare(
+      `INSERT INTO tx_attachment (id,tx_id,file_name,stored_name,mime_type,size,created_at,device_id) VALUES (?,?,?,?,?,?,?,'d')`
+    );
+    insAtt.run('f1', 'ok', 'a.png', 'f1.png', 'image/png', 3, now);
+    insAtt.run('f2', 'bad', 'b.png', 'f2.png', 'image/png', 3, now);
+    db.prepare(`INSERT INTO project (id,contract_no,name,archived,created_at,updated_at,device_id) VALUES ('p1','','P',0,?,?,'d')`).run(now, now);
+    db.prepare(`INSERT INTO project_posting (id,project_id,kind,tx_id,active,created_at,reverted_at) VALUES ('pp1','p1','qx_received','bad',0,?,?)`).run(now, now);
+
+    migrateTo(db, 23, 22);
+    expect(db.prepare('SELECT id FROM tx').all()).toEqual([{ id: 'ok' }]);
+    expect(db.prepare('SELECT id FROM tx_line').all()).toEqual([{ id: 'l1' }]);
+    expect(db.prepare('SELECT id, deleted_at FROM tx_attachment').all()).toEqual([{ id: 'f1', deleted_at: null }]);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM project_posting').get()).toEqual({ n: 0 });
+    // 删除前内容已写入审计，仍可追溯（正常流水不写）
+    const audit = db.prepare("SELECT entity_id, action, payload FROM audit_log WHERE action = 'delete'").all() as Array<{
+      entity_id: string; action: string; payload: string;
+    }>;
+    expect(audit).toHaveLength(1);
+    expect(audit[0]!.entity_id).toBe('bad');
+    expect(JSON.parse(audit[0]!.payload)).toMatchObject({
+      type: 'income',
+      occurredOn: '2026-01-03',
+      lines: [{ accountId: 'a1', amount: 200 }],
+      attachments: [{ fileName: 'b.png', size: 3 }]
+    });
+    db.close();
+  });
+
   it('runMigrations 可从空库一路迁移到最新版本', () => {
     const db = new Database(':memory:');
     db.pragma('foreign_keys = ON');

@@ -31,8 +31,9 @@ function multipart(file: Buffer, filename: string, mime: string) {
   };
 }
 
+let accSeq = 0;
 async function makeTx(): Promise<string> {
-  const acc = (await post('/api/accounts', { name: '账户', type: 'bank', bankName: '行', accountNo: '1', openingBalance: 0 })).json() as { id: string };
+  const acc = (await post('/api/accounts', { name: `账户${++accSeq}`, type: 'bank', bankName: '行', accountNo: '1', openingBalance: 0 })).json() as { id: string };
   const tx = await post('/api/transactions', { occurredOn: '2026-05-01', type: 'expense', amount: 1000, accountId: acc.id });
   expect(tx.statusCode).toBe(201);
   return (tx.json() as { id: string }).id;
@@ -122,13 +123,72 @@ describe('流水附件（图片/文件）', () => {
     expect(over.json()).toMatchObject({ code: 'TOO_MANY_ATTACHMENTS' });
   });
 
-  it('作废流水后附件仍保留且可查看；文件丢失时下载返回 404', async () => {
+  it('删除文件 = 软删除：列表/下载不再返回，记录与磁盘文件保留，写审计，释放名额；重复删除 404', async () => {
+    const id = await makeTx();
+    const a = (await upload(id, Buffer.from('aaa'), 'a.txt', 'text/plain')).json() as { id: string };
+    const b = (await upload(id, Buffer.from('bbb'), 'b.txt', 'text/plain')).json() as { id: string };
+
+    const res = await post(`/api/attachments/${a.id}/remove`, {});
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ id: a.id, txId: id, fileName: 'a.txt' });
+
+    const detail = (await ctx.app.inject({ url: `/api/transactions/${id}` })).json() as { attachments: Array<{ id: string }> };
+    expect(detail.attachments.map((x) => x.id)).toEqual([b.id]);
+    const list = (await ctx.app.inject({ url: `/api/transactions/${id}/attachments` })).json() as Array<{ id: string }>;
+    expect(list.map((x) => x.id)).toEqual([b.id]);
+    expect((await ctx.app.inject({ url: `/api/attachments/${a.id}/file` })).statusCode).toBe(404);
+
+    expect(ctx.db.prepare('SELECT deleted_at IS NOT NULL AS d FROM tx_attachment WHERE id = ?').get(a.id)).toEqual({ d: 1 });
+    expect(readdirSync(dir)).toHaveLength(2);
+    expect(ctx.db.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE entity='tx' AND action='detach' AND entity_id=?").get(id)).toEqual({ n: 1 });
+
+    expect((await post(`/api/attachments/${a.id}/remove`, {})).statusCode).toBe(404);
+    expect((await post('/api/attachments/nope/remove', {})).statusCode).toBe(404);
+  });
+
+  it('已删除的文件不占 20 个名额，删除后可补传', async () => {
+    const id = await makeTx();
+    const first = (await upload(id, Buffer.from('0'), '0.txt', 'text/plain')).json() as { id: string };
+    for (let i = 1; i < 20; i++) expect((await upload(id, Buffer.from(String(i)), `${i}.txt`, 'text/plain')).statusCode).toBe(201);
+    expect((await upload(id, Buffer.from('x'), 'over.txt', 'text/plain')).statusCode).toBe(400);
+    await post(`/api/attachments/${first.id}/remove`, {});
+    expect((await upload(id, Buffer.from('x'), 'again.txt', 'text/plain')).statusCode).toBe(201);
+  });
+
+  it('编辑流水后附件不受影响，仍可继续补传', async () => {
+    const id = await makeTx();
+    await upload(id, Buffer.from('a'), 'a.txt', 'text/plain');
+    const before = (await ctx.app.inject({ url: `/api/transactions/${id}` })).json() as { occurredOn: string; type: string; lines: Array<{ accountId: string }> };
+    const edit = await ctx.app.inject({
+      method: 'PATCH',
+      url: `/api/transactions/${id}`,
+      payload: { occurredOn: '2026-06-01', type: 'expense', amount: 2_000, accountId: before.lines[0]!.accountId, note: '改' }
+    });
+    expect(edit.statusCode).toBe(200);
+    expect((edit.json() as { attachments: unknown[] }).attachments).toHaveLength(1);
+    expect((await upload(id, Buffer.from('b'), 'b.txt', 'text/plain')).statusCode).toBe(201);
+  });
+
+  it('删除流水（物理删除）：附件记录（含已软删除的）与磁盘文件一并清理，其他流水的附件不受影响', async () => {
+    const id = await makeTx();
+    const other = await makeTx();
+    const a = (await upload(id, Buffer.from('aaa'), 'a.txt', 'text/plain')).json() as { id: string };
+    const b = (await upload(id, Buffer.from('bbb'), 'b.txt', 'text/plain')).json() as { id: string };
+    const keep = (await upload(other, Buffer.from('ccc'), 'c.txt', 'text/plain')).json() as { id: string };
+    await post(`/api/attachments/${b.id}/remove`, {}); // b 已软删除
+    expect(readdirSync(dir)).toHaveLength(3);
+
+    expect((await ctx.app.inject({ method: 'DELETE', url: `/api/transactions/${id}` })).statusCode).toBe(200);
+    expect(ctx.db.prepare('SELECT COUNT(*) AS n FROM tx_attachment WHERE tx_id = ?').get(id)).toEqual({ n: 0 });
+    expect(readdirSync(dir)).toHaveLength(1);
+    expect((await ctx.app.inject({ url: `/api/attachments/${a.id}/file` })).statusCode).toBe(404);
+    expect((await ctx.app.inject({ url: `/api/attachments/${keep.id}/file` })).statusCode).toBe(200);
+    expect(ctx.db.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE entity='tx' AND action='delete' AND entity_id=?").get(id)).toEqual({ n: 1 });
+  });
+
+  it('文件丢失时下载返回 404 FILE_MISSING', async () => {
     const id = await makeTx();
     const a = (await upload(id, Buffer.from('hello'), 'a.txt', 'text/plain')).json() as { id: string };
-    expect((await post(`/api/transactions/${id}/void`, { reason: 'x' })).statusCode).toBe(200);
-    const voided = (await ctx.app.inject({ url: `/api/transactions/${id}` })).json() as { status: string; attachments: unknown[] };
-    expect(voided.status).toBe('voided');
-    expect(voided.attachments).toHaveLength(1);
     expect((await ctx.app.inject({ url: `/api/attachments/${a.id}/file` })).statusCode).toBe(200);
 
     rmSync(dir, { recursive: true, force: true });

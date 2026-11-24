@@ -629,5 +629,38 @@ export const migrations: Migration[] = [
       -- 批次文件的「删除」= 软删除：记录与磁盘文件都保留（不物理删除财务数据），列表/下载不再返回。
       ALTER TABLE batch_attachment ADD COLUMN deleted_at TEXT;
     `
+  },
+  {
+    version: 23,
+    name: 'tx_physical_delete',
+    sql: `
+      -- 流水「作废」改为「删除」（物理删除）：
+      -- 1) 流水附件与批次附件一样支持「删除」= 软删除（deleted_at），编辑流水时可删除/补传文件；
+      -- 2) 清理历史上已作废的流水（连同分录、附件元数据、项目入账关联）。tx.status 列保留但不再产生 'voided'。
+      ALTER TABLE tx_attachment ADD COLUMN deleted_at TEXT;
+      -- 删除前把每笔已作废流水的内容写入审计（action = 'delete'），保证删除后仍可追溯
+      INSERT INTO audit_log (id, entity, entity_id, action, payload, device_id, created_at)
+        SELECT lower(hex(randomblob(16))), 'tx', t.id, 'delete',
+               json_object(
+                 'occurredOn', t.occurred_on,
+                 'type', t.type,
+                 'categoryId', t.category_id,
+                 'counterpartyId', t.counterparty_id,
+                 'counterparty', t.counterparty,
+                 'note', t.note,
+                 'importBatchId', t.import_batch_id,
+                 'lines', COALESCE((SELECT json_group_array(json_object('accountId', l.account_id, 'amount', l.amount))
+                                    FROM tx_line l WHERE l.tx_id = t.id), json('[]')),
+                 'attachments', COALESCE((SELECT json_group_array(json_object('fileName', a.file_name, 'size', a.size))
+                                          FROM tx_attachment a WHERE a.tx_id = t.id), json('[]')),
+                 'reason', 'migration v23: 作废流水改为删除'
+               ),
+               t.device_id, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        FROM tx t WHERE t.status = 'voided';
+      DELETE FROM project_posting WHERE tx_id IN (SELECT id FROM tx WHERE status = 'voided');
+      DELETE FROM tx_attachment WHERE tx_id IN (SELECT id FROM tx WHERE status = 'voided');
+      DELETE FROM tx_line WHERE tx_id IN (SELECT id FROM tx WHERE status = 'voided');
+      DELETE FROM tx WHERE status = 'voided';
+    `
   }
 ];

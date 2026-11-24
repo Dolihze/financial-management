@@ -19,6 +19,9 @@ export function registerAttachmentRoutes(app: FastifyInstance, { attachments }: 
     return reply.status(201).send(attachments.add(txId, { fileName: file.filename, mimeType: file.mimetype, data }));
   });
 
+  // 「删除」= 软删除（记录与磁盘文件保留，仅从列表隐藏并写审计）
+  app.post('/api/attachments/:id/remove', async (req) => attachments.remove((req.params as { id: string }).id));
+
   // 取文件内容：图片/PDF 在浏览器内预览，其他类型下载。nosniff + 严格 CSP 防止被当作页面执行
   app.get('/api/attachments/:id/file', async (req, reply) => {
     const { meta, stream, inline } = attachments.open((req.params as { id: string }).id);

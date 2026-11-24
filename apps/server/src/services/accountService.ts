@@ -18,12 +18,11 @@ interface AccountRow {
   updated_at: string;
 }
 
-// 余额 = 期初 + 所有「未作废」交易的分录之和（由流水实时推导，不单独存储）
+// 余额 = 期初 + 所有交易的分录之和（由流水实时推导，不单独存储）
 const ACCOUNT_SELECT = `
   SELECT a.*,
          a.opening_balance + COALESCE((
            SELECT SUM(l.amount) FROM tx_line l
-           JOIN tx t ON t.id = l.tx_id AND t.status = 'normal'
            WHERE l.account_id = a.id
          ), 0) AS balance
   FROM account a

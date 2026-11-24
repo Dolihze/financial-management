@@ -24,7 +24,7 @@ export class OverviewService {
            COALESCE(SUM(CASE WHEN t.type='income'  THEN l.amount END), 0) AS income,
            COALESCE(SUM(CASE WHEN t.type='expense' THEN -l.amount END), 0) AS expense
          FROM tx t JOIN tx_line l ON l.tx_id = t.id
-         WHERE t.status='normal' AND substr(t.occurred_on,1,7) = ?`
+         WHERE substr(t.occurred_on,1,7) = ?`
       )
       .get(month) as { income: number; expense: number };
 
@@ -34,7 +34,7 @@ export class OverviewService {
                 COALESCE(SUM(CASE WHEN t.type='income'  THEN l.amount END), 0) AS income,
                 COALESCE(SUM(CASE WHEN t.type='expense' THEN -l.amount END), 0) AS expense
          FROM tx t JOIN tx_line l ON l.tx_id = t.id
-         WHERE t.status='normal' AND t.type IN ('income','expense')
+         WHERE t.type IN ('income','expense')
          GROUP BY month ORDER BY month DESC LIMIT 6`
       )
       .all() as Array<{ month: string; income: number; expense: number }>;
@@ -43,7 +43,7 @@ export class OverviewService {
       .prepare(
         `SELECT t.category_id AS categoryId, COALESCE(c.name,'未分类') AS categoryName, SUM(-l.amount) AS amount
          FROM tx t JOIN tx_line l ON l.tx_id = t.id LEFT JOIN category c ON c.id = t.category_id
-         WHERE t.status='normal' AND t.type='expense' AND substr(t.occurred_on,1,7) = ?
+         WHERE t.type='expense' AND substr(t.occurred_on,1,7) = ?
          GROUP BY t.category_id ORDER BY amount DESC`
       )
       .all(month) as OverviewSummary['expenseByCategory'];
@@ -60,10 +60,10 @@ export class OverviewService {
 
   /**
    * 指定时间段（含首尾日期，缺省一端表示不限）内的收入/支出统计与去向明细。
-   * 只统计未作废的收入/支出；借款/贷款是资金往来，不计入。
+   * 只统计收入/支出；借款/贷款是资金往来，不计入。
    */
   periodSummary(range: { from?: string; to?: string } = {}): PeriodSummary {
-    const where = ["t.status = 'normal'", "t.type IN ('income','expense')"];
+    const where = ["t.type IN ('income','expense')"];
     const params: string[] = [];
     if (range.from) {
       where.push('t.occurred_on >= ?');

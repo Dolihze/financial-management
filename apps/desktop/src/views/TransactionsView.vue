@@ -13,7 +13,7 @@ import { computed, onMounted, reactive, ref } from 'vue';
 import { api, type TransactionSummary } from '@/api';
 import NameManagerDialog from '@/components/NameManagerDialog.vue';
 import { useBaseStore } from '@/stores/base';
-import { errorMessage, formatMoney, toCents, today } from '@/utils/format';
+import { errorMessage, formatMoney, fromCents, toCents, today } from '@/utils/format';
 
 const base = useBaseStore();
 
@@ -22,8 +22,7 @@ const filter = reactive({
   type: '' as TransactionType | '',
   categoryId: '' as string,
   counterpartyId: '' as string,
-  range: null as [string, string] | null,
-  includeVoided: false
+  range: null as [string, string] | null
 });
 const page = reactive({ current: 1, size: 20, total: 0 });
 const items = ref<Transaction[]>([]);
@@ -39,8 +38,7 @@ function currentFilter() {
     categoryId: filter.categoryId || undefined,
     counterpartyId: filter.counterpartyId || undefined,
     from: filter.range?.[0],
-    to: filter.range?.[1],
-    includeVoided: filter.includeVoided
+    to: filter.range?.[1]
   };
 }
 
@@ -76,8 +74,10 @@ function search() {
   load();
 }
 
-// ---- 新增 ----
+// ---- 新增 / 编辑（同一个弹窗） ----
 const dialog = ref(false);
+/** 正在编辑的流水；为空表示新增 */
+const editingId = ref<string | null>(null);
 const form = reactive({
   type: 'expense' as TransactionType,
   occurredOn: today(),
@@ -87,10 +87,18 @@ const form = reactive({
   counterpartyId: '' as string,
   note: ''
 });
-/** 记一笔时选中的相关文件（保存流水成功后再逐个上传） */
+/** 记一笔/编辑时选中的相关文件（保存流水成功后再逐个上传） */
 const pendingFiles = ref<UploadUserFile[]>([]);
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
 const MAX_FILES = 20;
+
+/** 编辑弹窗里「已上传文件」：取列表中实时的流水，删除后刷新列表时同步更新 */
+const editingFiles = computed<TransactionAttachment[]>(() => {
+  if (!editingId.value) return [];
+  return items.value.find((t) => t.id === editingId.value)?.attachments ?? [];
+});
+/** 还能再选几个文件（已上传 + 待上传 不超过上限） */
+const fileQuota = computed(() => Math.max(0, MAX_FILES - editingFiles.value.length));
 
 /** 选择文件时的数量与大小校验：不合格的直接从待上传列表里移除并提示 */
 function onFileChange(_file: UploadFile, files: UploadFiles) {
@@ -106,9 +114,11 @@ function onFileChange(_file: UploadFile, files: UploadFiles) {
     }
     return true;
   });
-  if (ok.length > MAX_FILES) {
+  // 编辑时要把已上传的文件数一并算进上限
+  const quota = fileQuota.value;
+  if (ok.length > quota) {
     ElMessage.warning(`一笔流水最多上传 ${MAX_FILES} 个文件`);
-    ok.length = MAX_FILES;
+    ok.length = quota;
   }
   pendingFiles.value = ok;
 }
@@ -120,9 +130,31 @@ const categoryOptions = computed(() =>
 const accountLabel = computed(() => (TRANSACTION_TYPE_IS_INFLOW[form.type] ? '入账账户' : '出账账户'));
 
 function openDialog() {
+  editingId.value = null;
   Object.assign(form, { type: 'expense', occurredOn: today(), amount: '', accountId: '', categoryId: '', counterpartyId: '', note: '' });
   pendingFiles.value = [];
   dialog.value = true;
+}
+
+function openEdit(tx: Transaction) {
+  editingId.value = tx.id;
+  Object.assign(form, {
+    type: tx.type,
+    occurredOn: tx.occurredOn,
+    // 金额以分存储，展示为元（正数）；用 fromCents 转换，不做浮点运算
+    amount: fromCents(Math.abs(amountOf(tx))),
+    accountId: tx.lines[0]?.accountId ?? '',
+    categoryId: tx.categoryId ?? '',
+    counterpartyId: tx.counterpartyId ?? '',
+    note: tx.note
+  });
+  pendingFiles.value = [];
+  dialog.value = true;
+}
+
+/** 切换类型时，已选分类可能不属于新类型（收入/支出分类不同），清空避免提交非法分类 */
+function onFormTypeChange() {
+  if (!categoryOptions.value.some((c) => c.id === form.categoryId)) form.categoryId = '';
 }
 
 // ---- 管理收入/支出分类 / 往来单位（二级弹窗，复用 NameManagerDialog） ----
@@ -173,7 +205,8 @@ async function submit() {
   if (submitting.value) return; // 防止重复点击产生重复流水
   submitting.value = true;
   try {
-    const created = await api.transactions.create({
+    const editing = !!editingId.value;
+    const body = {
       type: form.type,
       occurredOn: form.occurredOn,
       amount: toCents(form.amount),
@@ -181,13 +214,16 @@ async function submit() {
       categoryId: hasCategory.value ? form.categoryId || null : null,
       counterpartyId: form.counterpartyId || null,
       note: form.note
-    });
-    // 流水已经入账：之后文件上传失败不能当作「记账失败」，否则用户会重复记一笔。逐个上传，失败的单独提示
+    };
+    const saved = editingId.value
+      ? await api.transactions.update(editingId.value, body)
+      : await api.transactions.create(body);
+    // 流水已经保存：之后文件上传失败不能当作「保存失败」，否则用户会重复提交。逐个上传，失败的单独提示
     const failed: string[] = [];
     for (const f of pendingFiles.value) {
       if (!f.raw) continue;
       try {
-        await api.transactions.addAttachment(created.id, f.raw);
+        await api.transactions.addAttachment(saved.id, f.raw);
       } catch (e) {
         failed.push(`${f.name}（${errorMessage(e)}）`);
       }
@@ -195,10 +231,10 @@ async function submit() {
     dialog.value = false;
     await Promise.all([load(), base.loadAccounts()]);
     if (failed.length === 0) {
-      ElMessage.success('已记账');
+      ElMessage.success(editing ? '已保存' : '已记账');
     } else {
       ElMessageBox.alert(
-        `流水已记账（请勿重复记账），但以下文件上传失败：\n${failed.join('\n')}`,
+        `流水已${editing ? '保存' : '记账'}（请勿重复提交），但以下文件上传失败：\n${failed.join('\n')}`,
         '部分文件上传失败',
         { type: 'warning', confirmButtonText: '知道了' }
       ).catch(() => {});
@@ -208,6 +244,24 @@ async function submit() {
   } finally {
     submitting.value = false;
   }
+}
+
+/** 删除已上传文件：二次确认后立即生效（后端软删除，保留记录与磁盘文件），不依赖「保存」 */
+async function removeAttachment(a: TransactionAttachment) {
+  try {
+    await ElMessageBox.confirm(`确定删除文件「${a.fileName}」吗？`, '删除文件', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消'
+    });
+  } catch {
+    return; // 取消
+  }
+  await withBusy(a.id, async () => {
+    await api.transactions.removeAttachment(a.id);
+    await load();
+    ElMessage.success('已删除文件');
+  });
 }
 
 /** 「相关文件」弹窗：展示某笔流水上传的全部文件 */
@@ -255,16 +309,24 @@ function formatSize(n: number): string {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
-async function voidTx(tx: Transaction) {
+async function removeTx(tx: Transaction) {
   try {
-    const { value } = await ElMessageBox.prompt('作废后该笔不再计入余额，但记录会保留以供审计。请填写原因：', '作废交易', {
-      inputPlaceholder: '作废原因'
-    });
-    await api.transactions.void(tx.id, value);
-    ElMessage.success('已作废');
+    await ElMessageBox.confirm(
+      `确定删除这笔流水（${tx.occurredOn}，${TRANSACTION_TYPE_LABELS[tx.type]} ${formatMoney(Math.abs(amountOf(tx)))}）吗？删除后账户余额随之恢复，该笔的相关文件也会一并删除。`,
+      '删除流水',
+      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' }
+    );
+  } catch {
+    return; // 取消
+  }
+  try {
+    await api.transactions.remove(tx.id);
+    ElMessage.success('已删除');
+    // 当前页最后一条被删后回到上一页，避免停在空页
+    if (items.value.length === 1 && page.current > 1) page.current -= 1;
     await Promise.all([load(), base.loadAccounts()]);
   } catch (e) {
-    if (e !== 'cancel') ElMessage.error(errorMessage(e));
+    ElMessage.error(errorMessage(e));
   }
 }
 
@@ -306,11 +368,10 @@ onMounted(load);
         style="width: 240px"
         @change="search"
       />
-      <el-checkbox v-model="filter.includeVoided" @change="search">显示已作废</el-checkbox>
     </div>
 
     <div class="summary-bar">
-      <span class="summary-count">共 {{ page.total }} 笔{{ filter.includeVoided ? '（统计不含已作废）' : '' }}</span>
+      <span class="summary-count">共 {{ page.total }} 笔</span>
       <span class="summary-item"><span class="summary-label">收入</span><b class="tx-income">{{ formatMoney(summary.income) }}</b></span>
       <span class="summary-item"><span class="summary-label">支出</span><b class="tx-expense">{{ formatMoney(summary.expense) }}</b></span>
       <span class="summary-item">
@@ -330,7 +391,7 @@ onMounted(load);
       <el-table-column prop="counterparty" label="往来单位" min-width="160" align="left" header-align="left" />
       <el-table-column label="金额" width="160" align="left" header-align="left">
         <template #default="{ row }">
-          <span :class="{ 'tx-income': amountOf(row) > 0, 'tx-expense': amountOf(row) < 0 }" :style="row.status === 'voided' ? 'text-decoration: line-through; opacity: .5' : ''">
+          <span :class="{ 'tx-income': amountOf(row) > 0, 'tx-expense': amountOf(row) < 0 }">
             {{ formatMoney(amountOf(row)) }}
           </span>
         </template>
@@ -343,17 +404,25 @@ onMounted(load);
           </el-button>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="90" align="left" header-align="left">
-        <template #default="{ row }"><el-button v-if="row.status === 'normal'" link type="danger" @click="voidTx(row)">作废</el-button></template>
+      <el-table-column label="操作" width="120" align="left" header-align="left">
+        <template #default="{ row }">
+          <el-tooltip v-if="(row as Transaction).linkedToProject" content="由项目入账自动生成，请在项目中把对应字段切换为「否」回退" placement="top">
+            <span class="linked-hint">项目入账</span>
+          </el-tooltip>
+          <template v-else>
+            <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
+            <el-button link type="danger" @click="removeTx(row)">删除</el-button>
+          </template>
+        </template>
       </el-table-column>
     </el-table>
 
     <el-pagination v-model:current-page="page.current" v-model:page-size="page.size" :total="page.total" layout="total, prev, pager, next, sizes" style="margin-top: 16px; justify-content: flex-end" @change="load" />
 
-    <el-dialog v-model="dialog" title="记一笔" width="520px" draggable destroy-on-close align-center>
+    <el-dialog v-model="dialog" :title="editingId ? '编辑流水' : '记一笔'" width="520px" draggable destroy-on-close align-center>
       <el-form :model="form" label-width="90px">
         <el-form-item label="类型">
-          <el-radio-group v-model="form.type">
+          <el-radio-group v-model="form.type" @change="onFormTypeChange">
             <el-radio-button v-for="t in TRANSACTION_TYPES" :key="t" :value="t">{{ TRANSACTION_TYPE_LABELS[t] }}</el-radio-button>
           </el-radio-group>
         </el-form-item>
@@ -381,20 +450,35 @@ onMounted(load);
           </el-select>
         </el-form-item>
         <el-form-item label="备注"><el-input v-model="form.note" type="textarea" :rows="2" /></el-form-item>
-        <el-form-item label="相关文件">
+        <!-- 编辑时：已上传的文件，可查看（打开）、下载、删除；删除立即生效 -->
+        <el-form-item v-if="editingFiles.length" label="已传文件">
+          <ul class="uploaded-list">
+            <li v-for="a in editingFiles" :key="a.id" class="uploaded-item">
+              <el-link class="file-link" type="primary" underline="never" :title="`点击用系统软件打开：${a.fileName}`" :disabled="busyFiles.has(a.id)" @click="openAttachment(a)">
+                <el-icon><Paperclip /></el-icon>
+                <span class="file-name">{{ a.fileName }}</span>
+              </el-link>
+              <span class="file-size">{{ formatSize(a.size) }}</span>
+              <el-button link type="primary" size="small" :disabled="busyFiles.has(a.id)" @click="downloadAttachment(a)">下载</el-button>
+              <el-button link type="danger" size="small" :disabled="busyFiles.has(a.id)" @click="removeAttachment(a)">删除</el-button>
+            </li>
+          </ul>
+        </el-form-item>
+        <el-form-item :label="editingId ? '补传文件' : '相关文件'">
           <el-upload
             v-model:file-list="pendingFiles"
             multiple
             drag
             :auto-upload="false"
             :limit="MAX_FILES + 1"
+            :disabled="fileQuota === 0"
             :on-change="onFileChange"
             class="compact-upload"
           >
             <el-icon class="el-icon--upload"><UploadFilled /></el-icon>
             <div class="el-upload__text">拖拽文件到此处，或<em>点击选择</em></div>
             <template #tip>
-              <div class="form-tip">图片、PDF 或其他文件均可，单个不超过 20 MB，最多 {{ MAX_FILES }} 个；保存流水后一并上传</div>
+              <div class="form-tip">图片、PDF 或其他文件均可，单个不超过 20 MB，最多 {{ MAX_FILES }} 个；保存流水后{{ editingId ? '上传新选的文件' : '一并上传' }}</div>
             </template>
           </el-upload>
         </el-form-item>
@@ -498,6 +582,34 @@ onMounted(load);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.linked-hint {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  cursor: help;
+}
+.uploaded-list {
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 140px;
+  overflow-y: auto;
+}
+.uploaded-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  line-height: 28px;
+}
+.uploaded-item .file-link {
+  flex: 1;
+  min-width: 0;
+}
+.file-size {
+  flex: none;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
 }
 .form-tip {
   color: var(--el-text-color-secondary);

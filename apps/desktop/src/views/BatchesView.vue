@@ -8,6 +8,7 @@ import { ElMessage, ElMessageBox, type UploadFile, type UploadFiles, type Upload
 import { computed, onMounted, reactive, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { api } from '@/api';
+import { DEFAULT_PAGE_SIZE, MIN_PAGE_SIZE, PAGE_SIZES } from '@/utils/pagination';
 import ProjectBreadcrumb from '@/components/ProjectBreadcrumb.vue';
 import { validateBatchNo } from '@/utils/batchNo';
 import { errorMessage, formatMoney } from '@/utils/format';
@@ -28,10 +29,10 @@ async function load() {
 }
 
 // ---------- 前端分页 ----------
-const PAGE_SIZE = 15;
+const pageSize = ref(DEFAULT_PAGE_SIZE);
 const currentPage = ref(1);
-const pageRows = computed(() => batches.value.slice((currentPage.value - 1) * PAGE_SIZE, currentPage.value * PAGE_SIZE));
-const rowIndex = (i: number) => (currentPage.value - 1) * PAGE_SIZE + i + 1;
+const pageRows = computed(() => batches.value.slice((currentPage.value - 1) * pageSize.value, currentPage.value * pageSize.value));
+const rowIndex = (i: number) => (currentPage.value - 1) * pageSize.value + i + 1;
 
 /** 迁移产生的「未分批」兜底批次（批次号 0）：展示为「未分批」，不能改号/删除 */
 const isUnbatched = (b: Batch) => b.batchNo === 0;
@@ -271,12 +272,14 @@ onMounted(load);
     </el-table>
 
     <el-pagination
-      v-if="batches.length > PAGE_SIZE"
+      v-if="batches.length > MIN_PAGE_SIZE"
       v-model:current-page="currentPage"
-      :page-size="PAGE_SIZE"
+      v-model:page-size="pageSize"
+      :page-sizes="PAGE_SIZES"
       :total="batches.length"
-      layout="total, prev, pager, next"
+      layout="total, prev, pager, next, sizes"
       background
+      @size-change="currentPage = 1"
       style="margin-top: 16px; justify-content: flex-end"
     />
 

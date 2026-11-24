@@ -4,6 +4,7 @@ import { ElMessage } from 'element-plus';
 import { computed, onMounted, ref, watch } from 'vue';
 import { api } from '@/api';
 import { errorMessage, formatMoney } from '@/utils/format';
+import { DEFAULT_PAGE_SIZE, MIN_PAGE_SIZE, PAGE_SIZES } from '@/utils/pagination';
 import { monthRange, PERIOD_TABS, presetRange, type PeriodKey } from '@/utils/period';
 
 const data = ref<OverviewSummary | null>(null);
@@ -62,17 +63,23 @@ const incomeTotal = computed(() => incomeRows.value.reduce((s, r) => s + r.amoun
 // ---------- 锐辰欠款（计算口径待定，暂定为 0，单位：分） ----------
 const ruichenDebt = ref(0);
 
-// ---------- 三张表各自的前端分页（每页 15 条） ----------
-const PAGE_SIZE = 15;
+// ---------- 三张表各自的前端分页（每页条数共用，可切换） ----------
+const pageSize = ref(DEFAULT_PAGE_SIZE);
 const accountPage = ref(1);
 const incomePage = ref(1);
 const expensePage = ref(1);
-const slicePage = <T,>(rows: T[], page: number) => rows.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+const slicePage = <T,>(rows: T[], page: number) => rows.slice((page - 1) * pageSize.value, page * pageSize.value);
 const accountPageRows = computed(() => slicePage(accountRows.value, accountPage.value));
 const incomePageRows = computed(() => slicePage(incomeRows.value, incomePage.value));
 const expensePageRows = computed(() => slicePage(expenseRows.value, expensePage.value));
+/** 切换每页条数后三张表都回到第 1 页 */
+function resetPages() {
+  accountPage.value = 1;
+  incomePage.value = 1;
+  expensePage.value = 1;
+}
 /** 序号需跨页连续 */
-const indexOf = (page: number) => (i: number) => (page - 1) * PAGE_SIZE + i + 1;
+const indexOf = (page: number) => (i: number) => (page - 1) * pageSize.value + i + 1;
 // 切换维度 Tab 后回到第 1 页（时间段变化在 loadPeriod 里重置）
 watch(incomeTab, () => (incomePage.value = 1));
 watch(expenseTab, () => (expensePage.value = 1));
@@ -176,7 +183,7 @@ onMounted(() => {
                 </el-table-column>
               </el-table>
             </div>
-            <el-pagination v-model:current-page="accountPage" class="pane-pager" small background layout="prev, pager, next" :page-size="PAGE_SIZE" :total="data.accounts.length" hide-on-single-page />
+            <el-pagination v-model:current-page="accountPage" v-model:page-size="pageSize" :page-sizes="PAGE_SIZES" class="pane-pager" small background layout="prev, pager, next, sizes" :total="data.accounts.length" :hide-on-single-page="data.accounts.length <= MIN_PAGE_SIZE" @size-change="resetPages" />
           </div>
 
           <!-- 收入来源 -->
@@ -198,7 +205,7 @@ onMounted(() => {
                 <el-table-column prop="count" label="笔数" width="50" />
               </el-table>
             </div>
-            <el-pagination v-model:current-page="incomePage" class="pane-pager" small background layout="prev, pager, next" :page-size="PAGE_SIZE" :total="incomeRows.length" hide-on-single-page />
+            <el-pagination v-model:current-page="incomePage" v-model:page-size="pageSize" :page-sizes="PAGE_SIZES" class="pane-pager" small background layout="prev, pager, next, sizes" :total="incomeRows.length" :hide-on-single-page="incomeRows.length <= MIN_PAGE_SIZE" @size-change="resetPages" />
           </div>
 
           <!-- 支出去向 -->
@@ -220,7 +227,7 @@ onMounted(() => {
                 <el-table-column prop="count" label="笔数" width="50" />
               </el-table>
             </div>
-            <el-pagination v-model:current-page="expensePage" class="pane-pager" small background layout="prev, pager, next" :page-size="PAGE_SIZE" :total="expenseRows.length" hide-on-single-page />
+            <el-pagination v-model:current-page="expensePage" v-model:page-size="pageSize" :page-sizes="PAGE_SIZES" class="pane-pager" small background layout="prev, pager, next, sizes" :total="expenseRows.length" :hide-on-single-page="expenseRows.length <= MIN_PAGE_SIZE" @size-change="resetPages" />
           </div>
         </div>
       </template>

@@ -4,6 +4,7 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { api } from '@/api';
+import { DEFAULT_PAGE_SIZE, MIN_PAGE_SIZE, PAGE_SIZES } from '@/utils/pagination';
 import ProjectBreadcrumb from '@/components/ProjectBreadcrumb.vue';
 import ProjectEditDialog from '@/components/ProjectEditDialog.vue';
 import SettlementFields from '@/components/SettlementFields.vue';
@@ -104,11 +105,11 @@ const filtered = computed(() =>
 );
 
 /** 前端分页：只切分表格显示的行；统计（totals）始终基于全部筛选结果 filtered，不受分页影响 */
-const PAGE_SIZE = 10;
+const pageSize = ref(DEFAULT_PAGE_SIZE);
 const currentPage = ref(1);
-const pageRows = computed(() => filtered.value.slice((currentPage.value - 1) * PAGE_SIZE, currentPage.value * PAGE_SIZE));
+const pageRows = computed(() => filtered.value.slice((currentPage.value - 1) * pageSize.value, currentPage.value * pageSize.value));
 /** 序号跨页连续：第 2 页从 31 开始 */
-const rowIndex = (i: number) => (currentPage.value - 1) * PAGE_SIZE + i + 1;
+const rowIndex = (i: number) => (currentPage.value - 1) * pageSize.value + i + 1;
 
 function onFilterChange(filters: Record<string, unknown[]>) {
   for (const [col, vals] of Object.entries(filters)) {
@@ -122,7 +123,7 @@ function onFilterChange(filters: Record<string, unknown[]>) {
 watch(
   () => filtered.value.length,
   (len) => {
-    const last = Math.max(1, Math.ceil(len / PAGE_SIZE));
+    const last = Math.max(1, Math.ceil(len / pageSize.value));
     if (currentPage.value > last) currentPage.value = last;
   }
 );
@@ -306,12 +307,14 @@ onMounted(load);
     </el-table>
 
     <el-pagination
-      v-if="filtered.length > PAGE_SIZE"
+      v-if="filtered.length > MIN_PAGE_SIZE"
       v-model:current-page="currentPage"
-      :page-size="PAGE_SIZE"
+      v-model:page-size="pageSize"
+      :page-sizes="PAGE_SIZES"
       :total="filtered.length"
-      layout="total, prev, pager, next"
+      layout="total, prev, pager, next, sizes"
       background
+      @size-change="currentPage = 1"
       style="margin-top: 16px; justify-content: flex-end"
     />
 

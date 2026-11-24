@@ -10,6 +10,7 @@ import type { Project } from '@fm/shared';
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus';
 import { computed, onMounted, reactive, ref } from 'vue';
 import { api } from '@/api';
+import { DEFAULT_PAGE_SIZE, MIN_PAGE_SIZE, PAGE_SIZES } from '@/utils/pagination';
 import { errorMessage, formatMoney, fromCents, toCents } from '@/utils/format';
 import {
   calcFromContractPrice, CHEN_PEI_RATE, DEFAULT_RATES, QX_RECEIVED_RATE, loadRates, parseRate, rateToText, saveRates, SUBCONTRACT_MODES, type FormulaRates, type SubcontractMode
@@ -31,10 +32,10 @@ async function load() {
 }
 
 // ---------- 前端分页 ----------
-const PAGE_SIZE = 20;
+const pageSize = ref(DEFAULT_PAGE_SIZE);
 const currentPage = ref(1);
-const pageRows = computed(() => rows.value.slice((currentPage.value - 1) * PAGE_SIZE, currentPage.value * PAGE_SIZE));
-const rowIndex = (i: number) => (currentPage.value - 1) * PAGE_SIZE + i + 1;
+const pageRows = computed(() => rows.value.slice((currentPage.value - 1) * pageSize.value, currentPage.value * pageSize.value));
+const rowIndex = (i: number) => (currentPage.value - 1) * pageSize.value + i + 1;
 
 // ---------- 新增 / 编辑 ----------
 interface FormState {
@@ -262,12 +263,14 @@ onMounted(load);
     </el-table>
 
     <el-pagination
-      v-if="rows.length > PAGE_SIZE"
+      v-if="rows.length > MIN_PAGE_SIZE"
       v-model:current-page="currentPage"
-      :page-size="PAGE_SIZE"
+      v-model:page-size="pageSize"
+      :page-sizes="PAGE_SIZES"
       :total="rows.length"
-      layout="total, prev, pager, next"
+      layout="total, prev, pager, next, sizes"
       background
+      @size-change="currentPage = 1"
       style="margin-top: 16px; justify-content: flex-end"
     />
 

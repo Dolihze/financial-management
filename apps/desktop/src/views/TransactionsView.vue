@@ -14,6 +14,7 @@ import { api, type TransactionSummary } from '@/api';
 import NameManagerDialog from '@/components/NameManagerDialog.vue';
 import { useBaseStore } from '@/stores/base';
 import { errorMessage, formatMoney, fromCents, toCents, today } from '@/utils/format';
+import { DEFAULT_PAGE_SIZE, PAGE_SIZES } from '@/utils/pagination';
 import { monthRange, PERIOD_TABS, presetRange, type PeriodKey } from '@/utils/period';
 
 const base = useBaseStore();
@@ -42,7 +43,7 @@ function queryCustom() {
   filter.range = customRange.value;
   search();
 }
-const page = reactive({ current: 1, size: 20, total: 0 });
+const page = reactive({ current: 1, size: DEFAULT_PAGE_SIZE, total: 0 });
 const items = ref<Transaction[]>([]);
 const loading = ref(false);
 
@@ -500,7 +501,7 @@ onMounted(load);
       </el-table-column>
     </el-table>
 
-    <el-pagination v-model:current-page="page.current" v-model:page-size="page.size" :total="page.total" layout="total, prev, pager, next, sizes" style="margin-top: 16px; justify-content: flex-end" @change="load" />
+    <el-pagination v-model:current-page="page.current" v-model:page-size="page.size" :page-sizes="PAGE_SIZES" :total="page.total" layout="total, prev, pager, next, sizes" style="margin-top: 16px; justify-content: flex-end" @size-change="page.current = 1" @change="load" />
 
     <el-dialog v-model="dialog" :title="editingId ? '编辑流水' : '记一笔'" width="520px" draggable destroy-on-close align-center>
       <el-form :model="form" label-width="90px">

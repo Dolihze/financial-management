@@ -4,6 +4,7 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { api } from '@/api';
+import { DEFAULT_PAGE_SIZE, MIN_PAGE_SIZE, PAGE_SIZES } from '@/utils/pagination';
 import ProjectBreadcrumb from '@/components/ProjectBreadcrumb.vue';
 import SettlementFields from '@/components/SettlementFields.vue';
 import { contractPriceToCents, sumContractPrices, validateContractPrice } from '@/utils/contractPrice';
@@ -65,16 +66,16 @@ function onFilterChange(filters: Record<string, unknown[]>) {
 watch(
   () => filteredContracts.value.length,
   (len) => {
-    const last = Math.max(1, Math.ceil(len / PAGE_SIZE));
+    const last = Math.max(1, Math.ceil(len / pageSize.value));
     if (currentPage.value > last) currentPage.value = last;
   }
 );
 
 // ---------- 前端分页 ----------
-const PAGE_SIZE = 15;
+const pageSize = ref(DEFAULT_PAGE_SIZE);
 const currentPage = ref(1);
-const pageRows = computed(() => filteredContracts.value.slice((currentPage.value - 1) * PAGE_SIZE, currentPage.value * PAGE_SIZE));
-const rowIndex = (i: number) => (currentPage.value - 1) * PAGE_SIZE + i + 1;
+const pageRows = computed(() => filteredContracts.value.slice((currentPage.value - 1) * pageSize.value, currentPage.value * pageSize.value));
+const rowIndex = (i: number) => (currentPage.value - 1) * pageSize.value + i + 1;
 
 // ---------- 跳转 ----------
 /** 点合同编号：进入该合同的项目进度 */
@@ -273,12 +274,14 @@ onMounted(load);
     </el-table>
 
     <el-pagination
-      v-if="filteredContracts.length > PAGE_SIZE"
+      v-if="filteredContracts.length > MIN_PAGE_SIZE"
       v-model:current-page="currentPage"
-      :page-size="PAGE_SIZE"
+      v-model:page-size="pageSize"
+      :page-sizes="PAGE_SIZES"
       :total="filteredContracts.length"
-      layout="total, prev, pager, next"
+      layout="total, prev, pager, next, sizes"
       background
+      @size-change="currentPage = 1"
       style="margin-top: 16px; justify-content: flex-end"
     />
 

@@ -174,8 +174,16 @@ const hasCategory = computed(() => form.type === 'income' || form.type === 'expe
 const categoryOptions = computed(() =>
   form.type === 'income' ? base.incomeCategories : form.type === 'expense' ? base.expenseCategories : []
 );
-/** 借款/贷款的分类选项（收入/支出为空，不显示该项） */
+/** 借款/贷款的分类选项（收入/支出为空） */
 const subTypeOptions = computed(() => TRANSACTION_TYPE_SUB_TYPES[form.type]);
+/** 保存前必填：金额、账户、分类（收入/支出=收支分类，借款/贷款=借贷分类）、往来单位 */
+const canSubmit = computed(
+  () =>
+    !!form.amount &&
+    !!form.accountId &&
+    !!form.counterpartyId &&
+    (hasCategory.value ? !!form.categoryId : !!form.subType)
+);
 const accountLabel = computed(() => (isInflow(form.type, form.subType || null) ? '入账账户' : '出账账户'));
 
 function openDialog() {
@@ -525,12 +533,6 @@ onMounted(load);
             <el-radio-button v-for="t in TRANSACTION_TYPES" :key="t" :value="t">{{ TRANSACTION_TYPE_LABELS[t] }}</el-radio-button>
           </el-radio-group>
         </el-form-item>
-        <!-- 借款/贷款的分类：借款 = 企信借别人钱 / 别人还企信钱；贷款 = 贷款 / 还贷 -->
-        <el-form-item v-if="subTypeOptions.length" :label="form.type === 'borrow' ? '借款分类' : '贷款分类'" required>
-          <el-radio-group v-model="form.subType">
-            <el-radio-button v-for="s in subTypeOptions" :key="s" :value="s">{{ TRANSACTION_SUB_TYPE_LABELS[s] }}</el-radio-button>
-          </el-radio-group>
-        </el-form-item>
         <el-form-item label="日期" required><el-date-picker v-model="form.occurredOn" type="date" value-format="YYYY-MM-DD" style="width: 100%" /></el-form-item>
         <el-form-item label="金额(元)" required><el-input v-model="form.amount" /></el-form-item>
         <el-form-item :label="accountLabel" required>
@@ -538,16 +540,22 @@ onMounted(load);
             <el-option v-for="a in base.accounts" :key="a.id" :label="`${a.name}（${formatMoney(a.balance)}）`" :value="a.id" />
           </el-select>
         </el-form-item>
-        <el-form-item v-if="hasCategory" label="分类">
-          <el-select v-model="form.categoryId" clearable style="width: 100%">
+        <!-- 分类：收入/支出选收支分类（可管理）；借款/贷款选固定的分类（借款=企信借别人钱/别人还企信钱，贷款=贷款/还贷） -->
+        <el-form-item v-if="hasCategory" label="分类" required>
+          <el-select v-model="form.categoryId" style="width: 100%">
             <el-option v-for="c in categoryOptions" :key="c.id" :label="c.name" :value="c.id" />
             <template #footer>
               <el-button link type="primary" icon="Setting" @click="openCategoryManager">{{ form.type === 'income' ? '管理收入分类' : '管理支出分类' }}</el-button>
             </template>
           </el-select>
         </el-form-item>
-        <el-form-item label="往来单位">
-          <el-select v-model="form.counterpartyId" clearable filterable style="width: 100%">
+        <el-form-item v-else label="分类" required>
+          <el-select v-model="form.subType" style="width: 100%">
+            <el-option v-for="s in subTypeOptions" :key="s" :label="TRANSACTION_SUB_TYPE_LABELS[s]" :value="s" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="往来单位" required>
+          <el-select v-model="form.counterpartyId" filterable style="width: 100%">
             <el-option v-for="c in base.counterparties" :key="c.id" :label="c.name" :value="c.id" />
             <template #footer>
               <el-button link type="primary" icon="Setting" @click="cpDialog = true">管理往来单位</el-button>
@@ -590,7 +598,7 @@ onMounted(load);
       </el-form>
       <template #footer>
         <el-button @click="dialog = false">取消</el-button>
-        <el-button type="primary" :loading="submitting" :disabled="!form.amount || !form.accountId" @click="submit">保存</el-button>
+        <el-button type="primary" :loading="submitting" :disabled="!canSubmit" @click="submit">保存</el-button>
       </template>
     </el-dialog>
 

@@ -1113,6 +1113,9 @@ describe('合同管理', () => {
     const res = await mkContract(batchId, 'HT-100', [{ projectId: id('项目甲'), contractPrice: 100_010 }, { projectId: id('项目乙'), contractPrice: 20_005 }]);
     expect(res.statusCode).toBe(201);
     expect(res.json()).toMatchObject({ contractNo: 'HT-100', batchId, batchNo: 7, totalPrice: 120_015, projectCount: 2 });
+    // 合同汇总企信实收 / 企信利润：其下项目之和（整数分），列表接口同样返回
+    expect(res.json()).toMatchObject({ qxReceived: 160_000, qxProfit: 0 });
+    expect(((await get(`/api/contracts?batchId=${batchId}`)) as Array<{ qxReceived: number; qxProfit: number }>)[0]).toMatchObject({ qxReceived: 160_000, qxProfit: 0 });
     expect(res.json().projects.map((p: { name: string }) => p.name).sort()).toEqual(['项目乙', '项目甲']);
 
     // 项目：归入合同、合同价被设置、批次号 = 合同所属批次；项目结算置为是并有入账记录

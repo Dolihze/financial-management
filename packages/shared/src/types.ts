@@ -308,6 +308,10 @@ export interface Contract {
   contractNo: string;
   /** 合同总价（分）= 其下项目合同价之和 */
   totalPrice: number;
+  /** 企信实收（分）= 其下项目企信实收之和 */
+  qxReceived: number;
+  /** 企信利润（分）= 其下项目企信利润之和 */
+  qxProfit: number;
   /** 其下项目数 */
   projectCount: number;
   /** 其下项目的区域（去重、非空、按名称排序） */

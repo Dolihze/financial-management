@@ -39,8 +39,12 @@ export class ContractService {
 
   private summaryOf(row: ContractRow): Contract {
     const agg = this.db
-      .prepare('SELECT COALESCE(SUM(contract_price), 0) AS total, COUNT(*) AS n FROM project WHERE contract_id = ? AND archived = 0')
-      .get(row.id) as { total: number; n: number };
+      .prepare(
+        `SELECT COALESCE(SUM(contract_price), 0) AS total, COALESCE(SUM(qx_received), 0) AS qxReceived,
+                COALESCE(SUM(qx_profit), 0) AS qxProfit, COUNT(*) AS n
+         FROM project WHERE contract_id = ? AND archived = 0`
+      )
+      .get(row.id) as { total: number; qxReceived: number; qxProfit: number; n: number };
     const regions = (
       this.db
         .prepare("SELECT DISTINCT region FROM project WHERE contract_id = ? AND archived = 0 AND region <> '' ORDER BY region")
@@ -52,6 +56,8 @@ export class ContractService {
       batchNo: row.batch_no,
       contractNo: row.contract_no,
       totalPrice: agg.total,
+      qxReceived: agg.qxReceived,
+      qxProfit: agg.qxProfit,
       projectCount: agg.n,
       regions,
       createdAt: row.created_at,

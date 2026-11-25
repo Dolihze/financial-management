@@ -265,6 +265,12 @@ onMounted(load);
       <el-table-column label="合同总价" width="180" align="right">
         <template #default="{ row }">{{ formatMoney(row.totalPrice) }}</template>
       </el-table-column>
+      <el-table-column label="企信实收" width="160" align="right">
+        <template #default="{ row }">{{ formatMoney(row.qxReceived) }}</template>
+      </el-table-column>
+      <el-table-column label="企信利润" width="160" align="right">
+        <template #default="{ row }">{{ formatMoney(row.qxProfit) }}</template>
+      </el-table-column>
       <el-table-column label="操作" width="130" fixed="right">
         <template #default="{ row }">
           <el-button link type="primary" @click="openEdit(row)">编辑</el-button>

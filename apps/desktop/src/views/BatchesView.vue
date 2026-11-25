@@ -328,16 +328,16 @@ onMounted(load);
       </el-table-column>
       <el-table-column prop="contractCount" label="合同数" width="90" align="right" />
       <el-table-column prop="projectCount" label="项目数" width="90" align="right" />
-      <el-table-column label="合同总价" width="150" align="right">
+      <el-table-column label="合同总价" width="180" align="right">
         <template #default="{ row }">{{ formatMoney(row.totalPrice) }}</template>
       </el-table-column>
-      <el-table-column label="企信实收" width="150" align="right">
+      <el-table-column label="企信实收" width="180" align="right">
         <template #default="{ row }">{{ formatMoney(row.qxReceived) }}</template>
       </el-table-column>
-      <el-table-column label="企信利润" width="150" align="right">
+      <el-table-column label="企信利润" width="180" align="right">
         <template #default="{ row }">{{ formatMoney(row.qxProfit) }}</template>
       </el-table-column>
-      <el-table-column label="相关文件" width="160" align="left" header-align="left">
+      <el-table-column label="相关文件" width="190" align="left" header-align="left">
         <template #default="{ row }">
           <el-button v-if="(row as Batch).attachments.length" link type="primary" @click="showFiles(row)">
             <el-icon><Paperclip /></el-icon>
@@ -372,15 +372,15 @@ onMounted(load);
       style="margin-top: 16px; justify-content: flex-end"
     />
 
-    <el-dialog v-if="!sealed" v-model="dlg.visible" :title="dlg.editing ? '编辑批次' : '新增批次'" width="520px" draggable destroy-on-close align-center :close-on-click-modal="false">
-      <el-form label-width="80px" @submit.prevent>
+    <el-dialog v-if="!sealed" v-model="dlg.visible" :title="dlg.editing ? '编辑批次' : '新增批次'" width="560px" draggable destroy-on-close align-center :close-on-click-modal="false">
+      <el-form label-width="110px" @submit.prevent>
         <el-form-item label="批次号" required :error="form.batchNo && batchNoError ? batchNoError : ''">
           <el-input
             v-model="form.batchNo"
             :disabled="!!dlg.editing && isUnbatched(dlg.editing)"
             maxlength="6"
             placeholder="正整数，如 15"
-            style="width: 200px"
+            style="width: 240px"
             @keyup.enter="submit"
           >
             <template #prepend>第</template>
@@ -441,10 +441,10 @@ onMounted(load);
             </el-link>
           </template>
         </el-table-column>
-        <el-table-column label="大小" width="90" align="left" header-align="left">
+        <el-table-column label="大小" width="100" align="left" header-align="left">
           <template #default="{ row }">{{ formatSize(row.size) }}</template>
         </el-table-column>
-        <el-table-column label="上传时间" width="160" align="left" header-align="left">
+        <el-table-column label="上传时间" width="200" align="left" header-align="left">
           <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
         </el-table-column>
         <el-table-column label="操作" width="80" align="left" header-align="left">
@@ -472,7 +472,7 @@ onMounted(load);
 }
 .hint {
   margin-left: 12px;
-  font-size: 13px;
+  font-size: 17px;
   color: var(--el-text-color-secondary);
 }
 
@@ -519,12 +519,12 @@ onMounted(load);
 }
 .file-size {
   flex: none;
-  font-size: 12px;
+  font-size: 16px;
   color: var(--el-text-color-secondary);
 }
 .form-tip {
   color: var(--el-text-color-secondary);
-  font-size: 12px;
+  font-size: 16px;
   line-height: 1.5;
 }
 </style>

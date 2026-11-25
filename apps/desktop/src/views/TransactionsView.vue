@@ -445,11 +445,11 @@ onMounted(load);
       </span>
     </div>
     <el-table :data="items" v-loading="loading" border class="tx-table" @filter-change="onFilterChange">
-      <el-table-column prop="occurredOn" label="日期" width="130" align="left" header-align="left" />
+      <el-table-column prop="occurredOn" label="日期" width="160" align="left" header-align="left" />
       <el-table-column
         column-key="type"
         label="类型"
-        width="190"
+        width="220"
         align="left"
         header-align="left"
         :filters="typeFilters"
@@ -476,7 +476,7 @@ onMounted(load);
         prop="categoryName"
         column-key="categoryId"
         label="分类"
-        width="130"
+        width="180"
         align="left"
         header-align="left"
         :filters="categoryFilters"
@@ -496,14 +496,14 @@ onMounted(load);
         :filter-multiple="false"
         :filtered-value="filteredValue(filter.counterpartyId)"
       />
-      <el-table-column label="金额" width="160" align="left" header-align="left">
+      <el-table-column label="金额" width="190" align="left" header-align="left">
         <template #default="{ row }">
           <span :class="{ 'tx-income': amountOf(row) > 0, 'tx-expense': amountOf(row) < 0 }">
             {{ formatMoney(amountOf(row)) }}
           </span>
         </template>
       </el-table-column>
-      <el-table-column label="相关文件" width="160" align="left" header-align="left">
+      <el-table-column label="相关文件" width="190" align="left" header-align="left">
         <template #default="{ row }">
           <el-button v-if="(row as Transaction).attachments.length" link type="primary" @click="showFiles(row)">
             <el-icon><Paperclip /></el-icon>
@@ -511,7 +511,7 @@ onMounted(load);
           </el-button>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="120" align="left" header-align="left">
+      <el-table-column label="操作" width="160" align="left" header-align="left">
         <template #default="{ row }">
           <el-tooltip v-if="(row as Transaction).linkedToProject" content="由项目入账自动生成，请在项目中把对应字段切换为「否」回退" placement="top">
             <span class="linked-hint">项目入账</span>
@@ -526,8 +526,8 @@ onMounted(load);
 
     <el-pagination v-model:current-page="page.current" v-model:page-size="page.size" :page-sizes="PAGE_SIZES" :total="page.total" layout="total, prev, pager, next, sizes" style="margin-top: 16px; justify-content: flex-end" @size-change="page.current = 1" @change="load" />
 
-    <el-dialog v-model="dialog" :title="editingId ? '编辑流水' : '记一笔'" width="520px" draggable destroy-on-close align-center>
-      <el-form :model="form" label-width="90px">
+    <el-dialog v-model="dialog" :title="editingId ? '编辑流水' : '记一笔'" width="560px" draggable destroy-on-close align-center>
+      <el-form :model="form" label-width="110px">
         <el-form-item label="类型">
           <el-radio-group v-model="form.type" @change="onFormTypeChange">
             <el-radio-button v-for="t in TRANSACTION_TYPES" :key="t" :value="t">{{ TRANSACTION_TYPE_LABELS[t] }}</el-radio-button>
@@ -613,10 +613,10 @@ onMounted(load);
             </el-link>
           </template>
         </el-table-column>
-        <el-table-column label="大小" width="90" align="left" header-align="left">
+        <el-table-column label="大小" width="100" align="left" header-align="left">
           <template #default="{ row }">{{ formatSize(row.size) }}</template>
         </el-table-column>
-        <el-table-column label="上传时间" width="160" align="left" header-align="left">
+        <el-table-column label="上传时间" width="200" align="left" header-align="left">
           <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
         </el-table-column>
         <el-table-column label="操作" width="80" align="left" header-align="left">
@@ -748,7 +748,7 @@ onMounted(load);
 }
 .linked-hint {
   color: var(--el-text-color-secondary);
-  font-size: 12px;
+  font-size: 16px;
   cursor: help;
 }
 .uploaded-list {
@@ -771,12 +771,12 @@ onMounted(load);
 }
 .file-size {
   flex: none;
-  font-size: 12px;
+  font-size: 16px;
   color: var(--el-text-color-secondary);
 }
 .form-tip {
   color: var(--el-text-color-secondary);
-  font-size: 12px;
+  font-size: 16px;
   line-height: 1.5;
 }
 /* 收入红、支出绿 */

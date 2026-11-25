@@ -28,7 +28,7 @@ const router = useRouter();
 <style scoped>
 .crumbs {
   margin-bottom: 12px;
-  font-size: 14px;
+  font-size: 18px;
 }
 .crumb-link {
   color: var(--el-color-primary);

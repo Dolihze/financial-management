@@ -1,4 +1,4 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import type { OverviewSummary, PeriodSummary } from '@fm/shared';
 import { ElMessage } from 'element-plus';
 import { computed, onMounted, ref, watch } from 'vue';
@@ -173,9 +173,9 @@ onMounted(() => {
             <div class="pane-title">资金分布</div>
             <div class="pane-table">
               <el-table :data="accountPageRows" size="small" height="100%" :row-class-name="() => 'tall-row'" empty-text="还没有账户，请先到「账户管理」创建">
-                <el-table-column type="index" :index="indexOf(accountPage)" label="#" width="40" />
+                <el-table-column type="index" :index="indexOf(accountPage)" label="#" width="36" />
                 <el-table-column prop="name" label="账户" show-overflow-tooltip />
-                <el-table-column label="余额" align="right" width="120">
+                <el-table-column label="余额" align="right" width="152">
                   <template #default="{ row }"><b :class="row.balance < 0 ? 'money-out' : ''">{{ formatMoney(row.balance) }}</b></template>
                 </el-table-column>
               </el-table>
@@ -191,9 +191,9 @@ onMounted(() => {
             </el-tabs>
             <div class="pane-table">
               <el-table :data="incomePageRows" size="small" height="100%" :row-class-name="() => 'tall-row'" empty-text="该时间段没有收入数据">
-                <el-table-column type="index" :index="indexOf(incomePage)" label="#" width="40" />
+                <el-table-column type="index" :index="indexOf(incomePage)" label="#" width="36" />
                 <el-table-column prop="name" :label="incomeTab === 'category' ? '分类' : '往来单位'" show-overflow-tooltip />
-                <el-table-column label="金额" width="110">
+                <el-table-column label="金额" width="132">
                   <template #default="{ row }"><b class="amount-income">{{ formatMoney(row.amount) }}</b></template>
                 </el-table-column>
               </el-table>
@@ -209,9 +209,9 @@ onMounted(() => {
             </el-tabs>
             <div class="pane-table">
               <el-table :data="expensePageRows" size="small" height="100%" :row-class-name="() => 'tall-row'" empty-text="该时间段没有支出数据">
-                <el-table-column type="index" :index="indexOf(expensePage)" label="#" width="40" />
+                <el-table-column type="index" :index="indexOf(expensePage)" label="#" width="36" />
                 <el-table-column prop="name" :label="expenseTab === 'category' ? '分类' : '往来单位'" show-overflow-tooltip />
-                <el-table-column label="金额" width="110">
+                <el-table-column label="金额" width="132">
                   <template #default="{ row }"><b class="amount-expense">{{ formatMoney(row.amount) }}</b></template>
                 </el-table-column>
               </el-table>
@@ -224,9 +224,9 @@ onMounted(() => {
             <div class="pane-title">借款明细</div>
             <div class="pane-table">
               <el-table :data="borrowPageRows" size="small" height="100%" :row-class-name="() => 'tall-row'" empty-text="暂无借款记录">
-                <el-table-column type="index" :index="indexOf(borrowPage)" label="#" width="40" />
+                <el-table-column type="index" :index="indexOf(borrowPage)" label="#" width="36" />
                 <el-table-column prop="name" label="借款对象" show-overflow-tooltip />
-                <el-table-column label="金额" width="110">
+                <el-table-column label="金额" width="132">
                   <template #default="{ row }"><b :class="row.amount < 0 ? 'money-out' : ''">{{ formatMoney(row.amount) }}</b></template>
                 </el-table-column>
               </el-table>
@@ -239,9 +239,9 @@ onMounted(() => {
             <div class="pane-title">贷款明细</div>
             <div class="pane-table">
               <el-table :data="loanPageRows" size="small" height="100%" :row-class-name="() => 'tall-row'" empty-text="暂无贷款记录">
-                <el-table-column type="index" :index="indexOf(loanPage)" label="#" width="40" />
+                <el-table-column type="index" :index="indexOf(loanPage)" label="#" width="36" />
                 <el-table-column prop="name" label="贷款对象" show-overflow-tooltip />
-                <el-table-column label="金额" width="110">
+                <el-table-column label="金额" width="132">
                   <template #default="{ row }"><b :class="row.amount < 0 ? 'money-out' : ''">{{ formatMoney(row.amount) }}</b></template>
                 </el-table-column>
               </el-table>
@@ -267,13 +267,15 @@ onMounted(() => {
   text-align: center;
 }
 .overview-page :deep(.el-statistic__head) {
-  font-size: 19px;
+  font-weight: 700;
+  color: #000;
+  font-size: 21px;
 }
 .overview-page :deep(.el-statistic__content) {
-  font-size: 29px;
+  font-size: 31px;
 }
 .overview-page :deep(.el-statistic__content .el-statistic__number) {
-  font-size: 29px;
+  font-size: 31px;
 }
 .period-card {
   flex: 1;
@@ -284,13 +286,14 @@ onMounted(() => {
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
+  padding: 24px 28px 20px;
 }
 .period-bar {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 16px;
-  margin-bottom: 16px;
+  gap: 20px;
+  margin-bottom: 20px;
 }
 /* 时间段 Tab：文字 + 选中底部蓝条 */
 .period-tabs {
@@ -327,12 +330,19 @@ onMounted(() => {
 .stat-row {
   flex: none;
   display: flex;
-  gap: 16px;
-  margin-bottom: 16px;
+  gap: 20px;
+  margin-bottom: 20px;
 }
 .stat-card {
   flex: 1 1 0;
   min-width: 0;
+}
+/* 统计卡片内部：加大上下内边距，标题与数字之间留白 */
+.stat-card :deep(.el-card__body) {
+  padding: 26px 20px;
+}
+.stat-card :deep(.el-statistic__head) {
+  margin-bottom: 14px;
 }
 /* 日期范围选择器宽度：用官方变量控制，并禁止在 flex 行里被拉伸 */
 .period-bar :deep(.el-date-editor.el-input__wrapper) {
@@ -359,22 +369,26 @@ onMounted(() => {
 .pane-pager {
   flex: none;
   justify-content: center;
-  margin-top: 12px;
+  margin-top: 16px;
+}
+/* 金额、序号、表头一律不换行：字号加大后窄列里的数字被拆成两行很难看 */
+.pane :deep(.el-table .cell) {
+  white-space: nowrap;
 }
 /* 行高加高 */
 .pane :deep(.tall-row td.el-table__cell) {
-  padding: 12px 0;
+  padding: 14px 0;
 }
 .pane :deep(.el-table__header th.el-table__cell) {
-  padding: 12px 0;
+  padding: 14px 0;
 }
 /* 与 el-tabs 头部同高并带同样的底线，使三栏表格顶部对齐 */
 .pane-title {
   flex: none;
   height: 40px;
   line-height: 40px;
-  margin-bottom: 15px;
-  font-size: 16px;
+  margin-bottom: 20px;
+  font-size: 20px;
   color: var(--el-color-primary);
   border-bottom: 2px solid var(--el-border-color-light);
 }

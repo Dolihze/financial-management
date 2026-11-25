@@ -497,22 +497,22 @@ function calculate() {
       <el-button type="primary" :loading="saving" :disabled="!project || !dirty" @click="save">确定</el-button>
     </template>
 
-    <el-dialog v-model="formulaVisible" title="公式维护" width="520px" append-to-body draggable destroy-on-close align-center>
-      <el-form label-width="150px" @submit.prevent>
+    <el-dialog v-model="formulaVisible" title="公式维护" width="620px" append-to-body draggable destroy-on-close align-center>
+      <el-form label-width="175px" @submit.prevent>
         <el-form-item label="企信实收">
           <span>= 合同价 × {{ qxReceivedRateText }}</span>
         </el-form-item>
         <el-form-item label="分包费计算方法">
-          <el-select v-model="rateForm.mode" style="width: 160px">
+          <el-select v-model="rateForm.mode" style="width: 180px">
             <el-option v-for="m in SUBCONTRACT_MODES" :key="m.value" :label="m.label" :value="m.value" />
           </el-select>
         </el-form-item>
         <el-form-item label="企信支付下家">
           <template v-if="rateForm.mode === 'rate'">
             <span>= 企信实收 ×&nbsp;</span>
-            <el-input v-model="rateForm.rate" style="width: 110px" placeholder="0.75" />
+            <el-input v-model="rateForm.rate" style="width: 130px" placeholder="0.75" />
           </template>
-          <el-input v-else v-model="rateForm.custom" style="width: 200px" placeholder="0.00"><template #prepend>¥</template></el-input>
+          <el-input v-else v-model="rateForm.custom" style="width: 220px" placeholder="0.00"><template #prepend>¥</template></el-input>
         </el-form-item>
         <el-form-item label="陈沛">
           <span>= 企信实收 × {{ chenPeiRateText }}</span>
@@ -540,11 +540,11 @@ function calculate() {
 }
 /* 金额输入框：宽度约为原来的 1/3 */
 .money-input {
-  width: 200px;
+  width: 240px;
 }
 /* 合同编号 / 批次号 / 区域：宽度约为原来的 1/3 */
 .short-input {
-  width: 200px;
+  width: 240px;
 }
 /* 项目名称：右侧留出空白，不贴着弹窗右边 */
 .name-input {

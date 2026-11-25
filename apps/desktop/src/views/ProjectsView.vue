@@ -249,45 +249,45 @@ onMounted(load);
     </div>
 
     <el-table v-loading="loading" :data="pageRows" border class="project-table" empty-text="该合同下暂无项目" @filter-change="onFilterChange">
-      <el-table-column type="index" :index="rowIndex" label="序号" width="60" />
+      <el-table-column type="index" :index="rowIndex" label="序号" width="70" />
 
-      <el-table-column prop="region" column-key="region" label="区域" width="80" :filters="regionFilters" :filter-method="() => true" filter-multiple />
-      <el-table-column prop="name" label="项目名称" min-width="180" class-name="name-cell" />
-      <el-table-column label="合同价" width="115">
+      <el-table-column prop="region" column-key="region" label="区域" width="96" :filters="regionFilters" :filter-method="() => true" filter-multiple />
+      <el-table-column prop="name" label="项目名称" min-width="260" class-name="name-cell" />
+      <el-table-column label="合同价" width="150">
         <template #default="{ row }">{{ formatMoney(row.contractPrice) }}</template>
       </el-table-column>
-      <el-table-column label="企信实收" width="115">
+      <el-table-column label="企信实收" width="140">
         <template #default="{ row }">{{ formatMoney(row.qxReceived) }}</template>
       </el-table-column>
-      <el-table-column label="企信支付下家" width="160">
+      <el-table-column label="企信支付下家" width="152">
         <template #default="{ row }">{{ formatMoney(row.qxSubcontractFee) }}</template>
       </el-table-column>
-      <el-table-column label="陈沛" width="100">
+      <el-table-column label="陈沛" width="120">
         <template #default="{ row }">{{ formatMoney(row.chenPei) }}</template>
       </el-table-column>
-      <el-table-column label="企信利润" width="110">
+      <el-table-column label="企信利润" width="140">
         <template #default="{ row }">{{ formatMoney(row.qxProfit) }}</template>
       </el-table-column>
       <!-- 是否结算由合同字段决定：合同下的项目都是已结算项目 -->
-      <el-table-column column-key="shPaid" label="上海院已支付" width="150" :filters="yesNoFilters" :filter-method="() => true">
+      <el-table-column column-key="shPaid" label="上海院已支付" width="176" :filters="yesNoFilters" :filter-method="() => true">
         <template #default="{ row }">
           <el-icon v-if="row.shPaid" class="flag-yes" title="是"><Select /></el-icon>
           <el-icon v-else class="flag-no" title="否"><CloseBold /></el-icon>
         </template>
       </el-table-column>
-      <el-table-column column-key="paidSubcontractor" label="支付下家" width="120" :filters="yesNoFilters" :filter-method="() => true">
+      <el-table-column column-key="paidSubcontractor" label="支付下家" width="136" :filters="yesNoFilters" :filter-method="() => true">
         <template #default="{ row }">
           <el-icon v-if="row.paidSubcontractor" class="flag-yes" title="是"><Select /></el-icon>
           <el-icon v-else class="flag-no" title="否"><CloseBold /></el-icon>
         </template>
       </el-table-column>
-      <el-table-column column-key="paidChenPei" label="支付陈沛" width="120" :filters="yesNoFilters" :filter-method="() => true">
+      <el-table-column column-key="paidChenPei" label="支付陈沛" width="136" :filters="yesNoFilters" :filter-method="() => true">
         <template #default="{ row }">
           <el-icon v-if="row.paidChenPei" class="flag-yes" title="是"><Select /></el-icon>
           <el-icon v-else class="flag-no" title="否"><CloseBold /></el-icon>
         </template>
       </el-table-column>
-      <el-table-column v-if="!sealed" label="操作" width="120" fixed="right">
+      <el-table-column v-if="!sealed" label="操作" width="140" fixed="right">
         <template #default="{ row }">
           <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
           <el-button link type="danger" @click="removeProject(row)">删除</el-button>
@@ -328,7 +328,7 @@ onMounted(load);
         <el-table-column type="selection" width="50" :reserve-selection="true" />
         <el-table-column prop="region" label="区域" width="80" />
         <el-table-column prop="name" label="项目名称" min-width="220" show-overflow-tooltip />
-        <el-table-column label="企信实收" width="130" align="right">
+        <el-table-column label="企信实收" width="150" align="right">
           <template #default="{ row }">{{ formatMoney(row.qxReceived) }}</template>
         </el-table-column>
       </el-table>
@@ -358,7 +358,7 @@ onMounted(load);
 }
 .hint {
   margin-left: 12px;
-  font-size: 14px;
+  font-size: 18px;
   color: var(--el-text-color-secondary);
 }
 .summary-red {
@@ -382,13 +382,13 @@ onMounted(load);
 }
 .settle-tip {
   margin-top: 12px;
-  font-size: 12px;
+  font-size: 16px;
   color: var(--el-text-color-secondary);
 }
 /* 是/否 图标：绿勾、红叉 */
 .flag-yes,
 .flag-no {
-  font-size: 20px;
+  font-size: 24px;
   vertical-align: middle;
 }
 .flag-yes {

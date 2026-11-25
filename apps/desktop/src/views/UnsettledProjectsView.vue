@@ -239,19 +239,19 @@ onMounted(load);
       <el-table-column type="index" :index="rowIndex" label="序号" width="70" />
       <el-table-column prop="region" label="区域" min-width="110" show-overflow-tooltip />
       <el-table-column prop="name" label="项目名称" min-width="200" show-overflow-tooltip />
-      <el-table-column label="合同价" width="140" align="right">
+      <el-table-column label="合同价" width="170" align="right">
         <template #default="{ row }">{{ formatMoney(row.contractPrice) }}</template>
       </el-table-column>
-      <el-table-column label="企信实收" width="140" align="right">
+      <el-table-column label="企信实收" width="170" align="right">
         <template #default="{ row }">{{ formatMoney(row.qxReceived) }}</template>
       </el-table-column>
-      <el-table-column label="企信支付下家" width="180" align="right">
+      <el-table-column label="企信支付下家" width="190" align="right">
         <template #default="{ row }">{{ formatMoney(row.qxSubcontractFee) }}</template>
       </el-table-column>
-      <el-table-column label="陈沛" width="130" align="right">
+      <el-table-column label="陈沛" width="140" align="right">
         <template #default="{ row }">{{ formatMoney(row.chenPei) }}</template>
       </el-table-column>
-      <el-table-column label="企信利润" width="140" align="right">
+      <el-table-column label="企信利润" width="170" align="right">
         <template #default="{ row }">{{ formatMoney(row.qxProfit) }}</template>
       </el-table-column>
       <el-table-column label="操作" width="130" fixed="right">
@@ -317,22 +317,22 @@ onMounted(load);
         <el-button type="primary" :loading="dlg.saving" @click="submit">保存</el-button>
       </template>
 
-      <el-dialog v-model="formulaVisible" title="公式维护" width="640px" append-to-body draggable destroy-on-close align-center>
+      <el-dialog v-model="formulaVisible" title="公式维护" width="660px" append-to-body draggable destroy-on-close align-center>
         <el-form label-width="190px" class="nowrap-label formula-form" @submit.prevent>
           <el-form-item label="企信实收">
             <span>= 合同价 × {{ qxReceivedRateText }}</span>
           </el-form-item>
           <el-form-item label="分包费计算方法">
-            <el-select v-model="rateForm.mode" style="width: 160px">
+            <el-select v-model="rateForm.mode" style="width: 180px">
               <el-option v-for="m in SUBCONTRACT_MODES" :key="m.value" :label="m.label" :value="m.value" />
             </el-select>
           </el-form-item>
           <el-form-item label="企信支付下家">
             <template v-if="rateForm.mode === 'rate'">
               <span>= 企信实收 ×&nbsp;</span>
-              <el-input v-model="rateForm.rate" style="width: 110px" placeholder="0.75" />
+              <el-input v-model="rateForm.rate" style="width: 130px" placeholder="0.75" />
             </template>
-            <el-input v-else v-model="rateForm.custom" style="width: 200px" placeholder="0.00"><template #prepend>¥</template></el-input>
+            <el-input v-else v-model="rateForm.custom" style="width: 220px" placeholder="0.00"><template #prepend>¥</template></el-input>
           </el-form-item>
           <el-form-item label="陈沛">
             <span>= 企信实收 × {{ chenPeiRateText }}</span>
@@ -363,7 +363,7 @@ onMounted(load);
 }
 /* 区域、金额输入框固定宽度；项目名称右侧留白，不贴着弹窗右边 */
 .money-input {
-  width: 200px;
+  width: 240px;
 }
 .name-input {
   width: calc(100% - 80px);

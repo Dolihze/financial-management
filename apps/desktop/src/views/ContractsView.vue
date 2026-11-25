@@ -272,13 +272,13 @@ onMounted(load);
         <template #default="{ row }">{{ row.regions.join('、') }}</template>
       </el-table-column>
       <el-table-column prop="projectCount" label="项目数" width="90" align="right" />
-      <el-table-column label="合同总价" width="180" align="right">
+      <el-table-column label="合同总价" width="190" align="right">
         <template #default="{ row }">{{ formatMoney(row.totalPrice) }}</template>
       </el-table-column>
-      <el-table-column label="企信实收" width="160" align="right">
+      <el-table-column label="企信实收" width="180" align="right">
         <template #default="{ row }">{{ formatMoney(row.qxReceived) }}</template>
       </el-table-column>
-      <el-table-column label="企信利润" width="160" align="right">
+      <el-table-column label="企信利润" width="180" align="right">
         <template #default="{ row }">{{ formatMoney(row.qxProfit) }}</template>
       </el-table-column>
       <el-table-column prop="note" label="备注" min-width="180" show-overflow-tooltip />
@@ -302,8 +302,8 @@ onMounted(load);
       style="margin-top: 16px; justify-content: flex-end"
     />
 
-    <el-dialog v-model="edit.visible" title="编辑合同" width="480px" draggable destroy-on-close align-center :close-on-click-modal="false">
-      <el-form label-width="90px" @submit.prevent>
+    <el-dialog v-model="edit.visible" title="编辑合同" width="520px" draggable destroy-on-close align-center :close-on-click-modal="false">
+      <el-form label-width="130px" @submit.prevent>
         <el-form-item label="所属批次" required>
           <el-select v-model="edit.batchId" style="width: 100%" placeholder="请选择批次">
             <el-option v-for="b in allBatches" :key="b.id" :label="batchLabel(b)" :value="b.id" />
@@ -324,7 +324,7 @@ onMounted(load);
     </el-dialog>
 
     <el-dialog v-model="dlg.visible" :title="`新增合同（归属${batchTitle}）`" width="860px" draggable destroy-on-close align-center :close-on-click-modal="false">
-      <el-form label-width="90px" @submit.prevent>
+      <el-form label-width="130px" @submit.prevent>
         <el-form-item label="合同编号" required>
           <el-input v-model="contractNo" maxlength="50" style="width: 320px" placeholder="如 HT-2026-001" />
         </el-form-item>
@@ -343,7 +343,7 @@ onMounted(load);
               <el-table-column type="selection" width="50" :reserve-selection="true" />
               <el-table-column prop="region" label="区域" width="80" />
               <el-table-column prop="name" label="项目名称" min-width="220" show-overflow-tooltip />
-              <el-table-column label="企信实收" width="120" align="right">
+              <el-table-column label="企信实收" width="160" align="right">
                 <template #default="{ row }">{{ formatMoney(row.qxReceived) }}</template>
               </el-table-column>
             </el-table>
@@ -411,24 +411,24 @@ onMounted(load);
   width: 220px;
 }
 .form-tip {
-  font-size: 12px;
+  font-size: 16px;
   line-height: 1.5;
   color: var(--el-text-color-secondary);
 }
 .err {
-  font-size: 12px;
+  font-size: 16px;
   color: var(--el-color-danger);
 }
 .invalid :deep(.el-input__wrapper) {
   box-shadow: 0 0 0 1px var(--el-color-danger) inset;
 }
 .total {
-  font-size: 18px;
+  font-size: 22px;
   color: #f56c6c;
 }
 .hint {
   margin-left: 12px;
-  font-size: 14px;
+  font-size: 18px;
   color: var(--el-text-color-secondary);
 }
 </style>

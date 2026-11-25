@@ -57,26 +57,26 @@ async function archive(id: string, name: string) {
     </div>
 
     <el-table :data="base.accounts" border>
-      <el-table-column prop="name" label="账户名称" min-width="120" />
-      <el-table-column label="类型" width="120">
+      <el-table-column prop="name" label="账户名称" min-width="210" />
+      <el-table-column label="类型" width="130">
         <template #default="{ row }">{{ ACCOUNT_TYPE_LABELS[row.type as AccountType] }}</template>
       </el-table-column>
-      <el-table-column prop="bankName" label="开户银行" min-width="120" />
-      <el-table-column prop="accountNo" label="银行卡号" min-width="140" />
-      <el-table-column label="期初余额" align="right" width="160">
+      <el-table-column prop="bankName" label="开户银行" min-width="230" />
+      <el-table-column prop="accountNo" label="银行卡号" min-width="230" />
+      <el-table-column label="期初余额" align="right" width="170">
         <template #default="{ row }">{{ formatMoney(row.openingBalance) }}</template>
       </el-table-column>
-      <el-table-column label="当前余额" align="right" width="160">
+      <el-table-column label="当前余额" align="right" width="170">
         <template #default="{ row }"><b>{{ formatMoney(row.balance) }}</b></template>
       </el-table-column>
-      <el-table-column prop="note" label="备注" min-width="100" />
+      <el-table-column prop="note" label="备注" min-width="200" show-overflow-tooltip />
       <el-table-column label="操作" width="100">
         <template #default="{ row }"><el-button link type="danger" @click="archive(row.id, row.name)">归档</el-button></template>
       </el-table-column>
     </el-table>
 
-    <el-dialog v-model="dialog" title="新增账户" width="460px" draggable destroy-on-close align-center>
-      <el-form :model="form" label-width="90px">
+    <el-dialog v-model="dialog" title="新增账户" width="500px" draggable destroy-on-close align-center>
+      <el-form :model="form" label-width="110px">
         <el-form-item label="账户类型">
           <el-select v-model="form.type" style="width: 100%">
             <el-option v-for="t in ACCOUNT_TYPES" :key="t" :value="t" :label="ACCOUNT_TYPE_LABELS[t]" />

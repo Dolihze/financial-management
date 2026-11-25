@@ -87,7 +87,7 @@ const menus: MenuItem[] = [
 <template>
   <el-container style="height: 100%">
     <el-aside width="200px" style="background: #1f2d3d">
-      <div style="color: #fff; font-size: 20px; font-weight: 600; padding: 20px 16px">财务管理</div>
+      <div style="color: #fff; font-size: 24px; font-weight: 600; padding: 20px 16px">财务管理</div>
       <el-menu
         :default-active="(route.meta.menu as string | undefined) ?? route.path"
         :default-openeds="['/projects']"

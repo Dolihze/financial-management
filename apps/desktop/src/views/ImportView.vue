@@ -111,7 +111,7 @@ onMounted(loadBatches);
 
     <el-card shadow="never" header="导入历史">
       <el-table :data="batches" size="small" border>
-        <el-table-column prop="createdAt" label="时间" width="200" />
+        <el-table-column prop="createdAt" label="时间" width="230" />
         <el-table-column prop="fileName" label="文件" />
         <el-table-column prop="importedCount" label="导入条数" width="100" />
         <el-table-column label="状态" width="100">

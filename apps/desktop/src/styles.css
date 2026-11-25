@@ -1,24 +1,24 @@
 ﻿/* 全局字号：在 Element Plus 默认值基础上统一 +2px（弹层挂在 body 下，故写在 :root） */
 :root {
-  --el-font-size-extra-large: 22px;
-  --el-font-size-large: 20px;
-  --el-font-size-medium: 18px;
-  --el-font-size-base: 16px;
-  --el-font-size-small: 15px;
-  --el-font-size-extra-small: 14px;
+  --el-font-size-extra-large: 26px;
+  --el-font-size-large: 24px;
+  --el-font-size-medium: 22px;
+  --el-font-size-base: 20px;
+  --el-font-size-small: 19px;
+  --el-font-size-extra-small: 18px;
 
   /* 以下组件在 Element Plus 里写死了 px，不跟随上面的变量，需单独 +2px */
-  --el-alert-title-font-size: 16px;
-  --el-alert-description-font-size: 16px;
-  --el-checkbox-font-size: 16px;
-  --el-dialog-content-font-size: 16px;
-  --el-pagination-font-size: 16px;
-  --el-pagination-font-size-small: 14px;
-  --el-select-input-font-size: 16px;
-  --el-tag-font-size: 14px;
-  --el-popover-title-font-size: 18px;
-  --el-notification-title-font-size: 18px;
-  --el-result-title-font-size: 22px;
+  --el-alert-title-font-size: 20px;
+  --el-alert-description-font-size: 20px;
+  --el-checkbox-font-size: 20px;
+  --el-dialog-content-font-size: 20px;
+  --el-pagination-font-size: 20px;
+  --el-pagination-font-size-small: 18px;
+  --el-select-input-font-size: 20px;
+  --el-tag-font-size: 18px;
+  --el-popover-title-font-size: 22px;
+  --el-notification-title-font-size: 22px;
+  --el-result-title-font-size: 26px;
 }
 html,
 body,
@@ -28,17 +28,17 @@ body,
 }
 body {
   font-family: 'Microsoft YaHei', 'PingFang SC', system-ui, sans-serif;
-  font-size: 16px;
+  font-size: 20px;
   background: #f5f7fa;
 }
 /* Element Plus 中写死 px、不跟随上面变量的规则，逐项 +2px */
 .el-form-item {
-  --font-size: 16px;
-  font-size: 16px;
+  --font-size: 20px;
+  font-size: 20px;
 }
 .el-form-item--small {
-  --font-size: 14px;
-  font-size: 14px;
+  --font-size: 18px;
+  font-size: 18px;
 }
 .el-switch,
 .el-switch__label,
@@ -53,28 +53,188 @@ body {
 .el-upload-dragger .el-upload__text,
 .el-upload-list__item,
 .el-loading-spinner .el-loading-text {
-  font-size: 16px;
+  font-size: 20px;
 }
 .el-upload__tip,
-.el-form-item__error,
 .el-date-table,
 .el-month-table,
 .el-year-table,
 .el-quarter-table,
 .el-progress-bar__innerText {
-  font-size: 14px;
+  font-size: 18px;
 }
 .el-step__title,
 .el-date-picker__header-label,
 .el-date-range-picker__header-label {
-  font-size: 18px;
+  font-size: 22px;
 }
 .el-step__description {
-  font-size: 14px;
+  font-size: 18px;
 }
 .el-menu-item [class^='el-icon'],
 .el-sub-menu .el-icon {
+  font-size: 24px;
+}
+/*
+ * 下拉框、Tooltip、上传、计数、范围选择等组件在 Element Plus 里把字号写死成 12/14px（不读 --el-font-size-*），
+ * 全局变量改了它们也不动：这里统一按基准（20px）/ 小号（18px）补齐。
+ */
+.el-select__wrapper,
+.el-select--large .el-select__wrapper,
+.el-popper,
+.el-upload__text,
+.el-upload-dragger .el-upload__text,
+.el-upload-list__item,
+.el-input--large,
+.el-input-number--large,
+.el-cascader--large,
+.el-descriptions--large,
+.el-radio.el-radio--large .el-radio__label,
+.el-checkbox.el-checkbox--large .el-checkbox__label,
+.el-dropdown-menu--large .el-dropdown-menu__item,
+.el-range-editor--large .el-range-input,
+.el-range-editor--large .el-range-separator,
+.el-picker-panel__shortcut,
+.el-message__content {
   font-size: 20px;
+}
+.el-select--small .el-select__wrapper,
+.el-select-group__title,
+.el-input--small,
+.el-input .el-input__count,
+.el-textarea .el-input__count,
+.el-input .el-input__clear,
+.el-input .el-input__password,
+.el-textarea__clear,
+.el-input-number--small .el-input-number__increase,
+.el-input-number--small .el-input-number__decrease,
+.el-input-number__increase,
+.el-input-number__decrease,
+.el-cascader--small,
+.el-descriptions--small,
+.el-radio.el-radio--small .el-radio__label,
+.el-checkbox.el-checkbox--small .el-checkbox__label,
+.el-radio-button--small .el-radio-button__inner,
+.el-dropdown-menu--small .el-dropdown-menu__item,
+.el-range-editor--small .el-range-input,
+.el-range-editor--small .el-range-separator,
+.el-menu-item-group__title,
+.el-step__icon,
+.el-step.is-simple .el-step__icon,
+.el-upload-list__item-delete,
+.el-table__column-filter-trigger i {
+  font-size: 18px;
+}
+.el-select__wrapper {
+  min-height: 40px;
+  line-height: 24px;
+}
+/*
+ * 这些组件的根节点自己重新声明了同名 CSS 变量（12/14/16px），会盖掉 :root 上设的值，
+ * 所以必须写在组件选择器上才生效。
+ */
+.el-tag {
+  --el-tag-font-size: 18px;
+}
+.el-tag--small {
+  --el-tag-font-size: 16px;
+}
+.el-alert {
+  --el-alert-title-font-size: 20px;
+  --el-alert-description-font-size: 18px;
+}
+.el-checkbox {
+  --el-checkbox-font-size: 20px;
+}
+.el-dialog {
+  --el-dialog-content-font-size: 20px;
+  --el-dialog-title-font-size: 24px;
+}
+.el-select {
+  --el-select-input-font-size: 20px;
+}
+.el-popover {
+  --el-popover-title-font-size: 20px;
+}
+.el-notification {
+  --el-notification-title-font-size: 20px;
+}
+/*
+ * 分页：.el-pagination 自己重新声明了 --el-pagination-font-size(14px / 12px)，
+ * 会盖掉 :root 上的同名变量，必须在组件上覆盖；按钮（页码、上一页/下一页）随字号放大。
+ */
+.el-pagination {
+  --el-pagination-font-size: 20px;
+  --el-pagination-font-size-small: 18px;
+  --el-pagination-button-width: 40px;
+  --el-pagination-button-height: 40px;
+  --el-pagination-button-width-small: 30px;
+  --el-pagination-button-height-small: 30px;
+}
+.el-pagination .el-select {
+  width: 140px;
+}
+.el-pagination--small .el-select {
+  width: 124px;
+}
+.el-pagination .btn-prev .el-icon,
+.el-pagination .btn-next .el-icon {
+  font-size: 16px;
+}
+.el-select__placeholder,
+.el-select__selected-item {
+  font-size: inherit;
+}
+/*
+ * small 尺寸的按钮 / 输入框 / 标签在 Element Plus 里写死 12px 且高度固定，不跟随全局字号：
+ * 字号与基准保持同步（small = 18px），并按字号放大高度和内边距，避免文字被挤。
+ */
+.el-button--small {
+  --el-button-size: 32px;
+  font-size: 18px;
+  padding: 5px 14px;
+}
+.el-button--small.is-link {
+  padding: 2px;
+  height: auto;
+}
+.el-input--small {
+  font-size: 18px;
+}
+/* 注意顺序：默认尺寸写在前，small 写在后，同权重后者生效 */
+.el-tag {
+  font-size: 18px;
+  height: 32px;
+  padding: 0 12px;
+}
+.el-tag.el-tag--small {
+  font-size: 16px;
+  height: 28px;
+  padding: 0 10px;
+}
+/*
+ * 表单校验提示：Element Plus 把它绝对定位在输入框正下方，只靠 form-item 的 margin-bottom(18px) 留位置，
+ * 提示一行约 24px，会压住下一行表单项。
+ * 平时行距保持不变（弹窗不被拉长），只有出错的那一项把下边距加大到放得下提示。
+ */
+.el-form-item {
+  --el-form-item-margin-bottom: 22px;
+}
+.el-form-item.is-error {
+  margin-bottom: 40px;
+}
+.el-form-item__error {
+  font-size: 16px;
+  line-height: 20px;
+  padding-top: 4px;
+  white-space: nowrap;
+}
+/*
+ * 带附属控件的表单项（合同价下面的「计算 / 公式维护」按钮条）：校验提示绝对定位在整个内容区底部，
+ * 本来就不会压住按钮；这里给按钮条留出上下间距，避免按钮紧贴输入框。
+ */
+.formula-bar {
+  margin-top: 8px;
 }
 .money-in {
   color: #67c23a;
@@ -123,7 +283,7 @@ body {
 }
 .compact-upload .el-upload-dragger .el-icon--upload {
   margin: 0;
-  font-size: 34px;
+  font-size: 38px;
   line-height: 1;
 }
 .compact-upload .el-upload-dragger .el-upload__text {
@@ -148,6 +308,6 @@ body {
 .log-path {
   margin-top: 12px;
   color: var(--el-text-color-secondary);
-  font-size: 14px;
+  font-size: 18px;
   word-break: break-all;
 }

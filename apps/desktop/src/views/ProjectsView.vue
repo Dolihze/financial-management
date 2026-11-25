@@ -174,7 +174,7 @@ async function removeProject(p: Project) {
 }
 
 // ---------- 新增项目：从未结算项目表（未归入合同的项目）中挑选，加入当前合同 ----------
-// 项目归入合同 = 变为已结算项目，不入账；入账在编辑项目里把「上海院已支付」切换为是时发生
+// 项目归入合同 = 变为已结算项目，不入账；入账在编辑项目里把「企信收到钱」切换为是时发生
 const add = reactive({ visible: false, loading: false, saving: false, keyword: '' });
 const candidates = ref<Project[]>([]);
 const picked = ref<Project[]>([]);
@@ -252,36 +252,36 @@ onMounted(load);
       <el-table-column type="index" :index="rowIndex" label="序号" width="70" />
 
       <el-table-column prop="region" column-key="region" label="区域" width="96" :filters="regionFilters" :filter-method="() => true" filter-multiple />
-      <el-table-column prop="name" label="项目名称" min-width="260" class-name="name-cell" />
-      <el-table-column label="合同价" width="150">
+      <el-table-column prop="name" label="项目名称" min-width="200" class-name="name-cell" />
+      <el-table-column label="合同价" width="130">
         <template #default="{ row }">{{ formatMoney(row.contractPrice) }}</template>
       </el-table-column>
-      <el-table-column label="企信实收" width="140">
+      <el-table-column label="企信实收" width="124">
         <template #default="{ row }">{{ formatMoney(row.qxReceived) }}</template>
       </el-table-column>
-      <el-table-column label="企信支付下家" width="152">
+      <el-table-column label="企信支付下家" width="148">
         <template #default="{ row }">{{ formatMoney(row.qxSubcontractFee) }}</template>
       </el-table-column>
       <el-table-column label="陈沛" width="120">
         <template #default="{ row }">{{ formatMoney(row.chenPei) }}</template>
       </el-table-column>
-      <el-table-column label="企信利润" width="140">
+      <el-table-column label="企信利润" width="124">
         <template #default="{ row }">{{ formatMoney(row.qxProfit) }}</template>
       </el-table-column>
       <!-- 是否结算由合同字段决定：合同下的项目都是已结算项目 -->
-      <el-table-column column-key="shPaid" label="上海院已支付" width="176" :filters="yesNoFilters" :filter-method="() => true">
+      <el-table-column column-key="shPaid" label="企信收到钱" width="146" :filters="yesNoFilters" :filter-method="() => true">
         <template #default="{ row }">
           <el-icon v-if="row.shPaid" class="flag-yes" title="是"><Select /></el-icon>
           <el-icon v-else class="flag-no" title="否"><CloseBold /></el-icon>
         </template>
       </el-table-column>
-      <el-table-column column-key="paidSubcontractor" label="支付下家" width="136" :filters="yesNoFilters" :filter-method="() => true">
+      <el-table-column column-key="paidSubcontractor" label="支付下家" width="130" :filters="yesNoFilters" :filter-method="() => true">
         <template #default="{ row }">
           <el-icon v-if="row.paidSubcontractor" class="flag-yes" title="是"><Select /></el-icon>
           <el-icon v-else class="flag-no" title="否"><CloseBold /></el-icon>
         </template>
       </el-table-column>
-      <el-table-column column-key="paidChenPei" label="支付陈沛" width="136" :filters="yesNoFilters" :filter-method="() => true">
+      <el-table-column column-key="paidChenPei" label="支付陈沛" width="130" :filters="yesNoFilters" :filter-method="() => true">
         <template #default="{ row }">
           <el-icon v-if="row.paidChenPei" class="flag-yes" title="是"><Select /></el-icon>
           <el-icon v-else class="flag-no" title="否"><CloseBold /></el-icon>
@@ -332,7 +332,7 @@ onMounted(load);
           <template #default="{ row }">{{ formatMoney(row.qxReceived) }}</template>
         </el-table-column>
       </el-table>
-      <div class="settle-tip">项目加入合同即成为已结算项目，此时不入账；需要入账时，在项目的编辑里把「上海院已支付」切换为是</div>
+      <div class="settle-tip">项目加入合同即成为已结算项目，此时不入账；需要入账时，在项目的编辑里把「企信收到钱」切换为是</div>
       <template #footer>
         <el-button @click="add.visible = false">取消</el-button>
         <el-button type="primary" :loading="add.saving" :disabled="picked.length === 0" @click="confirmAdd">添加 {{ picked.length || '' }}</el-button>
@@ -379,6 +379,10 @@ onMounted(load);
   white-space: normal;
   word-break: break-all;
   line-height: 1.5;
+}
+/* 表头不换行（「企信收到钱」列等） */
+.project-table :deep(th .cell) {
+  white-space: nowrap;
 }
 .settle-tip {
   margin-top: 12px;

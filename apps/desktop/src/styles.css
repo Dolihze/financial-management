@@ -296,6 +296,24 @@ body {
   overflow-y: auto;
 }
 
+/*
+ * 全部表格的表头和内容统一居左：覆盖各列的 align="right" / "center"（对应 is-right / is-center）。
+ * 表头若是 flex 布局（带排序/筛选图标），同步把主轴对齐改为居左。
+ */
+.el-table th.el-table__cell,
+.el-table td.el-table__cell,
+.el-table th.el-table__cell.is-right,
+.el-table td.el-table__cell.is-right,
+.el-table th.el-table__cell.is-center,
+.el-table td.el-table__cell.is-center {
+  text-align: left;
+}
+.el-table th.el-table__cell > .cell,
+.el-table td.el-table__cell > .cell {
+  text-align: left;
+  justify-content: flex-start;
+}
+
 /* 表格列筛选面板：把「筛选」「重置」按钮互换位置（面板渲染在 body 下，需全局样式） */
 .el-table-filter__bottom {
   display: flex;

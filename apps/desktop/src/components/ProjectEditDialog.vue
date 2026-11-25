@@ -31,7 +31,7 @@ type FlagKey = 'shPaid' | 'paidSubcontractor' | 'paidChenPei';
 type ToggleKey = FlagKey;
 type AmountKey = 'qxReceived' | 'qxSubcontractFee' | 'chenPei';
 const FLAGS: Record<FlagKey, { label: string; kind: ProjectPostingKind; direction: '收入' | '支出'; amount: AmountKey }> = {
-  shPaid: { label: '上海院已支付', kind: 'qx_received', direction: '收入', amount: 'qxReceived' },
+  shPaid: { label: '企信收到钱', kind: 'qx_received', direction: '收入', amount: 'qxReceived' },
   paidSubcontractor: { label: '支付下家', kind: 'paid_subcontractor', direction: '支出', amount: 'qxSubcontractFee' },
   paidChenPei: { label: '支付陈沛', kind: 'paid_chen_pei', direction: '支出', amount: 'chenPei' }
 };
@@ -460,7 +460,7 @@ function calculate() {
         <el-form-item label="企信实收" prop="qxReceived">
           <el-input v-model="form.qxReceived" class="money-input" :disabled="isPosted('shPaid')"><template #prepend>¥</template></el-input>
           <el-text v-if="isPosted('shPaid')" type="warning" size="small">
-            已入账，如需修改金额请先将「上海院已支付」切换为「否」回退入账
+            已入账，如需修改金额请先将「企信收到钱」切换为「否」回退入账
           </el-text>
         </el-form-item>
         <el-form-item label="企信支付下家" prop="qxSubcontractFee">
@@ -478,7 +478,7 @@ function calculate() {
         <el-form-item label="企信利润" prop="qxProfit">
           <el-input v-model="form.qxProfit" class="money-input"><template #prepend>¥</template></el-input>
         </el-form-item>
-        <el-form-item v-if="showPaidFlags" label="上海院已支付">
+        <el-form-item v-if="showPaidFlags" label="企信收到钱">
           <YesNoRadio v-model="form.shPaid" :confirm="(n) => confirmFlag('shPaid', n)" />
         </el-form-item>
         <el-form-item v-if="showPaidFlags" label="支付下家">

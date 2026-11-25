@@ -166,7 +166,7 @@ async function remove(c: Contract) {
 }
 
 // ---------- 新增合同：从未结算项目表（未归入合同的项目）中挑选，并给每个项目设置合同价 ----------
-// 项目归入合同 = 变为已结算项目，不入账；入账在项目编辑里把「上海院已支付」切换为是时发生
+// 项目归入合同 = 变为已结算项目，不入账；入账在项目编辑里把「企信收到钱」切换为是时发生
 const dlg = reactive({ visible: false, saving: false, loading: false });
 const contractNo = ref('');
 const unsettled = ref<Project[]>([]);
@@ -370,7 +370,7 @@ onMounted(load);
           <span class="hint">（已选 {{ selectedProjects.length }} 个项目的合同价之和）</span>
         </el-form-item>
         <el-form-item>
-          <div class="form-tip" style="width: 100%">项目归入合同即成为已结算项目，此时不入账；需要入账时，在项目的编辑里把「上海院已支付」切换为是</div>
+          <div class="form-tip" style="width: 100%">项目归入合同即成为已结算项目，此时不入账；需要入账时，在项目的编辑里把「企信收到钱」切换为是</div>
         </el-form-item>
       </el-form>
       <template #footer>

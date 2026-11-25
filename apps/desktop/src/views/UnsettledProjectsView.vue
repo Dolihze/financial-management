@@ -235,23 +235,23 @@ onMounted(load);
       <el-button type="primary" icon="Plus" @click="openCreate">新建项目</el-button>
     </div>
 
-    <el-table v-loading="loading" :data="pageRows" border empty-text="暂无项目，点击「新建项目」添加">
+    <el-table v-loading="loading" :data="pageRows" border class="project-table" empty-text="暂无项目，点击「新建项目」添加">
       <el-table-column type="index" :index="rowIndex" label="序号" width="70" />
       <el-table-column prop="region" label="区域" min-width="110" show-overflow-tooltip />
-      <el-table-column prop="name" label="项目名称" min-width="200" show-overflow-tooltip />
-      <el-table-column label="合同价" width="170" align="right">
+      <el-table-column prop="name" label="项目名称" min-width="200" class-name="name-cell" />
+      <el-table-column label="合同价" width="130" align="right">
         <template #default="{ row }">{{ formatMoney(row.contractPrice) }}</template>
       </el-table-column>
-      <el-table-column label="企信实收" width="170" align="right">
+      <el-table-column label="企信实收" width="124" align="right">
         <template #default="{ row }">{{ formatMoney(row.qxReceived) }}</template>
       </el-table-column>
-      <el-table-column label="企信支付下家" width="190" align="right">
+      <el-table-column label="企信支付下家" width="148" align="right">
         <template #default="{ row }">{{ formatMoney(row.qxSubcontractFee) }}</template>
       </el-table-column>
-      <el-table-column label="陈沛" width="140" align="right">
+      <el-table-column label="陈沛" width="120" align="right">
         <template #default="{ row }">{{ formatMoney(row.chenPei) }}</template>
       </el-table-column>
-      <el-table-column label="企信利润" width="170" align="right">
+      <el-table-column label="企信利润" width="124" align="right">
         <template #default="{ row }">{{ formatMoney(row.qxProfit) }}</template>
       </el-table-column>
       <el-table-column label="操作" width="130" fixed="right">
@@ -352,6 +352,18 @@ onMounted(load);
 </template>
 
 <style scoped>
+/* 金额、编号不换行；项目名称列单独允许换行并完整显示 */
+.project-table :deep(td .cell) {
+  white-space: nowrap;
+}
+.project-table :deep(td.name-cell .cell) {
+  white-space: normal;
+  word-break: break-all;
+  line-height: 1.5;
+}
+.project-table :deep(th .cell) {
+  white-space: nowrap;
+}
 /* 标签单行显示，不因拥挤换行（label-width 已按最长的「企信支付下家」留足） */
 .nowrap-label :deep(.el-form-item__label) {
   white-space: nowrap;

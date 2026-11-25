@@ -318,6 +318,8 @@ export interface Contract {
   projectCount: number;
   /** 其下项目的区域（去重、非空、按名称排序） */
   regions: string[];
+  /** 备注，可为空字符串 */
+  note: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -341,11 +343,14 @@ export interface CreateContractInput {
   /** 所属批次 id（必填） */
   batchId: string;
   contractNo: string;
+  /** 备注；省略 = 空 */
+  note?: string;
   projects: ContractProjectInput[];
 }
 
 /**
- * 修改合同：合同编号、所属批次，以及项目的合同价。
+ * 修改合同：合同编号、备注、所属批次，以及项目的合同价。
+ * - note：省略保持原值（如在合同里新增项目时只改合同价，不会清掉备注）；传空字符串 = 清空；
  * - batchId：省略保持不变；指定其他批次即把合同（连同其下项目）移到该批次；
  * - 本合同已有的项目：只修改合同价；
  * - 不属于本合同的项目：必须是「未归入任何合同」的项目，会被加入本合同并设置合同价（不入账）；
@@ -354,6 +359,7 @@ export interface CreateContractInput {
 export interface UpdateContractInput {
   batchId?: string;
   contractNo: string;
+  note?: string;
   projects: ContractProjectInput[];
 }
 

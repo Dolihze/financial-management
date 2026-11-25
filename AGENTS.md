@@ -8,7 +8,7 @@
 - 余额由流水推导，不要新增存储余额的列。
 - 删除规则：交易「删除」是物理删除（用 `TransactionService.remove/removeWithinTx`，分录/附件/项目入账关联一并删除，删除前内容写入审计）；账户、合同、批次、项目只「归档」；附件「删除」是软删除（`deleted_at`）。由项目入账生成的流水不能单独编辑/删除（只能在项目里切回「否」回退）。写操作需同时 `writeAudit`。`tx.status` 列已不再使用（恒为 `normal`），不要再引入「作废」概念。
 - 批次「存档」（`batch.sealed_at` 有值）与「归档/删除」（`archived`）是两回事：存档批次整批只读。任何会修改批次、合同、项目、批次附件的写接口，都必须先调用 `services/sealGuard.ts` 的 `assertBatchWritable / assertContractWritable / assertProjectWritable`（返回 409 `BATCH_SEALED`），新增接口时不要漏掉；Excel 导入命中存档批次整批拒绝。存档要求批次下所有项目「上海院已支付 / 支付下家 / 支付陈沛」全为是，由 `BatchService.seal` 在事务内校验。
-- `apps/server/src/db/migrations.ts`：当前处于开发阶段（库里全是假数据，不考虑旧库升级），迁移已压平为单个 v1（最终 schema），改表结构直接改 v1、删库重建即可（演示库用 `npm run dev:demo` 重新生成）。**第一次发布给真实用户之后，恢复「只追加新 version、不修改已有迁移」**，届时需同步更新本条。改了 v1 之后，本地已有的旧库不会自动升级：库里记录了当前程序不认识的迁移版本时，后端启动会拒绝并提示（`db/database.ts` 的 `assertCompatible`，退出码 78，不修改库里的数据）；但如果只是改了 v1 的内容而版本号仍是 `[1]`，检测不到，仍需手动删库重建。
+- `apps/server/src/db/migrations.ts`：**只追加新 version，不修改已有迁移**（v1 是早期压平后的初始 schema）。加字段 / 建表 / 改索引都新增 `version: N+1`（如 `ALTER TABLE x ADD COLUMN ...`），本地已有的库（含演示库）启动时自动升级，**不需要删库重建**，也不要再去改 v1。新增迁移要在 `db/migrations.test.ts` 补「从旧版本升级、数据不丢」的测试。库里记录了当前程序不认识的迁移版本（历史遗留的旧结构库）时，后端启动会拒绝并提示（`db/database.ts` 的 `assertCompatible`，退出码 78，不修改库里的数据）。
 - 新增/修改接口需在 `apps/server/src/app.test.ts`（或同目录新测试）补测试。
 - 前端不直接写 fetch，统一走 `apps/desktop/src/api/`。
 - 后端只监听 127.0.0.1。

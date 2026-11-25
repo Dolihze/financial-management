@@ -11,11 +11,12 @@ interface ContractRow {
   contract_no: string;
   batch_id: string;
   batch_no: number;
+  note: string;
   created_at: string;
   updated_at: string;
 }
 
-const CONTRACT_SELECT = `SELECT c.id, c.contract_no, c.batch_id, b.batch_no, c.created_at, c.updated_at
+const CONTRACT_SELECT = `SELECT c.id, c.contract_no, c.batch_id, b.batch_no, c.note, c.created_at, c.updated_at
   FROM contract c JOIN batch b ON b.id = c.batch_id`;
 
 /**
@@ -58,6 +59,7 @@ export class ContractService {
       qxProfit: agg.qxProfit,
       projectCount: agg.n,
       regions,
+      note: row.note,
       createdAt: row.created_at,
       updatedAt: row.updated_at
     };
@@ -158,15 +160,15 @@ export class ContractService {
       // 先校验所有项目都存在、未归档、尚未归入合同，再写库
       this.assertProjectsAttachable(input.projects);
       this.db
-        .prepare('INSERT INTO contract (id, contract_no, batch_id, archived, created_at, updated_at, device_id) VALUES (?,?,?,0,?,?,?)')
-        .run(id, contractNo, batch.id, now, now, this.deviceId);
+        .prepare('INSERT INTO contract (id, contract_no, batch_id, note, archived, created_at, updated_at, device_id) VALUES (?,?,?,?,0,?,?,?)')
+        .run(id, contractNo, batch.id, (input.note ?? '').trim(), now, now, this.deviceId);
       const attach = this.db.prepare(
         'UPDATE project SET contract_id = ?, contract_no = ?, batch_no = ?, contract_price = ?, updated_at = ? WHERE id = ?'
       );
       const pb = this.projectBatchNo(batch.batchNo);
       for (const p of input.projects) attach.run(id, contractNo, pb, p.contractPrice, now, p.projectId);
       writeAudit(this.db, this.deviceId, 'contract', id, 'create', {
-        contractNo, batchId: batch.id, batchNo: batch.batchNo, projects: input.projects
+        contractNo, batchId: batch.id, batchNo: batch.batchNo, note: (input.note ?? '').trim(), projects: input.projects
       });
     })();
     return this.get(id);
@@ -183,6 +185,8 @@ export class ContractService {
     const current = this.get(id);
     const contractNo = input.contractNo.trim();
     if (!contractNo) throw new AppError('合同编号不能为空', 400, 'VALIDATION');
+    // 备注省略 = 保持原值（如只加项目 / 改合同价的请求不会清掉备注）；传空字符串才是清空
+    const note = input.note === undefined ? current.note : input.note.trim();
     this.assertNoDuplicateProjects(input.projects);
     this.assertContractNoFree(contractNo, id);
     const batch = input.batchId === undefined ? { id: current.batchId, batchNo: current.batchNo } : this.assertBatchExists(input.batchId);
@@ -204,7 +208,9 @@ export class ContractService {
       // 待加入的项目：先全部校验再写库
       this.assertProjectsAttachable(added);
 
-      this.db.prepare('UPDATE contract SET contract_no = ?, batch_id = ?, updated_at = ? WHERE id = ?').run(contractNo, batch.id, now, id);
+      this.db
+        .prepare('UPDATE contract SET contract_no = ?, batch_id = ?, note = ?, updated_at = ? WHERE id = ?')
+        .run(contractNo, batch.id, note, now, id);
       const attach = this.db.prepare('UPDATE project SET contract_id = ?, contract_price = ?, updated_at = ? WHERE id = ?');
       for (const p of added) attach.run(id, p.contractPrice, now, p.projectId);
 
@@ -218,9 +224,10 @@ export class ContractService {
         before: {
           contractNo: current.contractNo,
           batchId: current.batchId,
+          note: current.note,
           projects: current.projects.map((p) => ({ projectId: p.id, contractPrice: p.contractPrice }))
         },
-        after: { contractNo, batchId: batch.id, projects: input.projects },
+        after: { contractNo, batchId: batch.id, note, projects: input.projects },
         addedProjects: added.map((p) => p.projectId)
       });
     })();

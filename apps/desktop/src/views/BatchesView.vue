@@ -5,7 +5,8 @@
  */
 import type { Batch, BatchAttachment } from '@fm/shared';
 import { ElMessage, ElMessageBox, type UploadFile, type UploadFiles, type UploadUserFile } from 'element-plus';
-import { computed, onMounted, reactive, ref } from 'vue';
+import type { TableInstance } from 'element-plus';
+import { computed, nextTick, onMounted, reactive, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { api } from '@/api';
 import { DEFAULT_PAGE_SIZE, MIN_PAGE_SIZE, PAGE_SIZES } from '@/utils/pagination';
@@ -16,17 +17,21 @@ import { useProjectRoutes } from '@/utils/projectRoutes';
 
 /**
  * 「正在结算中」与「存档」共用本页：存档（sealed）页展示已存档的批次，整页只读（隐藏新增 / 编辑 / 删除 / 存档），
- * 只提供「取消存档」；正在结算中页展示未存档的批次，并提供手动挑选批次「存档」的入口。
+ * 只提供「取消存档」；正在结算中页展示未存档的批次，用表格自带的勾选挑选批次，再点工具栏「存档」。
  */
 const router = useRouter();
 const { sealed, names, rootLabel } = useProjectRoutes();
 const batches = ref<Batch[]>([]);
 const loading = ref(false);
+const tableRef = ref<TableInstance>();
 
 async function load() {
   loading.value = true;
   try {
     batches.value = await api.batches.list(sealed.value);
+    // 数据刷新后，已不在列表里的批次（被删除 / 刚存档）不应继续留在勾选里
+    const alive = new Set(batches.value.map((b) => b.id));
+    picked.value = picked.value.filter((b) => alive.has(b.id));
   } catch (e) {
     ElMessage.error(errorMessage(e));
   } finally {
@@ -48,22 +53,15 @@ function openBatch(b: Batch) {
   router.push({ name: names.value.contracts, params: { batchId: b.id } });
 }
 
-// ---------- 存档：手动挑选批次，确定时后端再校验一次（有未走完流程的项目则整体拒绝） ----------
-const seal = reactive({ visible: false, saving: false });
-const sealPicked = ref<Batch[]>([]);
-const sealKeyword = ref('');
-const sealShown = computed(() => {
-  const k = sealKeyword.value.trim();
-  return k ? batches.value.filter((b) => batchTitle(b).includes(k) || String(b.batchNo).includes(k) || b.note.includes(k)) : batches.value;
-});
-function openSeal() {
-  sealPicked.value = [];
-  sealKeyword.value = '';
-  seal.visible = true;
-}
+// ---------- 存档：用表格勾选批次，没勾选时「存档」按钮置灰；点击后后端校验，通过才存档 ----------
+/** 表格里当前勾选的批次（跨分页保留，见表格的 row-key + reserve-selection） */
+const picked = ref<Batch[]>([]);
+const sealing = ref(false);
+
 async function confirmSeal() {
-  if (sealPicked.value.length === 0) return ElMessage.warning('请至少选择一个批次');
-  const titles = sealPicked.value.map(batchTitle).join('、');
+  const targets = picked.value.slice();
+  if (targets.length === 0 || sealing.value) return; // 按钮已置灰，这里只是兜底
+  const titles = targets.map(batchTitle).join('、');
   try {
     await ElMessageBox.confirm(`确定将「${titles}」存档吗？存档后这些批次整批只读，如需修改要先取消存档。`, '存档', {
       type: 'warning',
@@ -73,18 +71,21 @@ async function confirmSeal() {
   } catch {
     return; // 取消
   }
-  seal.saving = true;
+  sealing.value = true;
   try {
-    await api.batches.seal(sealPicked.value.map((b) => b.id));
-    ElMessage.success(`已存档 ${sealPicked.value.length} 个批次`);
-    seal.visible = false;
+    await api.batches.seal(targets.map((b) => b.id));
+    ElMessage.success(`已存档 ${targets.length} 个批次`);
+    tableRef.value?.clearSelection();
+    picked.value = [];
     await load();
+    await nextTick();
     if (pageRows.value.length === 0 && currentPage.value > 1) currentPage.value -= 1;
   } catch (e) {
-    // 校验不通过（还有项目没走完全部流程）时，后端的 message 已指出是哪个项目缺哪一步；弹窗展示，批次保持未存档
+    // 校验不通过（还有项目没走完全部流程）时，后端的 message 已指出是哪个项目缺哪一步；弹窗展示。
+    // 批次保持未存档、勾选保留，用户处理完项目后可直接再点「存档」
     ElMessageBox.alert(errorMessage(e), '不能存档', { type: 'warning', confirmButtonText: '知道了' }).catch(() => {});
   } finally {
-    seal.saving = false;
+    sealing.value = false;
   }
 }
 
@@ -300,17 +301,25 @@ onMounted(load);
 
     <div class="page-toolbar">
       <el-button v-if="!sealed" type="primary" icon="Plus" @click="openCreate">新增批次</el-button>
-      <el-button v-if="!sealed" icon="Box" :disabled="batches.length === 0" @click="openSeal">存档</el-button>
-      <span class="hint">点击批次进入该批次下的合同</span>
+      <!-- 勾选批次后才可点击；没有勾选时置灰。点击后先二次确认，再由后端校验，通过才存档 -->
+      <el-button v-if="!sealed" icon="Box" :disabled="picked.length === 0" :loading="sealing" @click="confirmSeal">
+        存档{{ picked.length ? `（${picked.length}）` : '' }}
+      </el-button>
+      <span class="hint">点击批次进入该批次下的合同<template v-if="!sealed">；勾选批次后可「存档」</template></span>
       <el-tag v-if="sealed" type="info" style="margin-left: 12px">存档只读</el-tag>
     </div>
 
     <el-table
+      ref="tableRef"
       v-loading="loading"
       :data="pageRows"
       border
+      row-key="id"
       :empty-text="sealed ? '暂无存档的批次。在「正在结算中」里把已走完全部流程的批次存档后会出现在这里' : '暂无批次，点击「新增批次」或通过 Excel 导入项目自动生成'"
+      @selection-change="picked = $event"
     >
+      <!-- 勾选列只在「正在结算中」出现；reserve-selection 让翻页后已勾选的批次仍保持勾选 -->
+      <el-table-column v-if="!sealed" type="selection" width="50" :reserve-selection="true" />
       <el-table-column type="index" :index="rowIndex" label="序号" width="70" />
       <el-table-column label="批次" min-width="140">
         <template #default="{ row }">
@@ -362,25 +371,6 @@ onMounted(load);
       @size-change="currentPage = 1"
       style="margin-top: 16px; justify-content: flex-end"
     />
-
-    <!-- 存档：挑选批次。选完点「存档」后再由后端校验一次，有项目没走完全部流程则提示并拒绝 -->
-    <el-dialog v-if="!sealed" v-model="seal.visible" title="存档" width="700px" draggable destroy-on-close align-center :close-on-click-modal="false">
-      <el-input v-model="sealKeyword" clearable placeholder="按批次号 / 备注筛选" style="margin-bottom: 8px" />
-      <el-table :data="sealShown" border height="320" row-key="id" empty-text="没有可存档的批次" @selection-change="sealPicked = $event">
-        <el-table-column type="selection" width="50" :reserve-selection="true" />
-        <el-table-column label="批次" min-width="120">
-          <template #default="{ row }">{{ batchTitle(row) }}</template>
-        </el-table-column>
-        <el-table-column prop="contractCount" label="合同数" width="80" align="right" />
-        <el-table-column prop="projectCount" label="项目数" width="80" align="right" />
-        <el-table-column prop="note" label="备注" min-width="140" show-overflow-tooltip />
-      </el-table>
-      <div class="seal-tip">只有批次下所有项目的「上海院已支付」「支付下家」「支付陈沛」都为「是」才能存档；点击「存档」时会再校验一次，有未走完流程的项目会提示并拒绝。存档后批次整批只读，可在「存档」页取消存档。</div>
-      <template #footer>
-        <el-button @click="seal.visible = false">取消</el-button>
-        <el-button type="primary" :loading="seal.saving" :disabled="sealPicked.length === 0" @click="confirmSeal">存档 {{ sealPicked.length || '' }}</el-button>
-      </template>
-    </el-dialog>
 
     <el-dialog v-if="!sealed" v-model="dlg.visible" :title="dlg.editing ? '编辑批次' : '新增批次'" width="520px" draggable destroy-on-close align-center :close-on-click-modal="false">
       <el-form label-width="80px" @submit.prevent>
@@ -485,12 +475,7 @@ onMounted(load);
   font-size: 13px;
   color: var(--el-text-color-secondary);
 }
-.seal-tip {
-  margin-top: 10px;
-  font-size: 12px;
-  line-height: 1.6;
-  color: var(--el-text-color-secondary);
-}
+
 .file-link-text {
   margin-left: 4px;
 }

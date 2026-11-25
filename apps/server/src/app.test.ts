@@ -1290,6 +1290,75 @@ describe('合同管理', () => {
     expect((await post(`/api/batches/${b1}/archive`, {})).statusCode).toBe(200);
   });
 
+  describe('合同备注', () => {
+    const mk = async (note?: string) => {
+      const id = await importProjects([row('', '项目甲', 100), row('', '项目乙', 100)]);
+      const batchId = await mkBatch(1);
+      const res = await post('/api/contracts', {
+        batchId, contractNo: 'HT-1', ...(note === undefined ? {} : { note }), projects: [{ projectId: id('项目甲'), contractPrice: 100 }]
+      });
+      expect(res.statusCode).toBe(201);
+      return { id, batchId, contract: res.json() as { id: string; note: string } };
+    };
+
+    it('新增合同：备注可省略（= 空字符串），也可填写；会去掉首尾空白；列表与详情都返回备注', async () => {
+      const none = await mk();
+      expect(none.contract.note).toBe('');
+      expect((await get(`/api/contracts/${none.contract.id}`)).note).toBe('');
+    });
+
+    it('新增合同带备注：保存并在列表 / 详情里返回', async () => {
+      const { batchId, contract } = await mk('  加急合同  ');
+      expect(contract.note).toBe('加急合同');
+      expect(await get(`/api/contracts/${contract.id}`)).toMatchObject({ note: '加急合同' });
+      expect(((await get(`/api/contracts?batchId=${batchId}`)) as Array<{ note: string }>)[0]).toMatchObject({ note: '加急合同' });
+    });
+
+    it('编辑合同可修改备注；传空字符串 = 清空；写审计（含修改前后的备注）', async () => {
+      const { contract } = await mk('旧备注');
+      const edited = await editContract(contract.id, { contractNo: 'HT-1', note: '  新备注 ', projects: [] });
+      expect(edited.statusCode).toBe(200);
+      expect(edited.json()).toMatchObject({ note: '新备注', contractNo: 'HT-1' });
+
+      expect((await editContract(contract.id, { contractNo: 'HT-1', note: '', projects: [] })).json()).toMatchObject({ note: '' });
+      const audit = ctx.db
+        .prepare("SELECT payload FROM audit_log WHERE entity='contract' AND entity_id=? AND action='update' ORDER BY rowid")
+        .all(contract.id) as Array<{ payload: string }>;
+      expect(JSON.parse(audit[0]!.payload)).toMatchObject({ before: { note: '旧备注' }, after: { note: '新备注' } });
+      expect(JSON.parse(audit[1]!.payload)).toMatchObject({ before: { note: '新备注' }, after: { note: '' } });
+    });
+
+    it('修改合同时省略 note = 保持原值：只改合同价 / 加项目 / 改编号 / 换批次都不会清掉备注', async () => {
+      const { id, contract, batchId } = await mk('保留我');
+      // 只改合同价
+      expect((await editContract(contract.id, { contractNo: 'HT-1', projects: [{ projectId: id('项目甲'), contractPrice: 999 }] })).json()).toMatchObject({ note: '保留我' });
+      // 加入新项目
+      expect((await editContract(contract.id, { contractNo: 'HT-1', projects: [{ projectId: id('项目乙'), contractPrice: 1 }] })).json()).toMatchObject({ note: '保留我', projectCount: 2 });
+      // 改编号、换批次
+      const b2 = await mkBatch(2);
+      const moved = await editContract(contract.id, { batchId: b2, contractNo: 'HT-9', projects: [] });
+      expect(moved.json()).toMatchObject({ note: '保留我', contractNo: 'HT-9', batchId: b2 });
+      expect(b2).not.toBe(batchId);
+    });
+
+    it('备注最长 200 字：超长 400，边界 200 字可保存；失败不落库', async () => {
+      const { contract } = await mk('原备注');
+      expect((await editContract(contract.id, { contractNo: 'HT-1', note: 'a'.repeat(201), projects: [] })).statusCode).toBe(400);
+      expect((await get(`/api/contracts/${contract.id}`)).note).toBe('原备注');
+      expect((await editContract(contract.id, { contractNo: 'HT-1', note: 'a'.repeat(200), projects: [] })).statusCode).toBe(200);
+      const b = await mkBatch(3);
+      const id = await importProjects([row('', '另一个项目', 1)]);
+      expect((await post('/api/contracts', { batchId: b, contractNo: 'HT-X', note: 'b'.repeat(201), projects: [{ projectId: id('另一个项目'), contractPrice: 1 }] })).statusCode).toBe(400);
+      expect((await editContract(contract.id, { contractNo: 'HT-1', note: 123, projects: [] })).statusCode).toBe(400);
+    });
+
+    it('Excel 导入自动新建的合同备注为空', async () => {
+      await importProjects([['HT-IMP', '第5批', '天水', '导入项目', 100, 0, 0, 0, 0, '否', '否', '']]);
+      const list = (await get('/api/contracts')) as Array<{ contractNo: string; note: string }>;
+      expect(list.find((c) => c.contractNo === 'HT-IMP')).toMatchObject({ note: '' });
+    });
+  });
+
   it('编辑合同：可加入未归入任何合同的已有项目（加入不入账）；已归属其他合同/不存在的被拒绝，且整体不落库', async () => {
     await ctx.app.inject({
       method: 'POST', url: '/api/projects/import/commit',

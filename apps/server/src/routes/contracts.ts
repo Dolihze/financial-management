@@ -20,6 +20,8 @@ const projectEntry = z.object({
 /** 项目归入合同不入账（入账在项目里把「上海院已支付」切换为是时发生），所以不再接收 settlement（传了也会被忽略） */
 const baseSchema = z.object({
   contractNo: z.string().trim().min(1, '合同编号不能为空').max(50),
+  /** 备注：新增时省略 = 空；修改时省略 = 保持原值，传空字符串 = 清空（与批次备注同样上限 200 字） */
+  note: z.string().trim().max(200, '备注不能超过 200 个字符').optional(),
   projects: z.array(projectEntry).max(1000)
 });
 /** 新增合同必须指定所属批次 */

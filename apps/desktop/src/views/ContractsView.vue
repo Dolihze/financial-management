@@ -95,8 +95,9 @@ function openProgress(c: Contract) {
   router.push({ name: names.value.projects, params: { batchId: batchId.value, contractId: c.id } });
 }
 
-// ---------- 编辑合同：改「所属批次」和「合同编号」 ----------
-const edit = reactive({ visible: false, saving: false, contract: null as Contract | null, batchId: '', contractNo: '' });
+// ---------- 编辑合同：改「所属批次」「合同编号」和「备注」 ----------
+const MAX_NOTE = 200;
+const edit = reactive({ visible: false, saving: false, contract: null as Contract | null, batchId: '', contractNo: '', note: '' });
 const batchLabel = (b: Batch) => (b.batchNo === 0 ? '未分批' : `第 ${b.batchNo} 批`);
 const editNoError = computed(() => {
   const v = edit.contractNo.trim();
@@ -104,14 +105,18 @@ const editNoError = computed(() => {
   if (v.length > 50) return '合同编号不能超过 50 个字符';
   return '';
 });
+const editNoteError = computed(() => (edit.note.length > MAX_NOTE ? `备注不能超过 ${MAX_NOTE} 个字符` : ''));
 const editDirty = computed(
-  () => !!edit.contract && (edit.batchId !== edit.contract.batchId || edit.contractNo.trim() !== edit.contract.contractNo)
+  () =>
+    !!edit.contract &&
+    (edit.batchId !== edit.contract.batchId || edit.contractNo.trim() !== edit.contract.contractNo || edit.note.trim() !== edit.contract.note)
 );
 
 function openEdit(c: Contract) {
   edit.contract = c;
   edit.batchId = c.batchId;
   edit.contractNo = c.contractNo;
+  edit.note = c.note;
   edit.visible = true;
 }
 
@@ -119,10 +124,11 @@ async function submitEdit() {
   const c = edit.contract;
   if (!c) return;
   if (editNoError.value) return ElMessage.warning(editNoError.value);
+  if (editNoteError.value) return ElMessage.warning(editNoteError.value);
   edit.saving = true;
   try {
-    // projects 传空数组：后端对请求里没出现的项目保持不变，所以只会修改合同编号 / 所属批次，合同价不受影响
-    await api.contracts.update(c.id, { batchId: edit.batchId, contractNo: edit.contractNo.trim(), projects: [] });
+    // projects 传空数组：后端对请求里没出现的项目保持不变，所以只会修改合同编号 / 所属批次 / 备注，合同价不受影响
+    await api.contracts.update(c.id, { batchId: edit.batchId, contractNo: edit.contractNo.trim(), note: edit.note.trim(), projects: [] });
     const moved = edit.batchId !== c.batchId;
     ElMessage.success(moved ? '已保存，合同已移到所选批次' : '已保存');
     edit.visible = false;
@@ -275,6 +281,7 @@ onMounted(load);
       <el-table-column label="企信利润" width="160" align="right">
         <template #default="{ row }">{{ formatMoney(row.qxProfit) }}</template>
       </el-table-column>
+      <el-table-column prop="note" label="备注" min-width="180" show-overflow-tooltip />
       <el-table-column v-if="!sealed" label="操作" width="130" fixed="right">
         <template #default="{ row }">
           <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
@@ -306,10 +313,13 @@ onMounted(load);
         <el-form-item label="合同编号" required :error="edit.contractNo && editNoError ? editNoError : ''">
           <el-input v-model="edit.contractNo" maxlength="50" @keyup.enter="submitEdit" />
         </el-form-item>
+        <el-form-item label="备注">
+          <el-input v-model="edit.note" type="textarea" :rows="3" :maxlength="MAX_NOTE" show-word-limit placeholder="可选" />
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="edit.visible = false">取消</el-button>
-        <el-button type="primary" :loading="edit.saving" :disabled="!editDirty || !!editNoError" @click="submitEdit">保存</el-button>
+        <el-button type="primary" :loading="edit.saving" :disabled="!editDirty || !!editNoError || !!editNoteError" @click="submitEdit">保存</el-button>
       </template>
     </el-dialog>
 

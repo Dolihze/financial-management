@@ -1,8 +1,9 @@
 /**
  * 数据库迁移：按 version 递增顺序执行，已执行的版本记录在 schema_migrations。
  *
- * 当前处于开发阶段，库里全是假数据，不考虑旧库升级：历史迁移已压平为单个初始 schema（v1，即最终形态）。
- * 自下一个正式版本起恢复「只追加新 version、不修改已有迁移」的约定。
+ * 规则：只追加新 version，不修改已有迁移。加字段 / 建表 / 改索引都新增一个 version，
+ * 已有的本地库（包括演示库）启动时会自动升级，不需要删库重建。
+ * （v1 是开发早期把历史迁移压平后的初始 schema；之后的改动都以 v2、v3… 追加。）
  */
 export interface Migration {
   version: number;
@@ -212,6 +213,14 @@ export const migrations: Migration[] = [
         created_at TEXT NOT NULL
       );
       CREATE INDEX idx_audit_entity ON audit_log(entity, entity_id);
+    `
+  },
+  {
+    version: 2,
+    name: 'contract_note',
+    sql: `
+      -- 合同备注（可为空字符串）。已有合同自动得到空备注
+      ALTER TABLE contract ADD COLUMN note TEXT NOT NULL DEFAULT '';
     `
   }
 ];

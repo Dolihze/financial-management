@@ -137,6 +137,51 @@ describe('数据库初始 schema（迁移已压平为单个 v1）', () => {
   });
 });
 
+describe('已有数据库自动升级（以后改字段不需要删库重建）', () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
+
+  it('只有 v1 的库（含数据）打开后自动升级到最新版本：新增列带默认值，已有数据一条不丢，重复打开幂等', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fm-upgrade-'));
+    dirs.push(dir);
+    const path = join(dir, 'finance.db');
+
+    // 用迁移里的 v1 建一个「用户现在本地的库」，并写入数据
+    const v1 = migrations.find((m) => m.version === 1)!;
+    const old = new Database(path);
+    old.pragma('journal_mode = WAL');
+    old.pragma('foreign_keys = ON');
+    old.exec('CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL)');
+    old.exec(v1.sql);
+    old.prepare('INSERT INTO schema_migrations VALUES (1, ?, ?)').run(v1.name, NOW);
+    old.prepare(`INSERT INTO batch (id,batch_no,note,created_at,updated_at,device_id) VALUES ('b1',7,'批次备注',?,?,'d')`).run(NOW, NOW);
+    old.prepare(`INSERT INTO contract (id,contract_no,batch_id,created_at,updated_at,device_id) VALUES ('c1','HT-OLD','b1',?,?,'d')`).run(NOW, NOW);
+    expect(columns(old, 'contract')).not.toContain('note'); // 旧结构确实没有
+    old.close();
+
+    const db = openDatabase(path); // 不删库，直接打开
+    expect(columns(db, 'contract')).toContain('note');
+    expect(db.prepare("SELECT contract_no, note, batch_id FROM contract WHERE id = 'c1'").get()).toEqual({ contract_no: 'HT-OLD', note: '', batch_id: 'b1' });
+    expect(db.prepare("SELECT batch_no, note FROM batch WHERE id = 'b1'").get()).toEqual({ batch_no: 7, note: '批次备注' }); // 其他数据不受影响
+    expect((db.prepare('SELECT version FROM schema_migrations ORDER BY version').all() as Array<{ version: number }>).map((r) => r.version)).toEqual(
+      migrations.map((m) => m.version).sort((a, b) => a - b)
+    );
+    db.close();
+
+    const again = openDatabase(path); // 再次打开：幂等，不重复升级
+    expect(again.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: migrations.length });
+    again.close();
+  });
+
+  it('新增迁移的约定：版本号从 1 开始连续递增，没有重复或跳号', () => {
+    const versions = migrations.map((m) => m.version).sort((a, b) => a - b);
+    expect(versions).toEqual(versions.map((_, i) => i + 1));
+    expect(new Set(versions).size).toBe(versions.length);
+  });
+});
+
 describe('旧结构数据库检测（开发阶段迁移压平后遗留的旧库）', () => {
   const dirs: string[] = [];
   afterEach(() => {
@@ -159,7 +204,7 @@ describe('旧结构数据库检测（开发阶段迁移压平后遗留的旧库�
 
   it('库里有当前程序不认识的迁移版本 -> 抛出 IncompatibleDatabaseError，信息里指出已记录与已知版本', () => {
     const path = tmpDb();
-    makeLegacyDb(path, [1, 2, 3, 12]);
+    makeLegacyDb(path, [1, 11, 12, 13]);
     let err: unknown;
     try {
       openDatabase(path).close();
@@ -168,10 +213,10 @@ describe('旧结构数据库检测（开发阶段迁移压平后遗留的旧库�
     }
     expect(err).toBeInstanceOf(IncompatibleDatabaseError);
     const e = err as IncompatibleDatabaseError;
-    expect(e.appliedVersions).toEqual([1, 2, 3, 12]);
+    expect(e.appliedVersions).toEqual([1, 11, 12, 13]);
     expect(e.knownVersions).toEqual(migrations.map((m) => m.version).sort((a, b) => a - b));
-    expect(e.message).toContain('v1、v2、v3、v12');
-    expect(e.message).toContain('v2、v3、v12 是当前程序不认识的版本');
+    expect(e.message).toContain('v1、v11、v12、v13');
+    expect(e.message).toContain('v11、v12、v13 是当前程序不认识的版本');
   });
 
   it('拒绝时不动库：不新建任何表、不改旧数据与迁移记录，也没有被切成 WAL（非 WAL 库的文件字节完全不变）', () => {
@@ -197,7 +242,7 @@ describe('旧结构数据库检测（开发阶段迁移压平后遗留的旧库�
     raw.exec('CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL)');
     raw.exec('CREATE TABLE account (id TEXT PRIMARY KEY, name TEXT NOT NULL)');
     raw.prepare("INSERT INTO account VALUES ('a1', '旧账户')").run();
-    for (const v of [1, 2, 12]) raw.prepare('INSERT INTO schema_migrations VALUES (?,?,?)').run(v, 'old', NOW);
+    for (const v of [1, 11, 12]) raw.prepare('INSERT INTO schema_migrations VALUES (?,?,?)').run(v, 'old', NOW);
     // 模拟程序没有正常关闭：把磁盘上的三个文件原样拷贝到新目录再打开
     const copyDir = mkdtempSync(join(tmpdir(), 'fm-incompat-wal-'));
     dirs.push(copyDir);
@@ -212,7 +257,7 @@ describe('旧结构数据库检测（开发阶段迁移压平后遗留的旧库�
       'account', 'schema_migrations'
     ]);
     expect(db.prepare('SELECT name FROM account').all()).toEqual([{ name: '旧账户' }]);
-    expect((db.prepare('SELECT version FROM schema_migrations ORDER BY version').all() as Array<{ version: number }>).map((r) => r.version)).toEqual([1, 2, 12]);
+    expect((db.prepare('SELECT version FROM schema_migrations ORDER BY version').all() as Array<{ version: number }>).map((r) => r.version)).toEqual([1, 11, 12]);
     db.close();
   });
 

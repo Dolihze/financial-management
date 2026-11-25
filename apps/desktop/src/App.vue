@@ -126,7 +126,14 @@ const menus: MenuItem[] = [
           </template>
         </el-result>
         <div v-else-if="!ready" v-loading="true" style="height: 300px" element-loading-text="正在启动本地服务..." />
-        <router-view v-else />
+        <!--
+          「正在结算中」与「存档」是两条路由但共用同一个页面组件（批次 / 合同 / 项目）。Vue Router 对同一组件会复用实例，
+          只触发路由变化而不重新 onMounted，导致切换后还显示上一页的数据。用路由名作 key，切换路由就重建组件、重新加载；
+          同一路由下改参数（如换批次）仍由各页面自己的 watch 处理，不会整页重建。
+        -->
+        <router-view v-else v-slot="{ Component, route: r }">
+          <component :is="Component" :key="String(r.name)" />
+        </router-view>
       </el-main>
     </el-container>
   </el-container>

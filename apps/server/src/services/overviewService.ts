@@ -1,4 +1,4 @@
-import type { OverviewSummary, PeriodSummary } from '@fm/shared';
+import type { BorrowSummary, OverviewSummary, PeriodSummary } from '@fm/shared';
 import type { Db } from '../db/database';
 import { AccountService } from './accountService';
 
@@ -54,8 +54,26 @@ export class OverviewService {
       monthIncome: monthRow.income,
       monthExpense: monthRow.expense,
       trend: trendRows.reverse(),
-      expenseByCategory: byCategory
+      expenseByCategory: byCategory,
+      borrow: this.borrowSummary()
     };
+  }
+
+  /**
+   * 借款统计：按往来单位汇总「借款(借出，分录为负) − 贷款(借入，分录为正)」的净借出额，
+   * 即 -SUM(分录金额)；全部时间累计，不受时间段影响。净额为 0 的对象不展示。
+   */
+  borrowSummary(): BorrowSummary {
+    const rows = this.db
+      .prepare(
+        `SELECT CASE WHEN TRIM(t.counterparty) = '' THEN '未填写' ELSE TRIM(t.counterparty) END AS name,
+                SUM(-l.amount) AS amount
+         FROM tx t JOIN tx_line l ON l.tx_id = t.id
+         WHERE t.type IN ('borrow','loan')
+         GROUP BY name HAVING amount <> 0 ORDER BY amount DESC, name`
+      )
+      .all() as BorrowSummary['items'];
+    return { total: rows.reduce((s, r) => s + r.amount, 0), items: rows };
   }
 
   /**

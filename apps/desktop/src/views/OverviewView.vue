@@ -60,23 +60,25 @@ const accountRows = computed(() => [...(data.value?.accounts ?? [])].sort((a, b)
 const expenseTotal = computed(() => expenseRows.value.reduce((s, r) => s + r.amount, 0));
 const incomeTotal = computed(() => incomeRows.value.reduce((s, r) => s + r.amount, 0));
 
-// ---------- 锐辰欠款（计算口径待定，暂定为 0，单位：分） ----------
-const ruichenDebt = ref(0);
-
 // ---------- 三张表各自的前端分页（每页条数共用，可切换） ----------
 const pageSize = ref(DEFAULT_PAGE_SIZE);
 const accountPage = ref(1);
 const incomePage = ref(1);
 const expensePage = ref(1);
+const borrowPage = ref(1);
 const slicePage = <T,>(rows: T[], page: number) => rows.slice((page - 1) * pageSize.value, page * pageSize.value);
 const accountPageRows = computed(() => slicePage(accountRows.value, accountPage.value));
 const incomePageRows = computed(() => slicePage(incomeRows.value, incomePage.value));
 const expensePageRows = computed(() => slicePage(expenseRows.value, expensePage.value));
-/** 切换每页条数后三张表都回到第 1 页 */
+/** 借款明细：按借款对象（往来单位）的净借出额，后端已按金额降序 */
+const borrowRows = computed(() => data.value?.borrow.items ?? []);
+const borrowPageRows = computed(() => slicePage(borrowRows.value, borrowPage.value));
+/** 切换每页条数后所有表都回到第 1 页 */
 function resetPages() {
   accountPage.value = 1;
   incomePage.value = 1;
   expensePage.value = 1;
+  borrowPage.value = 1;
 }
 /** 序号需跨页连续 */
 const indexOf = (page: number) => (i: number) => (page - 1) * pageSize.value + i + 1;
@@ -147,22 +149,24 @@ onMounted(() => {
         />
         <el-button type="primary" :loading="periodLoading" @click="queryCustom">查询</el-button>
         <el-text v-if="!customRange" type="info" size="small">未选日期：统计全部时间</el-text>
-      </template>      <!-- 锐辰欠款：固定在筛选行最右侧（计算口径待定，暂定为 0） -->
-      <div class="debt-box">
-        <span class="debt-label">锐辰欠款</span>
-        <b class="debt-value">{{ formatMoney(ruichenDebt) }}</b>
-      </div>
+      </template>
     </div>
 
     <el-row :gutter="16" style="margin-bottom: 16px">
-      <el-col :span="8">
-        <el-card shadow="never"><el-statistic title="公司总余额" :value="formatMoney(data.totalBalance)" /></el-card>
+      <el-col :span="6">
+        <el-card shadow="never" class="stat-card"><el-statistic title="公司总余额" :value="formatMoney(data.totalBalance)" /></el-card>
       </el-col>
-      <el-col :span="8">
-        <el-card shadow="never"><el-statistic title="收入" :value="formatMoney(period?.income ?? 0)" value-style="color: #f56c6c" /></el-card>
+      <el-col :span="6">
+        <el-card shadow="never" class="stat-card"><el-statistic title="收入" :value="formatMoney(period?.income ?? 0)" value-style="color: #f56c6c" /></el-card>
       </el-col>
-      <el-col :span="8">
-        <el-card shadow="never"><el-statistic title="支出" :value="formatMoney(period?.expense ?? 0)" value-style="color: #67c23a" /></el-card>
+      <el-col :span="6">
+        <el-card shadow="never" class="stat-card"><el-statistic title="支出" :value="formatMoney(period?.expense ?? 0)" value-style="color: #67c23a" /></el-card>
+      </el-col>
+      <el-col :span="6">
+        <!-- 借款：累计净借出额（借款 − 贷款），按往来单位列出，不受时间段影响 -->
+        <el-card shadow="never" class="stat-card">
+          <el-statistic title="借款" :value="formatMoney(data.borrow.total)" />
+        </el-card>
       </el-col>
     </el-row>
 
@@ -189,8 +193,8 @@ onMounted(() => {
           <!-- 收入来源 -->
           <div class="pane">
             <el-tabs v-model="incomeTab">
-              <el-tab-pane label="收入来源（按分类）" name="category" />
-              <el-tab-pane label="收入来源（按往来单位）" name="counterparty" />
+              <el-tab-pane label="收入分类" name="category" />
+              <el-tab-pane label="收入来源" name="counterparty" />
             </el-tabs>
             <div class="pane-table">
               <el-table :data="incomePageRows" size="small" height="100%" :row-class-name="() => 'tall-row'" empty-text="该时间段没有收入数据">
@@ -211,8 +215,8 @@ onMounted(() => {
           <!-- 支出去向 -->
           <div class="pane">
             <el-tabs v-model="expenseTab">
-              <el-tab-pane label="支出去向（按分类）" name="category" />
-              <el-tab-pane label="支出去向（按往来单位）" name="counterparty" />
+              <el-tab-pane label="支出分类" name="category" />
+              <el-tab-pane label="支出去向" name="counterparty" />
             </el-tabs>
             <div class="pane-table">
               <el-table :data="expensePageRows" size="small" height="100%" :row-class-name="() => 'tall-row'" empty-text="该时间段没有支出数据">
@@ -229,6 +233,21 @@ onMounted(() => {
             </div>
             <el-pagination v-model:current-page="expensePage" v-model:page-size="pageSize" :page-sizes="PAGE_SIZES" class="pane-pager" small background layout="prev, pager, next, sizes" :total="expenseRows.length" :hide-on-single-page="expenseRows.length <= MIN_PAGE_SIZE" @size-change="resetPages" />
           </div>
+
+          <!-- 借款明细：按借款对象（往来单位）的累计净借出额，不受时间段影响 -->
+          <div class="pane">
+            <div class="pane-title">借款明细</div>
+            <div class="pane-table">
+              <el-table :data="borrowPageRows" size="small" height="100%" :row-class-name="() => 'tall-row'" empty-text="暂无借款记录">
+                <el-table-column type="index" :index="indexOf(borrowPage)" label="#" width="40" />
+                <el-table-column prop="name" label="借款对象" show-overflow-tooltip />
+                <el-table-column label="金额" width="110">
+                  <template #default="{ row }"><b :class="row.amount < 0 ? 'money-out' : ''">{{ formatMoney(row.amount) }}</b></template>
+                </el-table-column>
+              </el-table>
+            </div>
+            <el-pagination v-model:current-page="borrowPage" v-model:page-size="pageSize" :page-sizes="PAGE_SIZES" class="pane-pager" small background layout="prev, pager, next, sizes" :total="borrowRows.length" :hide-on-single-page="borrowRows.length <= MIN_PAGE_SIZE" @size-change="resetPages" />
+          </div>
         </div>
       </template>
     </el-card>
@@ -242,6 +261,19 @@ onMounted(() => {
   flex-direction: column;
   height: 100%;
   min-height: 560px;
+}
+/* 顶部统计卡片：标题和数字居中，字号各加大 5px（默认 14px / 24px） */
+.overview-page :deep(.el-statistic) {
+  text-align: center;
+}
+.overview-page :deep(.el-statistic__head) {
+  font-size: 19px;
+}
+.overview-page :deep(.el-statistic__content) {
+  font-size: 29px;
+}
+.overview-page :deep(.el-statistic__content .el-statistic__number) {
+  font-size: 29px;
 }
 .period-card {
   flex: 1;
@@ -291,25 +323,9 @@ onMounted(() => {
   border-radius: 1px;
   background: var(--el-color-primary);
 }
-/* 筛选行右侧的小模块：margin-left:auto 把它推到最右 */
-.debt-box {
-  margin-left: auto;
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 0 20px;
-  height: 32px;
-  background: var(--el-bg-color);
-  border: 1px solid var(--el-border-color-light);
-  border-radius: 4px;
-}
-.debt-label {
-  color: var(--el-text-color-regular);
-}
-.debt-value {
-  font-size: 18px;
-  color: var(--el-text-color-primary);
+/* 四张统计卡片等高 */
+.stat-card {
+  height: 100%;
 }
 /* 日期范围选择器宽度：用官方变量控制，并禁止在 flex 行里被拉伸 */
 .period-bar :deep(.el-date-editor.el-input__wrapper) {
@@ -321,7 +337,7 @@ onMounted(() => {
   flex: 1;
   min-height: 0;
   display: flex;
-  gap: 16px;
+  gap: 32px;
 }
 .pane {
   flex: 1 1 0;

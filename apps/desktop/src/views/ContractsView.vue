@@ -8,13 +8,16 @@ import { DEFAULT_PAGE_SIZE, MIN_PAGE_SIZE, PAGE_SIZES } from '@/utils/pagination
 import ProjectBreadcrumb from '@/components/ProjectBreadcrumb.vue';
 import { contractPriceToCents, sumContractPrices, validateContractPrice } from '@/utils/contractPrice';
 import { errorMessage, formatMoney, fromCents } from '@/utils/format';
+import { useProjectRoutes } from '@/utils/projectRoutes';
 
 /**
  * 项目管理第二层：某个批次下的合同。点击合同编号进入该合同的项目进度。
  * 批次由路由参数 batchId 决定；新增合同默认归属当前批次。
+ * 「正在结算中」与「存档」共用本页：存档（sealed）时整页只读，隐藏新增 / 编辑 / 删除。
  */
 const router = useRouter();
 const route = useRoute();
+const { sealed, names, rootLabel } = useProjectRoutes();
 const batchId = computed(() => route.params.batchId as string);
 const batch = ref<Batch | null>(null);
 /** 全部批次：「编辑」弹框里的所属批次下拉 */
@@ -23,19 +26,29 @@ const contracts = ref<Contract[]>([]);
 const loading = ref(false);
 
 const batchTitle = computed(() => (!batch.value ? '' : batch.value.batchNo === 0 ? '未分批' : `第 ${batch.value.batchNo} 批`));
-const crumbs = computed(() => [{ label: '批次管理', to: { name: 'batches' } }, { label: batchTitle.value || '…' }]);
+const crumbs = computed(() => [
+  { label: rootLabel.value, to: { name: names.value.batches } },
+  { label: batchTitle.value || '…' }
+]);
 
 async function load() {
   loading.value = true;
   try {
     // 批次不存在（被删除/链接过期）时后端返回 404，提示后回到批次管理
-    const [b, list, bs] = await Promise.all([api.batches.get(batchId.value), api.contracts.list(batchId.value), api.batches.list()]);
+    // 「所属批次」下拉只列正在结算中的批次：存档批次只读，合同不能移进去
+    const [b, list, bs] = await Promise.all([api.batches.get(batchId.value), api.contracts.list(batchId.value), api.batches.list(false)]);
+    // 批次的存档状态与当前页不一致（如在另一处被存档 / 取消存档后用旧链接打开）：回到对应的批次列表
+    if ((b.sealedAt !== null) !== sealed.value) {
+      ElMessage.warning(sealed.value ? '该批次已不在存档中' : '该批次已存档');
+      router.replace({ name: sealed.value ? 'archive-batches' : 'batches' });
+      return;
+    }
     batch.value = b;
     contracts.value = list;
     allBatches.value = bs;
   } catch (e) {
     ElMessage.error(errorMessage(e));
-    router.replace({ name: 'batches' });
+    router.replace({ name: names.value.batches });
   } finally {
     loading.value = false;
   }
@@ -79,7 +92,7 @@ const rowIndex = (i: number) => (currentPage.value - 1) * pageSize.value + i + 1
 // ---------- 跳转 ----------
 /** 点合同编号：进入该合同的项目进度 */
 function openProgress(c: Contract) {
-  router.push({ name: 'projects', params: { batchId: batchId.value, contractId: c.id } });
+  router.push({ name: names.value.projects, params: { batchId: batchId.value, contractId: c.id } });
 }
 
 // ---------- 编辑合同：改「所属批次」和「合同编号」 ----------
@@ -222,8 +235,9 @@ onMounted(load);
     <ProjectBreadcrumb :items="crumbs" />
 
     <div class="page-toolbar">
-      <el-button type="primary" icon="Plus" @click="openCreate">新增合同</el-button>
+      <el-button v-if="!sealed" type="primary" icon="Plus" @click="openCreate">新增合同</el-button>
       <span class="hint">点击合同编号进入该合同的项目进度</span>
+      <el-tag v-if="sealed" type="info" style="margin-left: 12px">存档只读</el-tag>
     </div>
 
     <el-table
@@ -231,7 +245,7 @@ onMounted(load);
       :data="pageRows"
       border
       class="contract-table"
-      empty-text="该批次下暂无合同，点击「新增合同」创建"
+      :empty-text="sealed ? '该批次下没有合同' : '该批次下暂无合同，点击「新增合同」创建'"
       @filter-change="onFilterChange"
     >
       <el-table-column type="index" :index="rowIndex" label="序号" width="70" />
@@ -261,7 +275,7 @@ onMounted(load);
       <el-table-column label="企信利润" width="160" align="right">
         <template #default="{ row }">{{ formatMoney(row.qxProfit) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="130" fixed="right">
+      <el-table-column v-if="!sealed" label="操作" width="130" fixed="right">
         <template #default="{ row }">
           <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
           <el-button link type="danger" @click="remove(row)">删除</el-button>

@@ -1,6 +1,16 @@
 import Database from 'better-sqlite3';
-import { describe, expect, it } from 'vitest';
-import { runMigrations } from './database';
+import { copyFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
+import {
+  assertCompatible,
+  describeDatabaseError,
+  EXIT_INCOMPATIBLE_DB,
+  IncompatibleDatabaseError,
+  openDatabase,
+  runMigrations
+} from './database';
 import { migrations } from './migrations';
 
 const open = () => {
@@ -71,6 +81,16 @@ describe('数据库初始 schema（迁移已压平为单个 v1）', () => {
     db.close();
   });
 
+  it('批次：sealed_at 默认为空（= 正在结算中），可写入存档时间', () => {
+    const db = open();
+    expect(columns(db, 'batch')).toContain('sealed_at');
+    db.prepare(`INSERT INTO batch (id,batch_no,created_at,updated_at,device_id) VALUES ('b1',1,?,?,'d')`).run(NOW, NOW);
+    expect(db.prepare('SELECT sealed_at FROM batch').get()).toEqual({ sealed_at: null });
+    db.prepare("UPDATE batch SET sealed_at = ? WHERE id = 'b1'").run(NOW);
+    expect(db.prepare('SELECT sealed_at FROM batch').get()).toEqual({ sealed_at: NOW });
+    db.close();
+  });
+
   it('入账关联：kind 只允许三种；同一项目同一类型只能有一条有效记录，回退后（active=0）可再入账；外键完好', () => {
     const db = open();
     db.prepare(`INSERT INTO project (id,contract_no,name,archived,created_at,updated_at,device_id) VALUES ('p1','','甲',0,?,?,'d')`).run(NOW, NOW);
@@ -114,5 +134,123 @@ describe('数据库初始 schema（迁移已压平为单个 v1）', () => {
     db.prepare('INSERT INTO counterparty (id,name,created_at) VALUES (?,?,?)').run('cp1', '甲公司', NOW);
     expect(() => db.prepare('INSERT INTO counterparty (id,name,created_at) VALUES (?,?,?)').run('cp2', '甲公司', NOW)).toThrow(/UNIQUE/);
     db.close();
+  });
+});
+
+describe('旧结构数据库检测（开发阶段迁移压平后遗留的旧库）', () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
+  const tmpDb = () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fm-incompat-'));
+    dirs.push(dir);
+    return join(dir, 'finance.db');
+  };
+  /** 造一个「按旧迁移建出来」的库：schema_migrations 里有当前程序不认识的版本号，且结构是旧的（没有 batch 表） */
+  const makeLegacyDb = (path: string, versions: number[]) => {
+    const db = new Database(path);
+    db.exec('CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL)');
+    db.exec('CREATE TABLE account (id TEXT PRIMARY KEY, name TEXT NOT NULL)');
+    db.prepare("INSERT INTO account (id, name) VALUES ('a1', '旧账户')").run();
+    for (const v of versions) db.prepare('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?,?,?)').run(v, `old_${v}`, NOW);
+    db.close();
+  };
+
+  it('库里有当前程序不认识的迁移版本 -> 抛出 IncompatibleDatabaseError，信息里指出已记录与已知版本', () => {
+    const path = tmpDb();
+    makeLegacyDb(path, [1, 2, 3, 12]);
+    let err: unknown;
+    try {
+      openDatabase(path).close();
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(IncompatibleDatabaseError);
+    const e = err as IncompatibleDatabaseError;
+    expect(e.appliedVersions).toEqual([1, 2, 3, 12]);
+    expect(e.knownVersions).toEqual(migrations.map((m) => m.version).sort((a, b) => a - b));
+    expect(e.message).toContain('v1、v2、v3、v12');
+    expect(e.message).toContain('v2、v3、v12 是当前程序不认识的版本');
+  });
+
+  it('拒绝时不动库：不新建任何表、不改旧数据与迁移记录，也没有被切成 WAL（非 WAL 库的文件字节完全不变）', () => {
+    const path = tmpDb();
+    makeLegacyDb(path, [1, 12]);
+    const before = readFileSync(path);
+    expect(() => openDatabase(path)).toThrow(IncompatibleDatabaseError);
+    expect(readFileSync(path).equals(before)).toBe(true); // 没有 WAL 的库：一个字节都没改
+
+    const db = new Database(path, { readonly: true });
+    const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>).map((t) => t.name).sort();
+    expect(tables).toEqual(['account', 'schema_migrations']); // 没有补建 batch 等新表
+    expect(db.prepare('SELECT name FROM account').all()).toEqual([{ name: '旧账户' }]); // 旧数据还在
+    expect(db.pragma('journal_mode', { simple: true })).toBe('delete'); // 没被设成 WAL
+    db.close();
+  });
+
+  it('带未合并 WAL 的旧库（用户真实遇到的情形）：同样拒绝；数据、表结构、迁移记录完整保留（SQLite 自己合并 WAL 不算改数据）', () => {
+    const path = tmpDb();
+    const raw = new Database(path);
+    raw.pragma('journal_mode = WAL');
+    raw.pragma('wal_autocheckpoint = 0'); // 写入留在 -wal 里不合并
+    raw.exec('CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL)');
+    raw.exec('CREATE TABLE account (id TEXT PRIMARY KEY, name TEXT NOT NULL)');
+    raw.prepare("INSERT INTO account VALUES ('a1', '旧账户')").run();
+    for (const v of [1, 2, 12]) raw.prepare('INSERT INTO schema_migrations VALUES (?,?,?)').run(v, 'old', NOW);
+    // 模拟程序没有正常关闭：把磁盘上的三个文件原样拷贝到新目录再打开
+    const copyDir = mkdtempSync(join(tmpdir(), 'fm-incompat-wal-'));
+    dirs.push(copyDir);
+    for (const ext of ['', '-wal', '-shm']) copyFileSync(path + ext, join(copyDir, 'finance.db' + ext));
+    raw.close();
+
+    const copy = join(copyDir, 'finance.db');
+    expect(() => openDatabase(copy)).toThrow(IncompatibleDatabaseError);
+
+    const db = new Database(copy, { readonly: true });
+    expect((db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>).map((t) => t.name).sort()).toEqual([
+      'account', 'schema_migrations'
+    ]);
+    expect(db.prepare('SELECT name FROM account').all()).toEqual([{ name: '旧账户' }]);
+    expect((db.prepare('SELECT version FROM schema_migrations ORDER BY version').all() as Array<{ version: number }>).map((r) => r.version)).toEqual([1, 2, 12]);
+    db.close();
+  });
+
+  it('正常的库不受影响：全新库、已是最新版本的库都能打开；重复打开幂等', () => {
+    const path = tmpDb();
+    openDatabase(path).close(); // 全新空库
+    const db = openDatabase(path); // 再次打开
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: migrations.length });
+    db.close();
+    expect(() => assertCompatible(new Database(':memory:'))).not.toThrow(); // 没有 schema_migrations 表
+  });
+
+  it('只有 schema_migrations 空表（上次建表后中断）也视为兼容，会补跑迁移', () => {
+    const path = tmpDb();
+    const raw = new Database(path);
+    raw.exec('CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL)');
+    raw.close();
+    const db = openDatabase(path);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM batch').get()).toEqual({ n: 0 });
+    db.close();
+  });
+
+  it('describeDatabaseError：给出库路径、「没有改动文件」的说明和备份 / 删除 / 重建步骤；其他错误原样返回', () => {
+    const err = new IncompatibleDatabaseError('版本不一致', [1, 12], [1]);
+    const text = describeDatabaseError(err, 'C:\\data\\finance.db');
+    expect(text).toContain('C:\\data\\finance.db');
+    expect(text).toContain('程序没有修改其中的数据');
+    expect(text).toContain('备份');
+    expect(text).toContain('finance.db-wal');
+    expect(text).toContain('finance.db-shm');
+    expect(text).toContain('--reset');
+    expect(describeDatabaseError(new Error('别的错误'), 'x.db')).toBe('别的错误');
+    expect(describeDatabaseError('字符串错误', 'x.db')).toBe('字符串错误');
+  });
+
+  it('退出码约定为 78（与 src-tauri/src/lib.rs 的 EXIT_INCOMPATIBLE_DB 一致）', () => {
+    expect(EXIT_INCOMPATIBLE_DB).toBe(78);
+    const rust = readFileSync(join(__dirname, '../../../desktop/src-tauri/src/lib.rs'), 'utf8');
+    expect(rust).toMatch(/const EXIT_INCOMPATIBLE_DB: i32 = 78;/);
   });
 });

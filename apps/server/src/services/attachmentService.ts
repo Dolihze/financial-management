@@ -4,6 +4,7 @@ import type { BatchAttachment, TransactionAttachment } from '@fm/shared';
 import type { Db } from '../db/database';
 import { AppError, newId, nowIso } from '../utils';
 import { writeAudit } from './audit';
+import { assertBatchWritable } from './sealGuard';
 
 /** 单个附件大小上限（与全局 multipart 的 fileSize 限制一致） */
 export const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
@@ -184,6 +185,7 @@ export class AttachmentService {
   /** 给批次添加一个附件：落盘与事务/回滚策略同 add() */
   addToBatch(batchId: string, file: { fileName: string; mimeType: string; data: Buffer }): BatchAttachment {
     this.assertBatchExists(batchId);
+    assertBatchWritable(this.db, batchId); // 存档批次不能再上传文件
     if (file.data.length === 0) throw new AppError('文件内容为空', 400, 'VALIDATION');
     if (file.data.length > MAX_ATTACHMENT_BYTES) {
       throw new AppError(`文件过大，单个文件不能超过 ${MAX_ATTACHMENT_BYTES / 1024 / 1024} MB`, 413, 'FILE_TOO_LARGE');
@@ -237,6 +239,7 @@ export class AttachmentService {
    */
   removeBatchAttachment(id: string): BatchAttachment {
     const cur = this.getBatchAttachment(id);
+    assertBatchWritable(this.db, cur.batchId); // 存档批次不能再删除文件
     this.db.transaction(() => {
       this.db.prepare('UPDATE batch_attachment SET deleted_at = ? WHERE id = ?').run(nowIso(), id);
       writeAudit(this.db, this.deviceId, 'batch', cur.batchId, 'detach', {

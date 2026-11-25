@@ -64,7 +64,8 @@ interface MenuItem {
   /** 有 children 时渲染为二级菜单，path 仅作为 el-sub-menu 的唯一 index */
   children?: { path: string; title: string }[];
 }
-// 「项目管理」是二级菜单：已结算项目（批次 → 合同 → 项目 多层级页面，层级之间靠表格内点击与顶部面包屑切换）、未结算项目（总表）
+// 「项目管理」是二级菜单：正在结算中（批次 → 合同 → 项目 多层级页面，层级之间靠表格内点击与顶部面包屑切换）、未结算项目（总表）、
+// 存档（结构与正在结算中一致，但整批只读；批次下所有项目都走完全部流程后才能手动存档）
 const menus: MenuItem[] = [
   { path: '/overview', title: '总览', icon: 'DataBoard' },
   {
@@ -72,8 +73,9 @@ const menus: MenuItem[] = [
     title: '项目管理',
     icon: 'Briefcase',
     children: [
-      { path: '/projects/settled', title: '已结算项目' },
-      { path: '/projects/unsettled', title: '未结算项目' }
+      { path: '/projects/settled', title: '正在结算中' },
+      { path: '/projects/unsettled', title: '未结算项目' },
+      { path: '/projects/archive', title: '存档' }
     ]
   },
   { path: '/transactions', title: '记账流水', icon: 'Tickets' },

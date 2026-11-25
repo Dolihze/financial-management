@@ -3,6 +3,7 @@ import type { Db } from '../db/database';
 import { AppError, newId, nowIso } from '../utils';
 import { writeAudit } from './audit';
 import { UNBATCHED_NO } from './batchService';
+import { assertBatchWritable } from './sealGuard';
 
 
 interface ContractRow {
@@ -149,6 +150,7 @@ export class ContractService {
     this.assertTotalInRange(input.projects);
     this.assertContractNoFree(contractNo);
     const batch = this.assertBatchExists(input.batchId);
+    assertBatchWritable(this.db, batch.id); // 不能往已存档的批次里新增合同
 
     const now = nowIso();
     const id = newId();
@@ -184,6 +186,10 @@ export class ContractService {
     this.assertNoDuplicateProjects(input.projects);
     this.assertContractNoFree(contractNo, id);
     const batch = input.batchId === undefined ? { id: current.batchId, batchNo: current.batchNo } : this.assertBatchExists(input.batchId);
+
+    // 合同原来所在的批次、要移去的目标批次都不能是存档批次
+    assertBatchWritable(this.db, current.batchId);
+    assertBatchWritable(this.db, batch.id);
 
     const members = new Set(current.projects.map((p) => p.id));
     const existing = input.projects.filter((p) => members.has(p.projectId));
@@ -228,6 +234,7 @@ export class ContractService {
    */
   archive(id: string): Contract {
     const current = this.get(id);
+    assertBatchWritable(this.db, current.batchId);
     const now = nowIso();
     this.db.transaction(() => {
       const n = (this.db.prepare('SELECT COUNT(*) AS n FROM project WHERE contract_id = ? AND archived = 0').get(id) as { n: number }).n;

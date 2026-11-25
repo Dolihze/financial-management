@@ -12,15 +12,21 @@ import { DEFAULT_PAGE_SIZE, MIN_PAGE_SIZE, PAGE_SIZES } from '@/utils/pagination
 import ProjectBreadcrumb from '@/components/ProjectBreadcrumb.vue';
 import { validateBatchNo } from '@/utils/batchNo';
 import { errorMessage, formatMoney } from '@/utils/format';
+import { useProjectRoutes } from '@/utils/projectRoutes';
 
+/**
+ * 「正在结算中」与「存档」共用本页：存档（sealed）页展示已存档的批次，整页只读（隐藏新增 / 编辑 / 删除 / 存档），
+ * 只提供「取消存档」；正在结算中页展示未存档的批次，并提供手动挑选批次「存档」的入口。
+ */
 const router = useRouter();
+const { sealed, names, rootLabel } = useProjectRoutes();
 const batches = ref<Batch[]>([]);
 const loading = ref(false);
 
 async function load() {
   loading.value = true;
   try {
-    batches.value = await api.batches.list();
+    batches.value = await api.batches.list(sealed.value);
   } catch (e) {
     ElMessage.error(errorMessage(e));
   } finally {
@@ -39,7 +45,68 @@ const isUnbatched = (b: Batch) => b.batchNo === 0;
 const batchTitle = (b: Batch) => (isUnbatched(b) ? '未分批' : `第 ${b.batchNo} 批`);
 
 function openBatch(b: Batch) {
-  router.push({ name: 'contracts', params: { batchId: b.id } });
+  router.push({ name: names.value.contracts, params: { batchId: b.id } });
+}
+
+// ---------- 存档：手动挑选批次，确定时后端再校验一次（有未走完流程的项目则整体拒绝） ----------
+const seal = reactive({ visible: false, saving: false });
+const sealPicked = ref<Batch[]>([]);
+const sealKeyword = ref('');
+const sealShown = computed(() => {
+  const k = sealKeyword.value.trim();
+  return k ? batches.value.filter((b) => batchTitle(b).includes(k) || String(b.batchNo).includes(k) || b.note.includes(k)) : batches.value;
+});
+function openSeal() {
+  sealPicked.value = [];
+  sealKeyword.value = '';
+  seal.visible = true;
+}
+async function confirmSeal() {
+  if (sealPicked.value.length === 0) return ElMessage.warning('请至少选择一个批次');
+  const titles = sealPicked.value.map(batchTitle).join('、');
+  try {
+    await ElMessageBox.confirm(`确定将「${titles}」存档吗？存档后这些批次整批只读，如需修改要先取消存档。`, '存档', {
+      type: 'warning',
+      confirmButtonText: '存档',
+      cancelButtonText: '取消'
+    });
+  } catch {
+    return; // 取消
+  }
+  seal.saving = true;
+  try {
+    await api.batches.seal(sealPicked.value.map((b) => b.id));
+    ElMessage.success(`已存档 ${sealPicked.value.length} 个批次`);
+    seal.visible = false;
+    await load();
+    if (pageRows.value.length === 0 && currentPage.value > 1) currentPage.value -= 1;
+  } catch (e) {
+    // 校验不通过（还有项目没走完全部流程）时，后端的 message 已指出是哪个项目缺哪一步；弹窗展示，批次保持未存档
+    ElMessageBox.alert(errorMessage(e), '不能存档', { type: 'warning', confirmButtonText: '知道了' }).catch(() => {});
+  } finally {
+    seal.saving = false;
+  }
+}
+
+/** 取消存档：批次放回正在结算中，恢复可编辑 */
+async function unseal(b: Batch) {
+  try {
+    await ElMessageBox.confirm(`确定取消「${batchTitle(b)}」的存档吗？取消后批次回到「正在结算中」，可以重新编辑。`, '取消存档', {
+      type: 'warning',
+      confirmButtonText: '取消存档',
+      cancelButtonText: '返回'
+    });
+  } catch {
+    return; // 取消
+  }
+  try {
+    await api.batches.unseal(b.id);
+    ElMessage.success('已取消存档，批次回到「正在结算中」');
+    await load();
+    if (pageRows.value.length === 0 && currentPage.value > 1) currentPage.value -= 1;
+  } catch (e) {
+    ElMessage.error(errorMessage(e));
+  }
 }
 
 // ---------- 新增 / 编辑 ----------
@@ -229,14 +296,21 @@ onMounted(load);
 
 <template>
   <div>
-    <ProjectBreadcrumb :items="[{ label: '批次管理' }]" />
+    <ProjectBreadcrumb :items="[{ label: rootLabel }]" />
 
     <div class="page-toolbar">
-      <el-button type="primary" icon="Plus" @click="openCreate">新增批次</el-button>
+      <el-button v-if="!sealed" type="primary" icon="Plus" @click="openCreate">新增批次</el-button>
+      <el-button v-if="!sealed" icon="Box" :disabled="batches.length === 0" @click="openSeal">存档</el-button>
       <span class="hint">点击批次进入该批次下的合同</span>
+      <el-tag v-if="sealed" type="info" style="margin-left: 12px">存档只读</el-tag>
     </div>
 
-    <el-table v-loading="loading" :data="pageRows" border empty-text="暂无批次，点击「新增批次」或通过 Excel 导入项目自动生成">
+    <el-table
+      v-loading="loading"
+      :data="pageRows"
+      border
+      :empty-text="sealed ? '暂无存档的批次。在「正在结算中」里把已走完全部流程的批次存档后会出现在这里' : '暂无批次，点击「新增批次」或通过 Excel 导入项目自动生成'"
+    >
       <el-table-column type="index" :index="rowIndex" label="序号" width="70" />
       <el-table-column label="批次" min-width="140">
         <template #default="{ row }">
@@ -263,10 +337,16 @@ onMounted(load);
         </template>
       </el-table-column>
       <el-table-column prop="note" label="备注" min-width="180" show-overflow-tooltip />
-      <el-table-column label="操作" width="130" fixed="right">
+      <el-table-column v-if="!sealed" label="操作" width="130" fixed="right">
         <template #default="{ row }">
           <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
           <el-button v-if="!isUnbatched(row)" link type="danger" @click="remove(row)">删除</el-button>
+        </template>
+      </el-table-column>
+      <!-- 存档页只读：唯一的操作是取消存档 -->
+      <el-table-column v-else label="操作" width="110" fixed="right">
+        <template #default="{ row }">
+          <el-button link type="warning" @click="unseal(row)">取消存档</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -283,7 +363,26 @@ onMounted(load);
       style="margin-top: 16px; justify-content: flex-end"
     />
 
-    <el-dialog v-model="dlg.visible" :title="dlg.editing ? '编辑批次' : '新增批次'" width="520px" draggable destroy-on-close align-center :close-on-click-modal="false">
+    <!-- 存档：挑选批次。选完点「存档」后再由后端校验一次，有项目没走完全部流程则提示并拒绝 -->
+    <el-dialog v-if="!sealed" v-model="seal.visible" title="存档" width="700px" draggable destroy-on-close align-center :close-on-click-modal="false">
+      <el-input v-model="sealKeyword" clearable placeholder="按批次号 / 备注筛选" style="margin-bottom: 8px" />
+      <el-table :data="sealShown" border height="320" row-key="id" empty-text="没有可存档的批次" @selection-change="sealPicked = $event">
+        <el-table-column type="selection" width="50" :reserve-selection="true" />
+        <el-table-column label="批次" min-width="120">
+          <template #default="{ row }">{{ batchTitle(row) }}</template>
+        </el-table-column>
+        <el-table-column prop="contractCount" label="合同数" width="80" align="right" />
+        <el-table-column prop="projectCount" label="项目数" width="80" align="right" />
+        <el-table-column prop="note" label="备注" min-width="140" show-overflow-tooltip />
+      </el-table>
+      <div class="seal-tip">只有批次下所有项目的「上海院已支付」「支付下家」「支付陈沛」都为「是」才能存档；点击「存档」时会再校验一次，有未走完流程的项目会提示并拒绝。存档后批次整批只读，可在「存档」页取消存档。</div>
+      <template #footer>
+        <el-button @click="seal.visible = false">取消</el-button>
+        <el-button type="primary" :loading="seal.saving" :disabled="sealPicked.length === 0" @click="confirmSeal">存档 {{ sealPicked.length || '' }}</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-if="!sealed" v-model="dlg.visible" :title="dlg.editing ? '编辑批次' : '新增批次'" width="520px" draggable destroy-on-close align-center :close-on-click-modal="false">
       <el-form label-width="80px" @submit.prevent>
         <el-form-item label="批次号" required :error="form.batchNo && batchNoError ? batchNoError : ''">
           <el-input
@@ -384,6 +483,12 @@ onMounted(load);
 .hint {
   margin-left: 12px;
   font-size: 13px;
+  color: var(--el-text-color-secondary);
+}
+.seal-tip {
+  margin-top: 10px;
+  font-size: 12px;
+  line-height: 1.6;
   color: var(--el-text-color-secondary);
 }
 .file-link-text {

@@ -17,6 +17,7 @@ import { AppError, newId, nowIso } from '../utils';
 import { writeAudit } from './audit';
 import { MAX_BATCH_NO, UNBATCHED_NO } from './batchService';
 import { CategoryService, PROJECT_INCOME_CATEGORY_NAME } from './categoryService';
+import { assertContractWritable, assertProjectWritable } from './sealGuard';
 import { TransactionService } from './transactionService';
 
 /**
@@ -270,6 +271,7 @@ export class ProjectService {
    */
   update(id: string, input: UpdateProjectInput): Project {
     const current = this.get(id);
+    assertProjectWritable(this.db, id); // 项目所在批次已存档则只读
     const name = input.name.trim();
     if (!name) throw new AppError('项目名称不能为空', 400, 'VALIDATION');
     const clash = this.db.prepare('SELECT 1 FROM project WHERE name = ? AND archived = 0 AND id <> ?').get(name, id);
@@ -288,6 +290,7 @@ export class ProjectService {
         )
         .get(input.contractId) as { id: string; contractNo: string; batchNo: number } | undefined;
       if (!c) throw new AppError('所选合同不存在', 404, 'NOT_FOUND');
+      assertContractWritable(this.db, c.id); // 也不能换到存档批次下的合同
       moveTo = { id: c.id, contractNo: c.contractNo, batchNo: c.batchNo === UNBATCHED_NO ? null : c.batchNo };
     }
 
@@ -398,6 +401,7 @@ export class ProjectService {
    */
   archive(id: string): Project {
     const current = this.get(id);
+    assertProjectWritable(this.db, id);
     if (current.postedKinds.length > 0) {
       const labels = current.postedKinds.map((k) => POSTING_RULES[k].label).join('、');
       throw new AppError(`项目已入账（${labels}），不能直接删除。请先将这些字段切换为「否」回退入账后再删除`, 409, 'PROJECT_HAS_POSTINGS');
@@ -504,7 +508,53 @@ export class ProjectService {
       }
     });
     this.checkPaidNeedsContract(rows, errors);
+    this.checkSealedBatches(rows, errors);
     return { rows, errors, total };
+  }
+
+  /**
+   * 导入不能触碰存档批次（存档整批只读；要导入请先在「存档」页取消存档）。按行报错，预览与确认导入一致。
+   * 命中存档批次的情形：
+   * - 更新的已有项目，当前就在存档批次的合同里（改它、或把它移出合同都不行）；
+   * - Excel 的合同编号对应的已有合同在存档批次里（无论新增项目还是更新项目，都等于往存档批次里写）；
+   * - Excel 的合同编号是新合同，按 Excel「批次」列将创建在一个已存档的批次里。
+   * 注意：错误信息里的行号是 Excel 的行号。
+   */
+  private checkSealedBatches(rows: ParsedProjectRow[], errors: ImportRowError[]): void {
+    if (rows.length === 0) return;
+    const titleOf = (batchNo: number) => (batchNo === UNBATCHED_NO ? '未分批' : `第 ${batchNo} 批`);
+    const existing = this.existingByName(rows.map((r) => r.name));
+    const projectBatch = this.db.prepare(
+      `SELECT b.batch_no AS batchNo, b.sealed_at AS sealedAt FROM project p
+       JOIN contract c ON c.id = p.contract_id JOIN batch b ON b.id = c.batch_id WHERE p.id = ?`
+    );
+    const contractBatch = this.db.prepare(
+      `SELECT b.batch_no AS batchNo, b.sealed_at AS sealedAt FROM contract c
+       JOIN batch b ON b.id = c.batch_id WHERE c.contract_no = ? AND c.archived = 0`
+    );
+    const batchByNo = this.db.prepare('SELECT sealed_at AS sealedAt FROM batch WHERE batch_no = ? AND archived = 0');
+    type Hit = { batchNo: number; sealedAt: string | null } | undefined;
+    for (const r of rows) {
+      const reasons: string[] = [];
+      const hit = existing.get(r.name);
+      const cur = hit ? (projectBatch.get(hit.id) as Hit) : undefined;
+      if (cur?.sealedAt) reasons.push(`该项目目前在已存档的「${titleOf(cur.batchNo)}」里`);
+
+      if (r.contractNo) {
+        const c = contractBatch.get(r.contractNo) as Hit;
+        if (c) {
+          if (c.sealedAt) reasons.push(`合同编号「${r.contractNo}」属于已存档的「${titleOf(c.batchNo)}」`);
+        } else {
+          // 新合同：落在 Excel 批次列指定的批次（没填 = 未分批）；该批次已存档则不能往里创建
+          const no = r.batchNo ?? UNBATCHED_NO;
+          const target = batchByNo.get(no) as { sealedAt: string | null } | undefined;
+          if (target?.sealedAt) reasons.push(`新合同「${r.contractNo}」将创建在已存档的「${titleOf(no)}」里`);
+        }
+      }
+      if (reasons.length > 0) {
+        errors.push({ row: r.row, message: `项目「${r.name}」涉及存档批次，不能导入：${reasons.join('；')}。请先在「存档」页取消存档` });
+      }
+    }
   }
 
   /**

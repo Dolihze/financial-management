@@ -84,8 +84,16 @@ export const api = {
   },
 
   batches: {
-    list: () => get<Batch[]>('/api/batches'),
+    /** sealed = false → 正在结算中的批次；true → 存档的批次；省略 = 全部 */
+    list: (sealed?: boolean) => get<Batch[]>(sealed === undefined ? '/api/batches' : `/api/batches?sealed=${sealed}`),
     get: (id: string) => get<Batch>(`/api/batches/${id}`),
+    /**
+     * 存档：手动挑选若干批次。存档时后端再校验一次（批次下所有项目的上海院已支付/支付下家/支付陈沛都为是），
+     * 不满足则整体拒绝（409，message 里指出是哪个项目缺哪一步）。
+     */
+    seal: (batchIds: string[]) => post<Batch[]>('/api/batches/seal', { batchIds }),
+    /** 取消存档：批次放回正在结算中 */
+    unseal: (id: string) => post<Batch>(`/api/batches/${id}/unseal`),
     create: (body: BatchInput) => post<Batch>('/api/batches', body),
     update: (id: string, body: BatchInput) => patch<Batch>(`/api/batches/${id}`, body),
     /** 「删除」：后端只归档；批次下还有合同时会被拒绝 */

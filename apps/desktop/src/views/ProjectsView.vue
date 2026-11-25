@@ -8,13 +8,17 @@ import { DEFAULT_PAGE_SIZE, MIN_PAGE_SIZE, PAGE_SIZES } from '@/utils/pagination
 import ProjectBreadcrumb from '@/components/ProjectBreadcrumb.vue';
 import ProjectEditDialog from '@/components/ProjectEditDialog.vue';
 import { errorMessage, formatMoney } from '@/utils/format';
+import { useProjectRoutes } from '@/utils/projectRoutes';
 
 /**
  * 项目管理第三层：某个合同下的项目进度。
  * 批次、合同由路由参数 batchId / contractId 决定；这里只展示该合同下的项目，所以没有「合同编号」「批次号」筛选。
+ * 「正在结算中」与「存档」共用本页：存档（sealed）时整页只读，隐藏新增 / 编辑 / 删除 / 去导入。
+ * 合同下显示全部项目（包含已走完和未走完流程的）。
  */
 const router = useRouter();
 const route = useRoute();
+const { sealed, names, rootLabel } = useProjectRoutes();
 const batchId = computed(() => route.params.batchId as string);
 const contractId = computed(() => route.params.contractId as string);
 const batch = ref<Batch | null>(null);
@@ -24,8 +28,8 @@ const loading = ref(false);
 
 const batchTitle = computed(() => (!batch.value ? '…' : batch.value.batchNo === 0 ? '未分批' : `第 ${batch.value.batchNo} 批`));
 const crumbs = computed(() => [
-  { label: '批次管理', to: { name: 'batches' } },
-  { label: batchTitle.value, to: { name: 'contracts', params: { batchId: batchId.value } } },
+  { label: rootLabel.value, to: { name: names.value.batches } },
+  { label: batchTitle.value, to: { name: names.value.contracts, params: { batchId: batchId.value } } },
   { label: contract.value?.contractNo ?? '…' }
 ]);
 
@@ -38,12 +42,18 @@ async function load() {
       api.contracts.get(contractId.value),
       api.projects.list({ contractId: contractId.value })
     ]);
+    // 批次的存档状态与当前页不一致（如在另一处被存档 / 取消存档后用旧链接打开）：回到对应的批次列表
+    if ((b.sealedAt !== null) !== sealed.value) {
+      ElMessage.warning(sealed.value ? '该批次已不在存档中' : '该批次已存档');
+      router.replace({ name: sealed.value ? 'archive-batches' : 'batches' });
+      return;
+    }
     batch.value = b;
     contract.value = c;
     projects.value = list;
   } catch (e) {
     ElMessage.error(errorMessage(e));
-    router.replace({ name: 'contracts', params: { batchId: batchId.value } });
+    router.replace({ name: names.value.contracts, params: { batchId: batchId.value } });
   } finally {
     loading.value = false;
   }
@@ -220,13 +230,14 @@ onMounted(load);
     <ProjectBreadcrumb :items="crumbs" />
 
     <!-- 「去导入」放到顶部标题栏右侧 -->
-    <Teleport to="#header-actions">
+    <Teleport v-if="!sealed" to="#header-actions">
       <el-button icon="Upload" @click="router.push({ name: 'import' })">去导入</el-button>
     </Teleport>
 
     <div class="page-toolbar">
-      <el-button type="primary" icon="Plus" @click="openAdd">新增项目</el-button>
+      <el-button v-if="!sealed" type="primary" icon="Plus" @click="openAdd">新增项目</el-button>
       <span class="hint">合同 {{ contract?.contractNo }}（{{ batchTitle }}）</span>
+      <el-tag v-if="sealed" type="info" style="margin-left: 12px">存档只读</el-tag>
     </div>
 
     <div class="summary-bar">
@@ -276,7 +287,7 @@ onMounted(load);
           <el-icon v-else class="flag-no" title="否"><CloseBold /></el-icon>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="120" fixed="right">
+      <el-table-column v-if="!sealed" label="操作" width="120" fixed="right">
         <template #default="{ row }">
           <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
           <el-button link type="danger" @click="removeProject(row)">删除</el-button>
@@ -296,9 +307,9 @@ onMounted(load);
       style="margin-top: 16px; justify-content: flex-end"
     />
 
-    <ProjectEditDialog v-model="edit.visible" :project-id="edit.projectId" @saved="load" />
+    <ProjectEditDialog v-if="!sealed" v-model="edit.visible" :project-id="edit.projectId" @saved="load" />
 
-    <el-dialog v-model="add.visible" title="添加项目" width="760px" append-to-body draggable destroy-on-close align-center :close-on-click-modal="false">
+    <el-dialog v-if="!sealed" v-model="add.visible" title="添加项目" width="760px" append-to-body draggable destroy-on-close align-center :close-on-click-modal="false">
       <el-input
         v-model="add.keyword"
         clearable

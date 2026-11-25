@@ -18,6 +18,9 @@ const BACKEND_HOST: &str = "127.0.0.1";
 const DEV_BACKEND_PORT: u16 = 17890;
 /// 通知后端监听端口的环境变量（与 apps/server/src/config.ts 一致）
 const BACKEND_PORT_ENV: &str = "FM_PORT";
+/// 后端因数据库结构与当前程序不匹配（旧版本遗留的库）而拒绝启动时的退出码。
+/// 与 apps/server/src/db/database.ts 的 EXIT_INCOMPATIBLE_DB 保持一致。
+const EXIT_INCOMPATIBLE_DB: i32 = 78;
 /// 等待后端就绪的最长时间（首次启动要加载原生模块并建库，留足余量）
 const BACKEND_READY_TIMEOUT: Duration = Duration::from_secs(60);
 /// 前端据此事件得知后端状态，payload 为 bool（true=就绪，false=超时）
@@ -480,6 +483,7 @@ fn spawn_release_backend(app: &tauri::AppHandle, port: u16) -> Result<(), Box<dy
 
     // 转发 sidecar 输出到日志；进程提前退出视为启动失败
     let handle = app.clone();
+    let db_path_for_msg = to_plain_path(&db_path);
     tauri::async_runtime::spawn(async move {
         while let Some(event) = rx.recv().await {
             match event {
@@ -496,13 +500,15 @@ fn spawn_release_backend(app: &tauri::AppHandle, port: u16) -> Result<(), Box<dy
                     log_line(&handle, &format!("进程已终止: {payload:?}"));
                     // 应用正常退出时 stop_backend 会 kill，此时 ready 已为 true，不算失败
                     if !handle.state::<Backend>().ready.load(Ordering::SeqCst) {
-                        set_error(
-                            &handle,
+                        let message = if payload.code == Some(EXIT_INCOMPATIBLE_DB) {
+                            // 数据库是旧结构：后端已拒绝启动且没有修改库里的数据，只需备份后删除让它重建
                             format!(
-                                "后端进程启动后立即退出（退出码 {:?}），详见日志",
-                                payload.code
-                            ),
-                        );
+                                "数据库结构与当前程序不匹配（旧版本遗留的数据库），程序没有修改其中的数据。请先备份，再删除 {db_path_for_msg}（及同名的 -wal、-shm 文件），重新启动即可自动重建。"
+                            )
+                        } else {
+                            format!("后端进程启动后立即退出（退出码 {:?}），详见日志", payload.code)
+                        };
+                        set_error(&handle, message);
                     }
                     break;
                 }

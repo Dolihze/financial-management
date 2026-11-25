@@ -119,6 +119,7 @@ export const migrations: Migration[] = [
       CREATE INDEX idx_tx_attachment_tx ON tx_attachment(tx_id);
 
       -- 批次：批次号在未归档批次中唯一；批次号 0 为「未分批」
+      -- sealed_at：存档时间。NULL = 正在结算中；有值 = 已存档（只读，其下合同/项目/文件都不能再改）
       CREATE TABLE batch (
         id         TEXT PRIMARY KEY,
         batch_no   INTEGER NOT NULL,
@@ -126,7 +127,8 @@ export const migrations: Migration[] = [
         archived   INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
-        device_id  TEXT NOT NULL
+        device_id  TEXT NOT NULL,
+        sealed_at  TEXT
       );
       CREATE UNIQUE INDEX uq_batch_no ON batch(batch_no) WHERE archived = 0;
 

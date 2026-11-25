@@ -1,9 +1,21 @@
 import { buildApp } from './app';
 import { loadConfig } from './config';
+import { describeDatabaseError, EXIT_INCOMPATIBLE_DB, IncompatibleDatabaseError } from './db/database';
 
 async function main(): Promise<void> {
   const config = loadConfig();
-  const { app } = await buildApp(config, { logger: true });
+  let built;
+  try {
+    built = await buildApp(config, { logger: true });
+  } catch (err) {
+    if (err instanceof IncompatibleDatabaseError) {
+      // 明确提示（含库路径与处理步骤）写到 stderr：开发版直接显示在终端，发布版进入 backend.log
+      console.error(`\n[数据库不兼容]\n${describeDatabaseError(err, config.dbPath)}\n`);
+      process.exit(EXIT_INCOMPATIBLE_DB);
+    }
+    throw err;
+  }
+  const { app } = built;
 
   const shutdown = async (signal: string) => {
     app.log.info(`收到 ${signal}，正在关闭...`);

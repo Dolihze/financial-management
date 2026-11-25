@@ -255,12 +255,14 @@ async function load() {
   project.value = null;
   accountId.value = '';
   try {
-    const [p, accs, cons, regions] = await Promise.all([
-      api.projects.get(id.value), api.accounts.list(), api.contracts.list(), api.projects.regions()
+    const [p, accs, cons, regions, openBatches] = await Promise.all([
+      api.projects.get(id.value), api.accounts.list(), api.contracts.list(), api.projects.regions(), api.batches.list(false)
     ]);
     project.value = p;
     accounts.value = accs;
-    contracts.value = cons;
+    // 换合同的下拉只列正在结算中的批次下的合同：存档批次只读，项目不能换进去（后端也会拒绝）
+    const openIds = new Set(openBatches.map((b) => b.id));
+    contracts.value = cons.filter((c) => openIds.has(c.batchId));
     regionOptions.value = regions;
     fillForm(p);
     formRef.value?.clearValidate();

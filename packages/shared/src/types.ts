@@ -252,6 +252,7 @@ export interface BatchTotals {
 /**
  * 批次：项目管理的第一层（批次 → 合同 → 项目）。批次号为正整数（>= 1），在未归档批次中唯一。
  * 「删除」批次 = 归档，只有其下没有任何合同时才允许；不物理删除。
+ * 存档（sealedAt 有值）与「删除」无关：存档的批次出现在左侧菜单「存档」页，整批只读；没有存档的在「正在结算中」。
  */
 export interface Batch extends BatchTotals {
   id: string;
@@ -260,8 +261,18 @@ export interface Batch extends BatchTotals {
   note: string;
   /** 相关文件（按上传时间先后） */
   attachments: BatchAttachment[];
+  /** 存档时间；null = 正在结算中（未存档） */
+  sealedAt: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+/**
+ * 存档批次请求：手动挑选若干批次一起存档。存档时再校验一次：批次下所有项目的
+ * 「上海院已支付 / 支付下家 / 支付陈沛」必须全部为是，任一批次不满足则整体拒绝、都不存档。
+ */
+export interface SealBatchesInput {
+  batchIds: string[];
 }
 
 /** 新增/修改批次 */

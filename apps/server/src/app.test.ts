@@ -1766,15 +1766,11 @@ describe('账户与余额', () => {
     expect(overview.monthIncome).toBe(50_000);
     expect(overview.monthExpense).toBe(20_000);
 
-    // 借款统计：按往来单位的净借出额（借款 − 贷款），不受时间段影响；贷款未填往来单位 -> 「未填写」为负
-    const borrowSummary = ((await ctx.app.inject({ url: '/api/overview' })).json() as { borrow: { total: number; items: Array<{ name: string; amount: number }> } }).borrow;
-    expect(borrowSummary).toEqual({
-      total: 30_000 - 200_000,
-      items: [
-        { name: '张三', amount: 30_000 },
-        { name: '未填写', amount: -200_000 }
-      ]
-    });
+    // 借款 / 贷款分开统计：各自按往来单位累计，金额为正，不互相抵消，不受时间段影响；贷款未填往来单位 -> 「未填写」
+    type Debt = { total: number; items: Array<{ name: string; amount: number }> };
+    const debt = (await ctx.app.inject({ url: '/api/overview' })).json() as { borrow: Debt; loan: Debt };
+    expect(debt.borrow).toEqual({ total: 30_000, items: [{ name: '张三', amount: 30_000 }] });
+    expect(debt.loan).toEqual({ total: 200_000, items: [{ name: '未填写', amount: 200_000 }] });
 
     const integrity = (await ctx.app.inject({ url: '/api/overview/integrity' })).json() as { ok: boolean };
     expect(integrity.ok).toBe(true);

@@ -12,7 +12,7 @@ export class OverviewService {
     this.accounts = new AccountService(db, deviceId);
   }
 
-  /** 公司账目总览：总余额、各账户余额、本月收支、近 6 个月趋势、本月支出分类 */
+  /** 公司账目总览：现有金额、各账户余额、借款/贷款累计、本月收支、近 6 个月趋势、本月支出分类 */
   summary(today = new Date()): OverviewSummary {
     const accounts = this.accounts.list();
     const totalBalance = accounts.reduce((s, a) => s + a.balance, 0);
@@ -55,24 +55,25 @@ export class OverviewService {
       monthExpense: monthRow.expense,
       trend: trendRows.reverse(),
       expenseByCategory: byCategory,
-      borrow: this.borrowSummary()
+      borrow: this.debtSummary('borrow'),
+      loan: this.debtSummary('loan')
     };
   }
 
   /**
-   * 借款统计：按往来单位汇总「借款(借出，分录为负) − 贷款(借入，分录为正)」的净借出额，
-   * 即 -SUM(分录金额)；全部时间累计，不受时间段影响。净额为 0 的对象不展示。
+   * 借款 / 贷款统计（两者分开，不再互相抵消）：按往来单位汇总累计金额，全部时间累计，不受时间段影响。
+   * 借款(借出)分录为负、贷款(借入)分录为正，统一取绝对方向后以正数展示。
    */
-  borrowSummary(): BorrowSummary {
+  debtSummary(type: 'borrow' | 'loan'): BorrowSummary {
     const rows = this.db
       .prepare(
         `SELECT CASE WHEN TRIM(t.counterparty) = '' THEN '未填写' ELSE TRIM(t.counterparty) END AS name,
-                SUM(-l.amount) AS amount
+                SUM(${type === 'borrow' ? '-l.amount' : 'l.amount'}) AS amount
          FROM tx t JOIN tx_line l ON l.tx_id = t.id
-         WHERE t.type IN ('borrow','loan')
+         WHERE t.type = ?
          GROUP BY name HAVING amount <> 0 ORDER BY amount DESC, name`
       )
-      .all() as BorrowSummary['items'];
+      .all(type) as BorrowSummary['items'];
     return { total: rows.reduce((s, r) => s + r.amount, 0), items: rows };
   }
 

@@ -424,15 +424,17 @@ export interface OverviewSummary {
   trend: Array<{ month: string; income: number; expense: number }>;
   /** 本月支出分类占比 */
   expenseByCategory: Array<{ categoryId: string | null; categoryName: string; amount: number }>;
-  /** 借款（净借出额）：累计借款(借出) − 累计贷款(借入)，不受时间段影响；金额单位：分 */
+  /** 借款（借出）：累计借款金额，不受时间段影响；金额单位：分 */
   borrow: BorrowSummary;
+  /** 贷款（借入）：累计贷款金额，不受时间段影响；金额单位：分 */
+  loan: BorrowSummary;
 }
 
-/** 借款统计：按往来单位（借款对象）汇总净借出额；未填写往来单位的归为「未填写」 */
+/** 借款/贷款统计：按往来单位汇总累计金额（均为正数）；未填写往来单位的归为「未填写」 */
 export interface BorrowSummary {
-  /** 各对象净借出额之和（可为负：借入多于借出） */
+  /** 各对象累计金额之和 */
   total: number;
-  /** 净额不为 0 的对象，按净借出额从大到小 */
+  /** 按往来单位汇总的明细，按金额从大到小 */
   items: Array<{ name: string; amount: number }>;
 }
 

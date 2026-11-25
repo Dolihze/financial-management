@@ -111,7 +111,7 @@ npm run package
 | GET/POST | `/api/transactions/:id/attachments` | 流水相关文件：列表 / 上传（multipart，字段 `file`，单个 ≤20MB，每笔 ≤20 个） |
 | POST | `/api/attachments/:id/remove` | 「删除」流水文件：软删除（保留记录与磁盘文件，列表/下载不再返回，释放名额，写审计 `detach`）；整笔流水被删除时才连文件一并清理 |
 | GET | `/api/attachments/:id/file` | 取文件内容（图片/PDF 内联预览，其余强制下载） |
-| GET | `/api/overview` | 总览：总余额、各账户、本月收支、趋势、分类 |
+| GET | `/api/overview` | 总览：现有金额、各账户、本月收支、趋势、分类、借款/贷款（分开统计） |
 | GET | `/api/overview/integrity` | 数据完整性校验 |
 | GET | `/api/imports/template` | 下载导入模板 |
 | POST | `/api/imports/preview` / `commit` | 预览 / 确认导入（multipart `file`） |

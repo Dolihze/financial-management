@@ -66,19 +66,24 @@ const accountPage = ref(1);
 const incomePage = ref(1);
 const expensePage = ref(1);
 const borrowPage = ref(1);
+const loanPage = ref(1);
 const slicePage = <T,>(rows: T[], page: number) => rows.slice((page - 1) * pageSize.value, page * pageSize.value);
 const accountPageRows = computed(() => slicePage(accountRows.value, accountPage.value));
 const incomePageRows = computed(() => slicePage(incomeRows.value, incomePage.value));
 const expensePageRows = computed(() => slicePage(expenseRows.value, expensePage.value));
-/** 借款明细：按借款对象（往来单位）的净借出额，后端已按金额降序 */
+/** 借款明细：按借款对象（往来单位）的累计借出额，后端已按金额降序 */
 const borrowRows = computed(() => data.value?.borrow.items ?? []);
 const borrowPageRows = computed(() => slicePage(borrowRows.value, borrowPage.value));
+/** 贷款明细：按贷款对象（往来单位）的累计借入额，后端已按金额降序 */
+const loanRows = computed(() => data.value?.loan.items ?? []);
+const loanPageRows = computed(() => slicePage(loanRows.value, loanPage.value));
 /** 切换每页条数后所有表都回到第 1 页 */
 function resetPages() {
   accountPage.value = 1;
   incomePage.value = 1;
   expensePage.value = 1;
   borrowPage.value = 1;
+  loanPage.value = 1;
 }
 /** 序号需跨页连续 */
 const indexOf = (page: number) => (i: number) => (page - 1) * pageSize.value + i + 1;
@@ -152,23 +157,14 @@ onMounted(() => {
       </template>
     </div>
 
-    <el-row :gutter="16" style="margin-bottom: 16px">
-      <el-col :span="6">
-        <el-card shadow="never" class="stat-card"><el-statistic title="公司总余额" :value="formatMoney(data.totalBalance)" /></el-card>
-      </el-col>
-      <el-col :span="6">
-        <el-card shadow="never" class="stat-card"><el-statistic title="收入" :value="formatMoney(period?.income ?? 0)" value-style="color: #f56c6c" /></el-card>
-      </el-col>
-      <el-col :span="6">
-        <el-card shadow="never" class="stat-card"><el-statistic title="支出" :value="formatMoney(period?.expense ?? 0)" value-style="color: #67c23a" /></el-card>
-      </el-col>
-      <el-col :span="6">
-        <!-- 借款：累计净借出额（借款 − 贷款），按往来单位列出，不受时间段影响 -->
-        <el-card shadow="never" class="stat-card">
-          <el-statistic title="借款" :value="formatMoney(data.borrow.total)" />
-        </el-card>
-      </el-col>
-    </el-row>
+    <div class="stat-row">
+      <el-card shadow="never" class="stat-card"><el-statistic title="公司现有金额" :value="formatMoney(data.totalBalance)" /></el-card>
+      <el-card shadow="never" class="stat-card"><el-statistic title="收入" :value="formatMoney(period?.income ?? 0)" value-style="color: #f56c6c" /></el-card>
+      <el-card shadow="never" class="stat-card"><el-statistic title="支出" :value="formatMoney(period?.expense ?? 0)" value-style="color: #67c23a" /></el-card>
+      <!-- 借款（借出）/ 贷款（借入）：分开统计的累计金额，按往来单位列出，不受时间段影响 -->
+      <el-card shadow="never" class="stat-card"><el-statistic title="别人欠企信的" :value="formatMoney(data.borrow.total)" /></el-card>
+      <el-card shadow="never" class="stat-card"><el-statistic title="贷款" :value="formatMoney(data.loan.total)" /></el-card>
+    </div>
 
     <el-card shadow="never" class="period-card" v-loading="periodLoading">
       <template v-if="period">        <div class="panes">
@@ -181,9 +177,6 @@ onMounted(() => {
                 <el-table-column prop="name" label="账户" show-overflow-tooltip />
                 <el-table-column label="余额" align="right" width="120">
                   <template #default="{ row }"><b :class="row.balance < 0 ? 'money-out' : ''">{{ formatMoney(row.balance) }}</b></template>
-                </el-table-column>
-                <el-table-column label="占比" width="64">
-                  <template #default="{ row }">{{ percentOf(Math.max(0, row.balance), Math.max(0, data.totalBalance)) }}</template>
                 </el-table-column>
               </el-table>
             </div>
@@ -203,10 +196,6 @@ onMounted(() => {
                 <el-table-column label="金额" width="110">
                   <template #default="{ row }"><b class="amount-income">{{ formatMoney(row.amount) }}</b></template>
                 </el-table-column>
-                <el-table-column label="占比" width="64">
-                  <template #default="{ row }">{{ percentOf(row.amount, incomeTotal) }}</template>
-                </el-table-column>
-                <el-table-column prop="count" label="笔数" width="50" />
               </el-table>
             </div>
             <el-pagination v-model:current-page="incomePage" v-model:page-size="pageSize" :page-sizes="PAGE_SIZES" class="pane-pager" small background layout="prev, pager, next, sizes" :total="incomeRows.length" :hide-on-single-page="incomeRows.length <= MIN_PAGE_SIZE" @size-change="resetPages" />
@@ -225,16 +214,12 @@ onMounted(() => {
                 <el-table-column label="金额" width="110">
                   <template #default="{ row }"><b class="amount-expense">{{ formatMoney(row.amount) }}</b></template>
                 </el-table-column>
-                <el-table-column label="占比" width="64">
-                  <template #default="{ row }">{{ percentOf(row.amount, expenseTotal) }}</template>
-                </el-table-column>
-                <el-table-column prop="count" label="笔数" width="50" />
               </el-table>
             </div>
             <el-pagination v-model:current-page="expensePage" v-model:page-size="pageSize" :page-sizes="PAGE_SIZES" class="pane-pager" small background layout="prev, pager, next, sizes" :total="expenseRows.length" :hide-on-single-page="expenseRows.length <= MIN_PAGE_SIZE" @size-change="resetPages" />
           </div>
 
-          <!-- 借款明细：按借款对象（往来单位）的累计净借出额，不受时间段影响 -->
+          <!-- 借款明细：按借款对象（往来单位）的累计借出额，不受时间段影响 -->
           <div class="pane">
             <div class="pane-title">借款明细</div>
             <div class="pane-table">
@@ -242,11 +227,26 @@ onMounted(() => {
                 <el-table-column type="index" :index="indexOf(borrowPage)" label="#" width="40" />
                 <el-table-column prop="name" label="借款对象" show-overflow-tooltip />
                 <el-table-column label="金额" width="110">
-                  <template #default="{ row }"><b :class="row.amount < 0 ? 'money-out' : ''">{{ formatMoney(row.amount) }}</b></template>
+                  <template #default="{ row }"><b>{{ formatMoney(row.amount) }}</b></template>
                 </el-table-column>
               </el-table>
             </div>
             <el-pagination v-model:current-page="borrowPage" v-model:page-size="pageSize" :page-sizes="PAGE_SIZES" class="pane-pager" small background layout="prev, pager, next, sizes" :total="borrowRows.length" :hide-on-single-page="borrowRows.length <= MIN_PAGE_SIZE" @size-change="resetPages" />
+          </div>
+
+          <!-- 贷款明细：按贷款对象（往来单位）的累计借入额，不受时间段影响 -->
+          <div class="pane">
+            <div class="pane-title">贷款明细</div>
+            <div class="pane-table">
+              <el-table :data="loanPageRows" size="small" height="100%" :row-class-name="() => 'tall-row'" empty-text="暂无贷款记录">
+                <el-table-column type="index" :index="indexOf(loanPage)" label="#" width="40" />
+                <el-table-column prop="name" label="贷款对象" show-overflow-tooltip />
+                <el-table-column label="金额" width="110">
+                  <template #default="{ row }"><b>{{ formatMoney(row.amount) }}</b></template>
+                </el-table-column>
+              </el-table>
+            </div>
+            <el-pagination v-model:current-page="loanPage" v-model:page-size="pageSize" :page-sizes="PAGE_SIZES" class="pane-pager" small background layout="prev, pager, next, sizes" :total="loanRows.length" :hide-on-single-page="loanRows.length <= MIN_PAGE_SIZE" @size-change="resetPages" />
           </div>
         </div>
       </template>
@@ -323,9 +323,16 @@ onMounted(() => {
   border-radius: 1px;
   background: var(--el-color-primary);
 }
-/* 四张统计卡片等高 */
+/* 五张统计卡片等宽等高 */
+.stat-row {
+  flex: none;
+  display: flex;
+  gap: 16px;
+  margin-bottom: 16px;
+}
 .stat-card {
-  height: 100%;
+  flex: 1 1 0;
+  min-width: 0;
 }
 /* 日期范围选择器宽度：用官方变量控制，并禁止在 flex 行里被拉伸 */
 .period-bar :deep(.el-date-editor.el-input__wrapper) {

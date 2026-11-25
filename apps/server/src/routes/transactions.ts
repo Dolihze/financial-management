@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { TRANSACTION_TYPES } from '@fm/shared';
+import { TRANSACTION_SUB_TYPES, TRANSACTION_TYPES } from '@fm/shared';
 import { z } from 'zod';
 import type { Services } from '../app';
 
@@ -8,6 +8,7 @@ const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, '日期格式应为 Y
 const createSchema = z.object({
   occurredOn: dateSchema,
   type: z.enum(TRANSACTION_TYPES),
+  subType: z.enum(TRANSACTION_SUB_TYPES).nullable().optional(),
   amount: z.number().int().positive(),
   accountId: z.string().optional(),
   categoryId: z.string().nullable().optional(),

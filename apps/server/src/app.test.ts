@@ -1766,7 +1766,7 @@ describe('账户与余额', () => {
     expect(overview.monthIncome).toBe(50_000);
     expect(overview.monthExpense).toBe(20_000);
 
-    // 借款 / 贷款分开统计：各自按往来单位累计，金额为正，不互相抵消，不受时间段影响；贷款未填往来单位 -> 「未填写」
+    // 借款 / 贷款分开统计：各自按往来单位统计未还余额，不互相抵消，不受时间段影响；贷款未填往来单位 -> 「未填写」
     type Debt = { total: number; items: Array<{ name: string; amount: number }> };
     const debt = (await ctx.app.inject({ url: '/api/overview' })).json() as { borrow: Debt; loan: Debt };
     expect(debt.borrow).toEqual({ total: 30_000, items: [{ name: '张三', amount: 30_000 }] });
@@ -1778,6 +1778,97 @@ describe('账户与余额', () => {
     // 按类型筛选
     const onlyLoan = (await ctx.app.inject({ url: '/api/transactions?type=loan' })).json() as { total: number };
     expect(onlyLoan.total).toBe(1);
+  });
+
+  it('借款/贷款分类：4 个子类型方向正确；省略时取默认；与类型不匹配或收入/支出带子类型 400；列表返回 subType', async () => {
+    const a = await makeAccount('银行A', 1_000_000);
+    const balance = async () => ((await ctx.app.inject({ url: `/api/accounts/${a.id}` })).json() as { balance: number }).balance;
+    const day = '2026-11-01';
+    const mk = (type: string, subType: string | undefined, amount = 10_000) =>
+      post('/api/transactions', { occurredOn: day, type, ...(subType ? { subType } : {}), amount, accountId: a.id });
+
+    const lend = await mk('borrow', 'lend');
+    expect(lend.statusCode).toBe(201);
+    expect(lend.json()).toMatchObject({ type: 'borrow', subType: 'lend', lines: [{ amount: -10_000 }] });
+    expect(await balance()).toBe(990_000);
+
+    const repayIn = await mk('borrow', 'repay_in', 4_000);
+    expect(repayIn.json()).toMatchObject({ subType: 'repay_in', lines: [{ amount: 4_000 }] });
+    expect(await balance()).toBe(994_000);
+
+    const loan = await mk('loan', 'loan', 50_000);
+    expect(loan.json()).toMatchObject({ subType: 'loan', lines: [{ amount: 50_000 }] });
+    const repayOut = await mk('loan', 'repay_out', 20_000);
+    expect(repayOut.json()).toMatchObject({ subType: 'repay_out', lines: [{ amount: -20_000 }] });
+    expect(await balance()).toBe(994_000 + 50_000 - 20_000);
+
+    // 省略子类型：借款默认「企信借别人钱」(流出)，贷款默认「贷款」(流入)
+    expect((await mk('borrow', undefined, 100)).json()).toMatchObject({ subType: 'lend', lines: [{ amount: -100 }] });
+    expect((await mk('loan', undefined, 100)).json()).toMatchObject({ subType: 'loan', lines: [{ amount: 100 }] });
+
+    // 不合法：子类型与类型不匹配、未知子类型、收入/支出带子类型
+    expect((await mk('borrow', 'loan')).statusCode).toBe(400);
+    expect((await mk('loan', 'repay_in')).statusCode).toBe(400);
+    expect((await mk('borrow', 'bogus')).statusCode).toBe(400);
+    expect((await mk('income', 'loan')).statusCode).toBe(400);
+    expect((await mk('expense', 'lend')).statusCode).toBe(400);
+    expect((await mk('income', undefined)).json()).toMatchObject({ subType: null });
+
+    const list = (await ctx.app.inject({ url: '/api/transactions?type=borrow' })).json() as { items: Array<{ subType: string }> };
+    expect(list.items.map((t) => t.subType).sort()).toEqual(['lend', 'lend', 'repay_in']);
+    expect(((await ctx.app.inject({ url: '/api/overview/integrity' })).json() as { ok: boolean }).ok).toBe(true);
+  });
+
+  it('编辑借款/贷款分类：切换子类型会重写分录方向，余额随之变化；借款改收入则清空子类型', async () => {
+    const a = await makeAccount('银行A', 100_000);
+    const balance = async () => ((await ctx.app.inject({ url: `/api/accounts/${a.id}` })).json() as { balance: number }).balance;
+    const created = (await post('/api/transactions', { occurredOn: '2026-11-01', type: 'borrow', subType: 'lend', amount: 30_000, accountId: a.id })).json() as { id: string };
+    expect(await balance()).toBe(70_000);
+
+    const patch = (body: object) => ctx.app.inject({ method: 'PATCH', url: `/api/transactions/${created.id}`, payload: body });
+    const base = { occurredOn: '2026-11-01', amount: 30_000, accountId: a.id };
+    const toRepay = await patch({ ...base, type: 'borrow', subType: 'repay_in' });
+    expect(toRepay.statusCode).toBe(200);
+    expect(toRepay.json()).toMatchObject({ subType: 'repay_in', lines: [{ amount: 30_000 }] });
+    expect(await balance()).toBe(130_000);
+
+    const toLoan = await patch({ ...base, type: 'loan', subType: 'repay_out' });
+    expect(toLoan.json()).toMatchObject({ type: 'loan', subType: 'repay_out', lines: [{ amount: -30_000 }] });
+    expect(await balance()).toBe(70_000);
+
+    const toIncome = await patch({ ...base, type: 'income' });
+    expect(toIncome.json()).toMatchObject({ type: 'income', subType: null });
+    expect(await balance()).toBe(130_000);
+    expect((await patch({ ...base, type: 'income', subType: 'loan' })).statusCode).toBe(400); // 校验失败不改数据
+    expect(await balance()).toBe(130_000);
+  });
+
+  it('总览「别人欠企信的」「贷款」：还款冲减未还余额，两者互不抵消，不计入收支；余额归零的对象不展示', async () => {
+    const a = await makeAccount('银行A', 1_000_000);
+    const cp = async (name: string) => ((await post('/api/counterparties', { name })).json() as { id: string }).id;
+    const zhang = await cp('张三');
+    const li = await cp('李四');
+    const bank = await cp('招商银行');
+    const day = new Date().toISOString().slice(0, 8) + '01';
+    const mk = (type: string, subType: string, amount: number, counterpartyId: string) =>
+      post('/api/transactions', { occurredOn: day, type, subType, amount, accountId: a.id, counterpartyId });
+
+    await mk('borrow', 'lend', 100_000, zhang);
+    await mk('borrow', 'repay_in', 30_000, zhang); // 张三还了 3 万 -> 欠 7 万
+    await mk('borrow', 'lend', 50_000, li);
+    await mk('borrow', 'repay_in', 50_000, li); // 李四还清 -> 不展示
+    await mk('loan', 'loan', 200_000, bank);
+    await mk('loan', 'repay_out', 80_000, bank); // 还贷 8 万 -> 剩 12 万
+
+    type Debt = { total: number; items: Array<{ name: string; amount: number }> };
+    const o = (await ctx.app.inject({ url: '/api/overview' })).json() as { borrow: Debt; loan: Debt; totalBalance: number; monthIncome: number; monthExpense: number };
+    expect(o.borrow).toEqual({ total: 70_000, items: [{ name: '张三', amount: 70_000 }] });
+    expect(o.loan).toEqual({ total: 120_000, items: [{ name: '招商银行', amount: 120_000 }] });
+    // 现金流：-10 +3 -5 +5 +20 -8 万
+    expect(o.totalBalance).toBe(1_000_000 - 100_000 + 30_000 - 50_000 + 50_000 + 200_000 - 80_000);
+    expect(o.monthIncome).toBe(0);
+    expect(o.monthExpense).toBe(0);
+    expect(((await ctx.app.inject({ url: '/api/overview/integrity' })).json() as { ok: boolean }).ok).toBe(true);
   });
 
   it('转账类型已移除，借款/贷款必须指定账户', async () => {

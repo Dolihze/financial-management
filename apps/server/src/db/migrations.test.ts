@@ -175,6 +175,39 @@ describe('已有数据库自动升级（以后改字段不需要删库重建）'
     again.close();
   });
 
+  it('v2 -> v3：流水新增 sub_type，历史借款回填 lend、贷款回填 loan、收入/支出为 NULL，分录与其他数据不丢', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fm-upgrade-v3-'));
+    dirs.push(dir);
+    const path = join(dir, 'finance.db');
+
+    const old = new Database(path);
+    old.pragma('journal_mode = WAL');
+    old.pragma('foreign_keys = ON');
+    old.exec('CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL)');
+    for (const m of migrations.filter((x) => x.version <= 2)) {
+      old.exec(m.sql);
+      old.prepare('INSERT INTO schema_migrations VALUES (?,?,?)').run(m.version, m.name, NOW);
+    }
+    old.prepare(`INSERT INTO account (id,name,type,created_at,updated_at,device_id) VALUES ('a1','账户','bank',?,?,'d')`).run(NOW, NOW);
+    const ins = (id: string, type: string, amount: number) => {
+      old.prepare(`INSERT INTO tx (id,occurred_on,type,summary,created_at,updated_at,device_id) VALUES (?,'2026-01-01',?,'',?,?,'d')`).run(id, type, NOW, NOW);
+      old.prepare('INSERT INTO tx_line (id,tx_id,account_id,amount) VALUES (?,?,?,?)').run(`l-${id}`, id, 'a1', amount);
+    };
+    ins('t-income', 'income', 100);
+    ins('t-expense', 'expense', -50);
+    ins('t-borrow', 'borrow', -30);
+    ins('t-loan', 'loan', 200);
+    expect(columns(old, 'tx')).not.toContain('sub_type');
+    old.close();
+
+    const db = openDatabase(path);
+    expect(columns(db, 'tx')).toContain('sub_type');
+    const subs = Object.fromEntries((db.prepare('SELECT id, sub_type FROM tx').all() as Array<{ id: string; sub_type: string | null }>).map((r) => [r.id, r.sub_type]));
+    expect(subs).toEqual({ 't-income': null, 't-expense': null, 't-borrow': 'lend', 't-loan': 'loan' });
+    expect(db.prepare('SELECT COUNT(*) AS n, SUM(amount) AS s FROM tx_line').get()).toEqual({ n: 4, s: 220 }); // 分录不变
+    db.close();
+  });
+
   it('新增迁移的约定：版本号从 1 开始连续递增，没有重复或跳号', () => {
     const versions = migrations.map((m) => m.version).sort((a, b) => a - b);
     expect(versions).toEqual(versions.map((_, i) => i + 1));

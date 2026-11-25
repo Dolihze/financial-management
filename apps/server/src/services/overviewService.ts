@@ -61,20 +61,25 @@ export class OverviewService {
   }
 
   /**
-   * 借款 / 贷款统计（两者分开，不再互相抵消）：按往来单位汇总累计金额，全部时间累计，不受时间段影响。
-   * 借款(借出)分录为负、贷款(借入)分录为正，统一取绝对方向后以正数展示。
+   * 借款 / 贷款统计（两者分开，互不抵消）：按往来单位汇总「未还余额」，全部时间累计，不受时间段影响。
+   * - 借款 = 企信借别人钱(出账) − 别人还企信钱(入账) = -SUM(分录)，即别人欠企信的；
+   * - 贷款 = 贷款(入账) − 还贷(出账) = SUM(分录)，即企信欠别人的。
+   * 余额为 0 的往来单位不展示；还多了则为负数。
    */
   debtSummary(type: 'borrow' | 'loan'): BorrowSummary {
+    const net = type === 'borrow' ? 'SUM(-l.amount)' : 'SUM(l.amount)';
+    // 别名用 balance 而不是 amount：避免与 tx_line.amount 列重名，导致 HAVING/ORDER BY 绑定到原始列
     const rows = this.db
       .prepare(
         `SELECT CASE WHEN TRIM(t.counterparty) = '' THEN '未填写' ELSE TRIM(t.counterparty) END AS name,
-                SUM(${type === 'borrow' ? '-l.amount' : 'l.amount'}) AS amount
+                ${net} AS balance
          FROM tx t JOIN tx_line l ON l.tx_id = t.id
          WHERE t.type = ?
-         GROUP BY name HAVING amount <> 0 ORDER BY amount DESC, name`
+         GROUP BY name HAVING ${net} <> 0 ORDER BY balance DESC, name`
       )
-      .all(type) as BorrowSummary['items'];
-    return { total: rows.reduce((s, r) => s + r.amount, 0), items: rows };
+      .all(type) as Array<{ name: string; balance: number }>;
+    const items = rows.map((r) => ({ name: r.name, amount: r.balance }));
+    return { total: items.reduce((s, r) => s + r.amount, 0), items };
   }
 
   /**
@@ -140,8 +145,9 @@ export class OverviewService {
     };
   }
   /**
-   * 对账校验：每笔交易必须恰有一条分录，且方向与类型一致
-   * （收入/贷款为流入 > 0，支出/借款为流出 < 0），否则说明数据被破坏。
+   * 对账校验：每笔交易必须恰有一条分录，且方向与类型（借款/贷款看子类型）一致
+   * （收入/贷款/别人还企信钱为流入 > 0，支出/企信借别人钱/还贷为流出 < 0），否则说明数据被破坏。
+   * 子类型为空的历史借款按借出、贷款按借入处理（迁移 v3 已回填，这里只是兜底）。
    */
   integrityCheck(): { ok: boolean; brokenTransactions: string[] } {
     const rows = this.db
@@ -149,8 +155,12 @@ export class OverviewService {
         `SELECT t.id FROM tx t LEFT JOIN tx_line l ON l.tx_id = t.id
          GROUP BY t.id
          HAVING COUNT(l.id) <> 1
-             OR (t.type IN ('income','loan')   AND SUM(l.amount) <= 0)
-             OR (t.type IN ('expense','borrow') AND SUM(l.amount) >= 0)`
+             OR (t.type = 'income' AND SUM(l.amount) <= 0)
+             OR (t.type = 'expense' AND SUM(l.amount) >= 0)
+             OR (t.type = 'borrow' AND COALESCE(t.sub_type,'lend') = 'lend'     AND SUM(l.amount) >= 0)
+             OR (t.type = 'borrow' AND COALESCE(t.sub_type,'lend') = 'repay_in' AND SUM(l.amount) <= 0)
+             OR (t.type = 'loan'   AND COALESCE(t.sub_type,'loan') = 'loan'      AND SUM(l.amount) <= 0)
+             OR (t.type = 'loan'   AND COALESCE(t.sub_type,'loan') = 'repay_out' AND SUM(l.amount) >= 0)`
       )
       .all() as Array<{ id: string }>;
     return { ok: rows.length === 0, brokenTransactions: rows.map((r) => r.id) };

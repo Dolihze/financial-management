@@ -1,12 +1,17 @@
 import { createHash } from 'node:crypto';
 import { unlinkSync } from 'node:fs';
 import { join } from 'node:path';
-import type {
-  CreateTransactionInput,
-  Transaction,
-  TransactionAttachment,
-  TransactionLine,
-  TransactionType
+import {
+  TRANSACTION_SUB_TYPES,
+  TRANSACTION_TYPE_SUB_TYPES,
+  TRANSACTION_TYPE_LABELS,
+  isInflow,
+  type CreateTransactionInput,
+  type Transaction,
+  type TransactionAttachment,
+  type TransactionLine,
+  type TransactionSubType,
+  type TransactionType
 } from '@fm/shared';
 import type { Db } from '../db/database';
 import { AppError, newId, nowIso } from '../utils';
@@ -17,6 +22,7 @@ interface TxRow {
   id: string;
   occurred_on: string;
   type: TransactionType;
+  sub_type: TransactionSubType | null;
   summary: string;
   category_id: string | null;
   category_name: string | null;
@@ -62,29 +68,37 @@ export function makeFingerprint(parts: {
 }
 
 /**
+ * 解析并校验子类型：收入/支出不能带子类型；借款/贷款省略时取默认（借款=lend，贷款=loan），
+ * 且必须属于该类型（借款只能是 lend/repay_in，贷款只能是 loan/repay_out）。
+ */
+export function resolveSubType(input: Pick<CreateTransactionInput, 'type' | 'subType'>): TransactionSubType | null {
+  const allowed = TRANSACTION_TYPE_SUB_TYPES[input.type];
+  if (!allowed) throw new AppError('未知的交易类型');
+  if (allowed.length === 0) {
+    if (input.subType) throw new AppError(`${TRANSACTION_TYPE_LABELS[input.type]}不能指定借款/贷款分类`);
+    return null;
+  }
+  const sub = input.subType ?? allowed[0]!;
+  if (!(TRANSACTION_SUB_TYPES as readonly string[]).includes(sub) || !allowed.includes(sub)) {
+    throw new AppError(`${TRANSACTION_TYPE_LABELS[input.type]}的分类不合法`);
+  }
+  return sub;
+}
+
+/**
  * 将业务入参展开为分录（均为与「外部」的往来，单账户单分录）。
- * 收入/贷款（借入）=入账户 +amt；支出/借款（借出）=出账户 -amt。
+ * 流入（收入 / 别人还企信钱 / 贷款）=入账户 +amt；流出（支出 / 企信借别人钱 / 还贷）=出账户 -amt。
  */
 export function buildLines(input: CreateTransactionInput): Array<{ accountId: string; amount: number }> {
   if (!Number.isInteger(input.amount) || input.amount <= 0) {
     throw new AppError('金额必须为大于 0 的整数分');
   }
-  switch (input.type) {
-    case 'income':
-      if (!input.accountId) throw new AppError('收入必须指定入账账户');
-      return [{ accountId: input.accountId, amount: input.amount }];
-    case 'expense':
-      if (!input.accountId) throw new AppError('支出必须指定出账账户');
-      return [{ accountId: input.accountId, amount: -input.amount }];
-    case 'borrow':
-      if (!input.accountId) throw new AppError('借款必须指定出账账户');
-      return [{ accountId: input.accountId, amount: -input.amount }];
-    case 'loan':
-      if (!input.accountId) throw new AppError('贷款必须指定入账账户');
-      return [{ accountId: input.accountId, amount: input.amount }];
-    default:
-      throw new AppError('未知的交易类型');
+  const sub = resolveSubType(input);
+  const inflow = isInflow(input.type, sub);
+  if (!input.accountId) {
+    throw new AppError(`${TRANSACTION_TYPE_LABELS[input.type]}必须指定${inflow ? '入账' : '出账'}账户`);
   }
+  return [{ accountId: input.accountId, amount: inflow ? input.amount : -input.amount }];
 }
 
 export class TransactionService {
@@ -99,9 +113,11 @@ export class TransactionService {
   private prepare(input: CreateTransactionInput): {
     lines: Array<{ accountId: string; amount: number }>;
     counterpartyName: string;
+    subType: TransactionSubType | null;
   } {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(input.occurredOn)) throw new AppError('日期格式应为 YYYY-MM-DD');
 
+    const subType = resolveSubType(input);
     const lines = buildLines(input);
 
     const accountIds = lines.map((l) => l.accountId);
@@ -120,24 +136,25 @@ export class TransactionService {
       if (!cp) throw new AppError('往来单位不存在或已删除', 404, 'NOT_FOUND');
       counterpartyName = cp.name;
     }
-    return { lines, counterpartyName };
+    return { lines, counterpartyName, subType };
   }
 
   /** 在已有事务内插入一笔交易（导入批量调用复用） */
   insertWithinTx(input: CreateTransactionInput, extra: { importBatchId?: string; fingerprint?: string } = {}): string {
-    const { lines, counterpartyName } = this.prepare(input);
+    const { lines, counterpartyName, subType } = this.prepare(input);
 
     const id = newId();
     const now = nowIso();
     this.db
       .prepare(
-        `INSERT INTO tx (id,occurred_on,type,summary,category_id,counterparty_id,counterparty,note,status,import_batch_id,fingerprint,created_at,updated_at,version,device_id)
-         VALUES (?,?,?,?,?,?,?,?,'normal',?,?,?,?,1,?)`
+        `INSERT INTO tx (id,occurred_on,type,sub_type,summary,category_id,counterparty_id,counterparty,note,status,import_batch_id,fingerprint,created_at,updated_at,version,device_id)
+         VALUES (?,?,?,?,?,?,?,?,?,'normal',?,?,?,?,1,?)`
       )
       .run(
         id,
         input.occurredOn,
         input.type,
+        subType,
         '', // summary 列保留（历史数据），新交易不再录入
         input.categoryId ?? null,
         input.counterpartyId ?? null,
@@ -245,16 +262,17 @@ export class TransactionService {
   update(id: string, input: CreateTransactionInput): Transaction {
     const before = this.get(id);
     this.assertNotProjectPosting(id);
-    const { lines, counterpartyName } = this.prepare(input);
+    const { lines, counterpartyName, subType } = this.prepare(input);
     this.db.transaction(() => {
       this.db
         .prepare(
-          `UPDATE tx SET occurred_on = ?, type = ?, category_id = ?, counterparty_id = ?, counterparty = ?, note = ?,
+          `UPDATE tx SET occurred_on = ?, type = ?, sub_type = ?, category_id = ?, counterparty_id = ?, counterparty = ?, note = ?,
                   updated_at = ?, version = version + 1 WHERE id = ?`
         )
         .run(
           input.occurredOn,
           input.type,
+          subType,
           input.categoryId ?? null,
           input.counterpartyId ?? null,
           counterpartyName,
@@ -269,12 +287,13 @@ export class TransactionService {
         before: {
           occurredOn: before.occurredOn,
           type: before.type,
+          subType: before.subType,
           categoryId: before.categoryId,
           counterpartyId: before.counterpartyId,
           note: before.note,
           lines: before.lines.map((l) => ({ accountId: l.accountId, amount: l.amount }))
         },
-        after: input
+        after: { ...input, subType }
       });
     })();
     return this.get(id);
@@ -296,6 +315,7 @@ export class TransactionService {
     writeAudit(this.db, this.deviceId, 'tx', id, 'delete', {
       occurredOn: tx.occurredOn,
       type: tx.type,
+      subType: tx.subType,
       categoryId: tx.categoryId,
       counterpartyId: tx.counterpartyId,
       counterparty: tx.counterparty,
@@ -376,6 +396,7 @@ export class TransactionService {
       id: r.id,
       occurredOn: r.occurred_on,
       type: r.type,
+      subType: r.sub_type,
       summary: r.summary,
       categoryId: r.category_id,
       categoryName: r.category_name,

@@ -21,8 +21,8 @@ export const ACCOUNT_TYPE_LABELS: Record<AccountType, string> = {
  * 交易类型：
  * - income 收入：入账账户 +amt
  * - expense 支出：出账账户 -amt
- * - borrow 借款：把钱借出去，出账账户 -amt
- * - loan 贷款：向外借入资金，入账账户 +amt
+ * - borrow 借款：与别人之间的借出/收回，按子类型（TransactionSubType）决定方向
+ * - loan 贷款：向外借入/偿还，按子类型决定方向
  */
 export const TRANSACTION_TYPES = ['income', 'expense', 'borrow', 'loan'] as const;
 export type TransactionType = (typeof TRANSACTION_TYPES)[number];
@@ -34,13 +34,56 @@ export const TRANSACTION_TYPE_LABELS: Record<TransactionType, string> = {
   loan: '贷款'
 };
 
-/** 该类型的资金方向：true=流入账户，false=流出账户 */
-export const TRANSACTION_TYPE_IS_INFLOW: Record<TransactionType, boolean> = {
-  income: true,
-  expense: false,
-  borrow: false,
-  loan: true
+/**
+ * 借款 / 贷款的子类型（分类）：
+ * - lend 企信借别人钱（借款，借出）：出账账户 -amt
+ * - repay_in 别人还企信钱（借款，收回）：入账账户 +amt
+ * - loan 贷款（贷款，借入）：入账账户 +amt
+ * - repay_out 还贷（贷款，偿还）：出账账户 -amt
+ * 收入/支出没有子类型（sub_type 为 null）。
+ */
+export const TRANSACTION_SUB_TYPES = ['lend', 'repay_in', 'loan', 'repay_out'] as const;
+export type TransactionSubType = (typeof TRANSACTION_SUB_TYPES)[number];
+
+export const TRANSACTION_SUB_TYPE_LABELS: Record<TransactionSubType, string> = {
+  lend: '企信借别人钱',
+  repay_in: '别人还企信钱',
+  loan: '贷款',
+  repay_out: '还贷'
 };
+
+/** 每种类型下可选的子类型（第一项为新建时的默认值）；收入/支出没有子类型 */
+export const TRANSACTION_TYPE_SUB_TYPES: Record<TransactionType, readonly TransactionSubType[]> = {
+  income: [],
+  expense: [],
+  borrow: ['lend', 'repay_in'],
+  loan: ['loan', 'repay_out']
+};
+
+/** 子类型的资金方向：true=流入账户，false=流出账户 */
+export const TRANSACTION_SUB_TYPE_IS_INFLOW: Record<TransactionSubType, boolean> = {
+  lend: false,
+  repay_in: true,
+  loan: true,
+  repay_out: false
+};
+
+/**
+ * 交易的资金方向：true=流入账户，false=流出账户。
+ * 借款/贷款由子类型决定；省略子类型时取该类型的默认子类型（兼容历史数据：借款=借出，贷款=借入）。
+ */
+export function isInflow(type: TransactionType, subType?: TransactionSubType | null): boolean {
+  if (type === 'income') return true;
+  if (type === 'expense') return false;
+  const sub = subType ?? TRANSACTION_TYPE_SUB_TYPES[type][0]!;
+  return TRANSACTION_SUB_TYPE_IS_INFLOW[sub];
+}
+
+/** 列表等处展示用的名称：借款/贷款显示子类型，收入/支出显示类型 */
+export function transactionTypeLabel(type: TransactionType, subType?: TransactionSubType | null): string {
+  if (subType) return TRANSACTION_SUB_TYPE_LABELS[subType];
+  return TRANSACTION_TYPE_LABELS[type];
+}
 
 export interface Account {
   id: string;
@@ -98,6 +141,8 @@ export interface Transaction {
   /** 业务发生日期 YYYY-MM-DD */
   occurredOn: string;
   type: TransactionType;
+  /** 借款/贷款的子类型（分类）；收入/支出为 null */
+  subType: TransactionSubType | null;
   /** 历史数据遗留的摘要（已从录入中移除，新交易恒为空串） */
   summary: string;
   categoryId: string | null;
@@ -121,9 +166,14 @@ export interface Transaction {
 export interface CreateTransactionInput {
   occurredOn: string;
   type: TransactionType;
+  /**
+   * 借款/贷款的子类型（分类）：借款 = lend | repay_in，贷款 = loan | repay_out；
+   * 省略时借款默认 lend、贷款默认 loan；收入/支出不能带子类型。
+   */
+  subType?: TransactionSubType | null;
   /** 金额（分），必须 > 0 */
   amount: number;
-  /** 收入/贷款：入账账户；支出/借款：出账账户 */
+  /** 入账账户或出账账户，方向由类型（及子类型）决定 */
   accountId?: string;
   categoryId?: string | null;
   /** 往来单位（主数据 id） */
@@ -424,15 +474,15 @@ export interface OverviewSummary {
   trend: Array<{ month: string; income: number; expense: number }>;
   /** 本月支出分类占比 */
   expenseByCategory: Array<{ categoryId: string | null; categoryName: string; amount: number }>;
-  /** 借款（借出）：累计借款金额，不受时间段影响；金额单位：分 */
+  /** 别人欠企信的（借款未还余额）= 企信借别人钱 − 别人还企信钱，不受时间段影响；金额单位：分 */
   borrow: BorrowSummary;
-  /** 贷款（借入）：累计贷款金额，不受时间段影响；金额单位：分 */
+  /** 贷款未还余额 = 贷款 − 还贷，不受时间段影响；金额单位：分 */
   loan: BorrowSummary;
 }
 
-/** 借款/贷款统计：按往来单位汇总累计金额（均为正数）；未填写往来单位的归为「未填写」 */
+/** 借款/贷款统计：按往来单位汇总未还余额（还多了为负）；余额为 0 的不列出，未填写往来单位的归为「未填写」 */
 export interface BorrowSummary {
-  /** 各对象累计金额之和 */
+  /** 各对象余额之和 */
   total: number;
   /** 按往来单位汇总的明细，按金额从大到小 */
   items: Array<{ name: string; amount: number }>;

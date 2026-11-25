@@ -222,5 +222,16 @@ export const migrations: Migration[] = [
       -- 合同备注（可为空字符串）。已有合同自动得到空备注
       ALTER TABLE contract ADD COLUMN note TEXT NOT NULL DEFAULT '';
     `
+  },
+  {
+    version: 3,
+    name: 'tx_sub_type',
+    sql: `
+      -- 借款/贷款的子类型：lend 企信借别人钱 / repay_in 别人还企信钱 / loan 贷款 / repay_out 还贷；收入/支出为 NULL。
+      -- 历史借款全部是借出（lend）、历史贷款全部是借入（loan），回填后方向与原分录一致
+      ALTER TABLE tx ADD COLUMN sub_type TEXT;
+      UPDATE tx SET sub_type = 'lend' WHERE type = 'borrow';
+      UPDATE tx SET sub_type = 'loan' WHERE type = 'loan';
+    `
   }
 ];

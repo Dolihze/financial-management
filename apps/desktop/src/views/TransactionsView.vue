@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import {
+  TRANSACTION_SUB_TYPE_LABELS,
   TRANSACTION_TYPES,
-  TRANSACTION_TYPE_IS_INFLOW,
   TRANSACTION_TYPE_LABELS,
+  TRANSACTION_TYPE_SUB_TYPES,
+  isInflow,
   type Category,
   type Transaction,
   type TransactionAttachment,
+  type TransactionSubType,
   type TransactionType
 } from '@fm/shared';
 import { ElMessage, ElMessageBox, type UploadFile, type UploadFiles, type UploadUserFile } from 'element-plus';
@@ -122,6 +125,8 @@ const dialog = ref(false);
 const editingId = ref<string | null>(null);
 const form = reactive({
   type: 'expense' as TransactionType,
+  /** 借款/贷款的分类；收入/支出为空串 */
+  subType: '' as TransactionSubType | '',
   occurredOn: today(),
   amount: '',
   accountId: '',
@@ -169,11 +174,13 @@ const hasCategory = computed(() => form.type === 'income' || form.type === 'expe
 const categoryOptions = computed(() =>
   form.type === 'income' ? base.incomeCategories : form.type === 'expense' ? base.expenseCategories : []
 );
-const accountLabel = computed(() => (TRANSACTION_TYPE_IS_INFLOW[form.type] ? '入账账户' : '出账账户'));
+/** 借款/贷款的分类选项（收入/支出为空，不显示该项） */
+const subTypeOptions = computed(() => TRANSACTION_TYPE_SUB_TYPES[form.type]);
+const accountLabel = computed(() => (isInflow(form.type, form.subType || null) ? '入账账户' : '出账账户'));
 
 function openDialog() {
   editingId.value = null;
-  Object.assign(form, { type: 'expense', occurredOn: today(), amount: '', accountId: '', categoryId: '', counterpartyId: '', note: '' });
+  Object.assign(form, { type: 'expense', subType: '', occurredOn: today(), amount: '', accountId: '', categoryId: '', counterpartyId: '', note: '' });
   pendingFiles.value = [];
   dialog.value = true;
 }
@@ -182,6 +189,7 @@ function openEdit(tx: Transaction) {
   editingId.value = tx.id;
   Object.assign(form, {
     type: tx.type,
+    subType: tx.subType ?? '',
     occurredOn: tx.occurredOn,
     // 金额以分存储，展示为元（正数）；用 fromCents 转换，不做浮点运算
     amount: fromCents(Math.abs(amountOf(tx))),
@@ -194,9 +202,10 @@ function openEdit(tx: Transaction) {
   dialog.value = true;
 }
 
-/** 切换类型时，已选分类可能不属于新类型（收入/支出分类不同），清空避免提交非法分类 */
+/** 切换类型时，已选分类可能不属于新类型（收入/支出分类不同），清空避免提交非法分类；借款/贷款默认选第一项分类 */
 function onFormTypeChange() {
   if (!categoryOptions.value.some((c) => c.id === form.categoryId)) form.categoryId = '';
+  form.subType = subTypeOptions.value[0] ?? '';
 }
 
 // ---- 管理收入/支出分类 / 往来单位（二级弹窗，复用 NameManagerDialog） ----
@@ -250,6 +259,7 @@ async function submit() {
     const editing = !!editingId.value;
     const body = {
       type: form.type,
+      subType: form.subType || null,
       occurredOn: form.occurredOn,
       amount: toCents(form.amount),
       accountId: form.accountId,
@@ -354,7 +364,7 @@ function formatSize(n: number): string {
 async function removeTx(tx: Transaction) {
   try {
     await ElMessageBox.confirm(
-      `确定删除这笔流水（${tx.occurredOn}，${TRANSACTION_TYPE_LABELS[tx.type]} ${formatMoney(Math.abs(amountOf(tx)))}）吗？删除后账户余额随之恢复，该笔的相关文件也会一并删除。`,
+      `确定删除这笔流水（${tx.occurredOn}，${typeText(tx)} ${formatMoney(Math.abs(amountOf(tx)))}）吗？删除后账户余额随之恢复，该笔的相关文件也会一并删除。`,
       '删除流水',
       { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' }
     );
@@ -372,6 +382,11 @@ async function removeTx(tx: Transaction) {
   }
 }
 
+/** 列表中的类型文字：借款/贷款带上分类，如「借款·别人还企信钱」 */
+function typeText(tx: Transaction): string {
+  const base = TRANSACTION_TYPE_LABELS[tx.type];
+  return tx.subType ? `${base}·${TRANSACTION_SUB_TYPE_LABELS[tx.subType]}` : base;
+}
 /** 展示"钱从哪来/到哪去" */
 function flowText(tx: Transaction): string {
   return tx.lines[0]?.accountName ?? '';
@@ -426,7 +441,7 @@ onMounted(load);
       <el-table-column
         column-key="type"
         label="类型"
-        width="110"
+        width="190"
         align="left"
         header-align="left"
         :filters="typeFilters"
@@ -434,7 +449,7 @@ onMounted(load);
         :filter-multiple="false"
         :filtered-value="filteredValue(filter.type)"
       >
-        <template #default="{ row }">{{ TRANSACTION_TYPE_LABELS[row.type as TransactionType] }}</template>
+        <template #default="{ row }">{{ typeText(row) }}</template>
       </el-table-column>
       <el-table-column
         column-key="accountId"
@@ -508,6 +523,12 @@ onMounted(load);
         <el-form-item label="类型">
           <el-radio-group v-model="form.type" @change="onFormTypeChange">
             <el-radio-button v-for="t in TRANSACTION_TYPES" :key="t" :value="t">{{ TRANSACTION_TYPE_LABELS[t] }}</el-radio-button>
+          </el-radio-group>
+        </el-form-item>
+        <!-- 借款/贷款的分类：借款 = 企信借别人钱 / 别人还企信钱；贷款 = 贷款 / 还贷 -->
+        <el-form-item v-if="subTypeOptions.length" :label="form.type === 'borrow' ? '借款分类' : '贷款分类'" required>
+          <el-radio-group v-model="form.subType">
+            <el-radio-button v-for="s in subTypeOptions" :key="s" :value="s">{{ TRANSACTION_SUB_TYPE_LABELS[s] }}</el-radio-button>
           </el-radio-group>
         </el-form-item>
         <el-form-item label="日期" required><el-date-picker v-model="form.occurredOn" type="date" value-format="YYYY-MM-DD" style="width: 100%" /></el-form-item>

@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import type { OverviewSummary, PeriodSummary } from '@fm/shared';
 import { ElMessage } from 'element-plus';
 import { computed, onMounted, ref, watch } from 'vue';
@@ -71,10 +71,10 @@ const slicePage = <T,>(rows: T[], page: number) => rows.slice((page - 1) * pageS
 const accountPageRows = computed(() => slicePage(accountRows.value, accountPage.value));
 const incomePageRows = computed(() => slicePage(incomeRows.value, incomePage.value));
 const expensePageRows = computed(() => slicePage(expenseRows.value, expensePage.value));
-/** 借款明细：按借款对象（往来单位）的累计借出额，后端已按金额降序 */
+/** 借款明细：按借款对象（往来单位）的未还余额，后端已按金额降序 */
 const borrowRows = computed(() => data.value?.borrow.items ?? []);
 const borrowPageRows = computed(() => slicePage(borrowRows.value, borrowPage.value));
-/** 贷款明细：按贷款对象（往来单位）的累计借入额，后端已按金额降序 */
+/** 贷款明细：按贷款对象（往来单位）的未还余额，后端已按金额降序 */
 const loanRows = computed(() => data.value?.loan.items ?? []);
 const loanPageRows = computed(() => slicePage(loanRows.value, loanPage.value));
 /** 切换每页条数后所有表都回到第 1 页 */
@@ -161,7 +161,7 @@ onMounted(() => {
       <el-card shadow="never" class="stat-card"><el-statistic title="公司现有金额" :value="formatMoney(data.totalBalance)" /></el-card>
       <el-card shadow="never" class="stat-card"><el-statistic title="收入" :value="formatMoney(period?.income ?? 0)" value-style="color: #f56c6c" /></el-card>
       <el-card shadow="never" class="stat-card"><el-statistic title="支出" :value="formatMoney(period?.expense ?? 0)" value-style="color: #67c23a" /></el-card>
-      <!-- 借款（借出）/ 贷款（借入）：分开统计的累计金额，按往来单位列出，不受时间段影响 -->
+      <!-- 别人欠企信的（借款未还余额）/ 贷款（未还余额）：分开统计，按往来单位列出，不受时间段影响 -->
       <el-card shadow="never" class="stat-card"><el-statistic title="别人欠企信的" :value="formatMoney(data.borrow.total)" /></el-card>
       <el-card shadow="never" class="stat-card"><el-statistic title="贷款" :value="formatMoney(data.loan.total)" /></el-card>
     </div>
@@ -219,7 +219,7 @@ onMounted(() => {
             <el-pagination v-model:current-page="expensePage" v-model:page-size="pageSize" :page-sizes="PAGE_SIZES" class="pane-pager" small background layout="prev, pager, next, sizes" :total="expenseRows.length" :hide-on-single-page="expenseRows.length <= MIN_PAGE_SIZE" @size-change="resetPages" />
           </div>
 
-          <!-- 借款明细：按借款对象（往来单位）的累计借出额，不受时间段影响 -->
+          <!-- 借款明细：按借款对象（往来单位）的未还余额（借出 − 别人已还），不受时间段影响 -->
           <div class="pane">
             <div class="pane-title">借款明细</div>
             <div class="pane-table">
@@ -227,14 +227,14 @@ onMounted(() => {
                 <el-table-column type="index" :index="indexOf(borrowPage)" label="#" width="40" />
                 <el-table-column prop="name" label="借款对象" show-overflow-tooltip />
                 <el-table-column label="金额" width="110">
-                  <template #default="{ row }"><b>{{ formatMoney(row.amount) }}</b></template>
+                  <template #default="{ row }"><b :class="row.amount < 0 ? 'money-out' : ''">{{ formatMoney(row.amount) }}</b></template>
                 </el-table-column>
               </el-table>
             </div>
             <el-pagination v-model:current-page="borrowPage" v-model:page-size="pageSize" :page-sizes="PAGE_SIZES" class="pane-pager" small background layout="prev, pager, next, sizes" :total="borrowRows.length" :hide-on-single-page="borrowRows.length <= MIN_PAGE_SIZE" @size-change="resetPages" />
           </div>
 
-          <!-- 贷款明细：按贷款对象（往来单位）的累计借入额，不受时间段影响 -->
+          <!-- 贷款明细：按贷款对象（往来单位）的未还余额（贷款 − 还贷），不受时间段影响 -->
           <div class="pane">
             <div class="pane-title">贷款明细</div>
             <div class="pane-table">
@@ -242,7 +242,7 @@ onMounted(() => {
                 <el-table-column type="index" :index="indexOf(loanPage)" label="#" width="40" />
                 <el-table-column prop="name" label="贷款对象" show-overflow-tooltip />
                 <el-table-column label="金额" width="110">
-                  <template #default="{ row }"><b>{{ formatMoney(row.amount) }}</b></template>
+                  <template #default="{ row }"><b :class="row.amount < 0 ? 'money-out' : ''">{{ formatMoney(row.amount) }}</b></template>
                 </el-table-column>
               </el-table>
             </div>

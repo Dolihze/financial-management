@@ -140,9 +140,9 @@ export interface Counterparty {
 
 /**
  * 项目：通过 Excel 导入或「未结算项目」里新建，项目名称唯一（导入时的匹配键），合同编号可重复。金额字段一律为「整数分」。
- * 项目只有一张表，是否结算由「项目结算」字段（qxMoneyReceived）区分：
- * - 未结算项目表 = 项目结算为否的项目；已结算项目表（批次 → 合同 → 项目进度）= 项目结算为是的项目；
- * - 未结算项目归入合同 = 结算：项目结算置为是，并按企信实收入账。
+ * 项目只有一张表，是否结算由「合同」字段（contractId）是否有值区分：
+ * - 未结算项目表 = 没有归入合同的项目；已结算项目表（批次 → 合同 → 项目进度）= 已归入合同的项目；
+ * - 项目归入合同不入账；企信实收的入账在编辑项目里把「上海院已支付」切换为是时才发生。
  */
 export interface Project {
   id: string;
@@ -169,10 +169,9 @@ export interface Project {
   /** 企信利润（分） */
   qxProfit: number;
   /**
-   * 项目结算（原「企信是否收到钱」，字段名沿用 qxMoneyReceived）。
-   * 由否切到是时记一笔收入（金额取企信实收）；是切回否则作废该笔流水。
+   * 上海院已支付。由否切到是时记一笔收入（金额取企信实收）；是切回否则删除该笔流水。
    */
-  qxMoneyReceived: boolean;
+  shPaid: boolean;
   /** 支付下家 */
   paidSubcontractor: boolean;
   /** 支付陈沛 */
@@ -185,7 +184,7 @@ export interface Project {
   updatedAt: string;
 }
 
-/** 项目三个「是/否」字段，对应的记账方向与金额列 */
+/** 项目三个会入账的「是/否」字段（qx_received 对应「上海院已支付」，收入，金额取企信实收），对应的记账方向与金额列 */
 export const PROJECT_POSTING_KINDS = ['qx_received', 'paid_subcontractor', 'paid_chen_pei'] as const;
 export type ProjectPostingKind = (typeof PROJECT_POSTING_KINDS)[number];
 
@@ -206,8 +205,11 @@ export interface UpdateProjectInput {
   qxSubcontractFee: number;
   chenPei: number;
   qxProfit: number;
-  /** 项目结算：省略时保持原值，且不触发入账/回退（详情页不再提供此项，结算状态不会因保存而变化） */
-  qxMoneyReceived?: boolean;
+  /**
+   * 上海院已支付：省略时保持原值，且不触发入账/回退。
+   * 否→是记一笔收入（金额取企信实收，需 postingAccountId）；是→否删除该笔流水。只有已归入合同的项目才能设为是。
+   */
+  shPaid?: boolean;
   paidSubcontractor: boolean;
   paidChenPei: boolean;
   /** 备注；省略时保持原值 */
@@ -270,7 +272,7 @@ export interface BatchInput {
 
 /**
  * 新建项目（项目管理 → 未结算项目 →「新建项目」）：金额为整数分。
- * 项目只有一张表：新建的项目「项目结算 = 否」、不归属合同，因此出现在未结算项目表里。
+ * 项目只有一张表：新建的项目不归属合同（contractId 为空），因此出现在未结算项目表里；上海院已支付固定为否。
  */
 export interface CreateProjectInput {
   region: string;
@@ -281,17 +283,6 @@ export interface CreateProjectInput {
   chenPei: number;
   qxProfit: number;
   note?: string;
-}
-
-/**
- * 结算入账信息：未结算项目归入合同 = 结算（「项目结算」由否置为是，并按企信实收记一笔收入）。
- * 归入合同的请求里只要有未结算项目被加入，就必须带上它；同一次请求里的多笔入账共用。
- */
-export interface SettlementInput {
-  /** 入账账户（收入记到这个账户） */
-  accountId: string;
-  /** 入账日期 YYYY-MM-DD；省略时用服务器当天 */
-  date?: string;
 }
 
 /**
@@ -333,30 +324,26 @@ export interface ContractProjectInput {
 
 /**
  * 新增合同：归属某个批次；从未结算项目里挑选项目，并给每个项目设置合同价；合同总价由此求和得到。
- * 项目归入合同 = 结算：被挑选的项目「项目结算」会置为是，并按企信实收入账（需 settlement）。
+ * 项目归入合同 = 变为已结算项目，但不入账；入账在编辑项目里把「上海院已支付」切换为是时发生。
  */
 export interface CreateContractInput {
   /** 所属批次 id（必填） */
   batchId: string;
   contractNo: string;
   projects: ContractProjectInput[];
-  /** 结算入账信息（有项目归入时必填） */
-  settlement?: SettlementInput;
 }
 
 /**
  * 修改合同：合同编号、所属批次，以及项目的合同价。
  * - batchId：省略保持不变；指定其他批次即把合同（连同其下项目）移到该批次；
  * - 本合同已有的项目：只修改合同价；
- * - 不属于本合同的项目：必须是「未归入任何合同且项目结算 = 否」的项目，会被加入本合同并设置合同价，同时结算（置为是并入账，需 settlement）；
+ * - 不属于本合同的项目：必须是「未归入任何合同」的项目，会被加入本合同并设置合同价（不入账）；
  * - 请求里没出现的已有项目保持不变（这里不移除项目）。
  */
 export interface UpdateContractInput {
   batchId?: string;
   contractNo: string;
   projects: ContractProjectInput[];
-  /** 结算入账信息（有未结算项目被加入时必填） */
-  settlement?: SettlementInput;
 }
 
 /** 项目 Excel 导入表头（第 1 行）。项目名称为「合计」的行与重复表头的说明行会被忽略。 */
@@ -370,7 +357,7 @@ export const PROJECT_IMPORT_HEADERS = [
   '企信支付下家',
   '陈沛',
   '企信利润',
-  '项目结算',
+  '上海院已支付',
   '支付下家',
   '支付陈沛',
   '备注'
@@ -384,11 +371,9 @@ export const PROJECT_IMPORT_REQUIRED_HEADERS = ['项目名称', '合同价'] as 
 
 /**
  * 旧版 Excel 的列名：导入时仍然认旧表头，避免用户手里的旧文件无法导入（该列被当成缺列会静默忽略）。
- * - 「项目结算」旧称「企信是否收到钱」；
  * - 「企信支付下家」旧称「企信支付下家分包费」。
  */
 export const PROJECT_IMPORT_LEGACY_HEADERS: Record<string, string> = {
-  项目结算: '企信是否收到钱',
   企信支付下家: '企信支付下家分包费'
 };
 

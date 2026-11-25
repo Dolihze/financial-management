@@ -17,23 +17,10 @@ const projectEntry = z.object({
   contractPrice: cents
 });
 
-/** 结算入账：项目归入合同即结算，需要入账账户；日期 YYYY-MM-DD 且必须是真实存在的日期，省略时用服务器当天 */
-const settlementSchema = z.object({
-  accountId: z.string().min(1, '请选择入账账户'),
-  date: z
-    .string()
-    .regex(/^\d{4}-\d{2}-\d{2}$/, '入账日期格式应为 YYYY-MM-DD')
-    .refine((s) => {
-      const d = new Date(s + 'T00:00:00Z');
-      return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
-    }, '入账日期不是有效日期')
-    .optional()
-});
-
+/** 项目归入合同不入账（入账在项目里把「上海院已支付」切换为是时发生），所以不再接收 settlement（传了也会被忽略） */
 const baseSchema = z.object({
   contractNo: z.string().trim().min(1, '合同编号不能为空').max(50),
-  projects: z.array(projectEntry).max(1000),
-  settlement: settlementSchema.optional()
+  projects: z.array(projectEntry).max(1000)
 });
 /** 新增合同必须指定所属批次 */
 const createSchema = baseSchema.extend({ batchId: z.string().min(1, '请选择所属批次') });

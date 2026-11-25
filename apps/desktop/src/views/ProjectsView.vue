@@ -7,7 +7,6 @@ import { api } from '@/api';
 import { DEFAULT_PAGE_SIZE, MIN_PAGE_SIZE, PAGE_SIZES } from '@/utils/pagination';
 import ProjectBreadcrumb from '@/components/ProjectBreadcrumb.vue';
 import ProjectEditDialog from '@/components/ProjectEditDialog.vue';
-import SettlementFields from '@/components/SettlementFields.vue';
 import { errorMessage, formatMoney } from '@/utils/format';
 
 /**
@@ -30,15 +29,6 @@ const crumbs = computed(() => [
   { label: contract.value?.contractNo ?? '…' }
 ]);
 
-/** 已结算项目表里不应出现「项目结算 = 否」的项目（归入合同即结算），出现即为异常数据 */
-const unsettledInContract = computed(() => projects.value.filter((p) => !p.qxMoneyReceived));
-const unsettledMessage = computed(() => {
-  const names = unsettledInContract.value.map((p) => `「${p.name}」`);
-  const shown = names.slice(0, 3).join('、');
-  const more = names.length > 3 ? ` 等 ${names.length} 个` : '';
-  return `合同下有 ${names.length} 个项目的「项目结算」为否：${shown}${more}。已结算项目中不应出现未结算的项目，请核对`;
-});
-
 async function load() {
   loading.value = true;
   try {
@@ -51,10 +41,6 @@ async function load() {
     batch.value = b;
     contract.value = c;
     projects.value = list;
-    // 项目归入合同即结算：合同下出现「项目结算 = 否」的项目是异常数据，直接报错提示
-    if (unsettledInContract.value.length > 0) {
-      ElMessage.error({ message: `数据异常：${unsettledMessage.value}`, duration: 8000, showClose: true });
-    }
   } catch (e) {
     ElMessage.error(errorMessage(e));
     router.replace({ name: 'contracts', params: { batchId: batchId.value } });
@@ -71,9 +57,11 @@ watch(contractId, () => {
 });
 
 /** 下拉筛选：每列已选值（空数组 = 不筛选）。选项来自当前数据，去重后排序 */
-type FilterKey = 'region' | 'paidSubcontractor' | 'paidChenPei';
+type FilterKey = 'region' | 'shPaid' | 'paidSubcontractor' | 'paidChenPei';
+type FlagFilterKey = Exclude<FilterKey, 'region'>;
+const FLAG_FILTER_KEYS: FilterKey[] = ['shPaid', 'paidSubcontractor', 'paidChenPei'];
 const selected = reactive<Record<FilterKey, unknown[]>>({
-  region: [], paidSubcontractor: [], paidChenPei: []
+  region: [], shPaid: [], paidSubcontractor: [], paidChenPei: []
 });
 
 const EMPTY = '__empty__'; // 空值（未填写）的筛选项
@@ -99,7 +87,7 @@ const filtered = computed(() =>
     (Object.keys(selected) as FilterKey[]).every((k) => {
       const sel = selected[k];
       if (!sel.length) return true;
-      return sel.includes(k === 'paidSubcontractor' || k === 'paidChenPei' ? p[k] : textOf(p[k]));
+      return sel.includes(FLAG_FILTER_KEYS.includes(k) ? p[k as FlagFilterKey] : textOf(p[k]));
     })
   )
 );
@@ -175,9 +163,9 @@ async function removeProject(p: Project) {
   }
 }
 
-// ---------- 新增项目：从未结算项目表（项目结算 = 否）中挑选，加入当前合同 ----------
-// 项目归入合同 = 结算：加入时「项目结算」置为是，并按企信实收入账，所以要选入账账户与日期
-const add = reactive({ visible: false, loading: false, saving: false, keyword: '', accountId: '', date: '' });
+// ---------- 新增项目：从未结算项目表（未归入合同的项目）中挑选，加入当前合同 ----------
+// 项目归入合同 = 变为已结算项目，不入账；入账在编辑项目里把「上海院已支付」切换为是时发生
+const add = reactive({ visible: false, loading: false, saving: false, keyword: '' });
 const candidates = ref<Project[]>([]);
 const picked = ref<Project[]>([]);
 
@@ -190,11 +178,9 @@ async function openAdd() {
   add.visible = true;
   add.loading = true;
   add.keyword = '';
-  add.accountId = '';
-  add.date = '';
   picked.value = [];
   try {
-    candidates.value = (await api.projects.list({ settled: false })).filter((p) => !p.contractId);
+    candidates.value = await api.projects.list({ settled: false });
   } catch (e) {
     ElMessage.error(errorMessage(e));
   } finally {
@@ -206,10 +192,6 @@ async function confirmAdd() {
   const c = contract.value;
   if (!c) return;
   if (picked.value.length === 0) return ElMessage.warning('请至少选择一个项目');
-  if (!add.accountId) return ElMessage.warning('项目归入合同即结算入账，请选择入账账户');
-  if (!add.date) return ElMessage.warning('请选择入账日期');
-  const noReceived = picked.value.find((p) => p.qxReceived <= 0);
-  if (noReceived) return ElMessage.warning(`「${noReceived.name}」企信实收为 0，无法结算入账，请先填写企信实收`);
   add.saving = true;
   try {
     // 新加入的项目沿用它原有的合同价；合同里已有项目按当前价原样带上（不改动）。批次、合同编号保持不变
@@ -218,10 +200,9 @@ async function confirmAdd() {
       projects: [
         ...c.projects.map((p) => ({ projectId: p.id, contractPrice: p.contractPrice })),
         ...picked.value.map((p) => ({ projectId: p.id, contractPrice: p.contractPrice }))
-      ],
-      settlement: { accountId: add.accountId, date: add.date }
+      ]
     });
-    ElMessage.success(`已新增 ${picked.value.length} 个项目，并已结算入账`);
+    ElMessage.success(`已新增 ${picked.value.length} 个项目`);
     add.visible = false;
     await load();
   } catch (e) {
@@ -247,15 +228,6 @@ onMounted(load);
       <el-button type="primary" icon="Plus" @click="openAdd">新增项目</el-button>
       <span class="hint">合同 {{ contract?.contractNo }}（{{ batchTitle }}）</span>
     </div>
-
-    <el-alert
-      v-if="unsettledInContract.length > 0"
-      type="error"
-      show-icon
-      :closable="false"
-      :title="`数据异常：${unsettledMessage}`"
-      style="margin-bottom: 12px"
-    />
 
     <div class="summary-bar">
       <span class="summary-count">共 {{ filtered.length }} / {{ projects.length }} 个项目</span>
@@ -285,7 +257,13 @@ onMounted(load);
       <el-table-column label="企信利润" width="110">
         <template #default="{ row }">{{ formatMoney(row.qxProfit) }}</template>
       </el-table-column>
-      <!-- 「项目结算」列不展示：项目归入合同即结算，合同下的项目都是已结算（是） -->
+      <!-- 是否结算由合同字段决定：合同下的项目都是已结算项目 -->
+      <el-table-column column-key="shPaid" label="上海院已支付" width="150" :filters="yesNoFilters" :filter-method="() => true">
+        <template #default="{ row }">
+          <el-icon v-if="row.shPaid" class="flag-yes" title="是"><Select /></el-icon>
+          <el-icon v-else class="flag-no" title="否"><CloseBold /></el-icon>
+        </template>
+      </el-table-column>
       <el-table-column column-key="paidSubcontractor" label="支付下家" width="120" :filters="yesNoFilters" :filter-method="() => true">
         <template #default="{ row }">
           <el-icon v-if="row.paidSubcontractor" class="flag-yes" title="是"><Select /></el-icon>
@@ -324,7 +302,7 @@ onMounted(load);
       <el-input
         v-model="add.keyword"
         clearable
-        placeholder="按项目名称 / 区域筛选（仅显示未结算项目：项目结算为否）"
+        placeholder="按项目名称 / 区域筛选（仅显示未结算项目：尚未归入合同）"
         style="margin-bottom: 8px"
       />
       <el-table
@@ -343,11 +321,7 @@ onMounted(load);
           <template #default="{ row }">{{ formatMoney(row.qxReceived) }}</template>
         </el-table-column>
       </el-table>
-      <div class="settle-row">
-        <span class="settle-label">结算入账：</span>
-        <SettlementFields v-model:account-id="add.accountId" v-model:date="add.date" />
-      </div>
-      <div class="settle-tip">项目加入合同即结算：「项目结算」置为是，并按各自企信实收记一笔收入</div>
+      <div class="settle-tip">项目加入合同即成为已结算项目，此时不入账；需要入账时，在项目的编辑里把「上海院已支付」切换为是</div>
       <template #footer>
         <el-button @click="add.visible = false">取消</el-button>
         <el-button type="primary" :loading="add.saving" :disabled="picked.length === 0" @click="confirmAdd">添加 {{ picked.length || '' }}</el-button>
@@ -395,16 +369,8 @@ onMounted(load);
   word-break: break-all;
   line-height: 1.5;
 }
-.settle-row {
-  display: flex;
-  align-items: center;
-  margin-top: 12px;
-}
-.settle-label {
-  margin-right: 8px;
-}
 .settle-tip {
-  margin-top: 4px;
+  margin-top: 12px;
   font-size: 12px;
   color: var(--el-text-color-secondary);
 }

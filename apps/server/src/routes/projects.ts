@@ -17,8 +17,8 @@ const updateSchema = z.object({
   qxSubcontractFee: cents,
   chenPei: cents,
   qxProfit: cents,
-  /** 项目结算：可省略，省略时保持原值（不入账/不回退） */
-  qxMoneyReceived: z.boolean().optional(),
+  /** 上海院已支付：可省略，省略时保持原值（不入账/不回退）；否→是入账（金额取企信实收），是→否回退 */
+  shPaid: z.boolean().optional(),
   paidSubcontractor: z.boolean(),
   paidChenPei: z.boolean(),
   /** 备注：可省略，省略时保持库里原值 */
@@ -36,7 +36,7 @@ const updateSchema = z.object({
     .optional()
 });
 
-/** 新建项目：项目结算固定为否、不归属合同（出现在未结算项目表），所以不接收这些字段 */
+/** 新建项目：不归属合同（出现在未结算项目表）、上海院已支付固定为否，所以不接收这些字段 */
 const createSchema = z.object({
   region: z.string().trim().max(50),
   name: z.string().trim().min(1, '项目名称不能为空').max(100),
@@ -51,7 +51,7 @@ const createSchema = z.object({
 export function registerProjectRoutes(app: FastifyInstance, { projects }: Services): void {
   /**
    * 项目列表；?contractId=xxx 只返回该合同下的项目；
-   * ?settled=true 只返回「项目结算 = 是」的项目（已结算项目表），?settled=false 只返回「项目结算 = 否」的项目（未结算项目表）。
+   * ?settled=true 只返回已归入合同的项目（已结算项目表），?settled=false 只返回未归入合同的项目（未结算项目表）。
    */
   app.get('/api/projects', async (req) => {
     const { contractId, settled } = z

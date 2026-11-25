@@ -1,8 +1,8 @@
 <script setup lang="ts">
 /**
  * 项目管理 → 未结算项目：总表。
- * 项目只有一张表（project），是否结算由「项目结算」字段区分：本表只展示「项目结算 = 否」的项目
- * （归入合同即结算，项目结算会置为是，之后出现在已结算项目里）。
+ * 项目只有一张表（project），是否结算由「合同」字段是否有值区分：本表只展示没有合同的项目
+ * （归入合同后即成为已结算项目，之后出现在已结算项目里）。
  * 字段：序号、区域、项目名称、合同价、企信实收、企信支付下家、陈沛、企信利润、操作（编辑/删除）。
  * 金额表单用「元」字符串编辑，提交时用 toCents 转整数分，不做浮点运算。
  */
@@ -22,7 +22,7 @@ const loading = ref(false);
 async function load() {
   loading.value = true;
   try {
-    // 只取「项目结算 = 否」的项目
+    // 只取没有合同的项目
     rows.value = await api.projects.list({ settled: false });
   } catch (e) {
     ElMessage.error(errorMessage(e));
@@ -135,7 +135,7 @@ async function submit() {
   dlg.saving = true;
   try {
     if (dlg.editing) {
-      // 项目结算（qxMoneyReceived）省略 = 保持原值（否），不触发入账；表单不涉及的字段沿用原值
+      // 上海院已支付（shPaid）省略 = 保持原值，不触发入账；表单不涉及的字段沿用原值
       await api.projects.update(dlg.editing.id, {
         ...body,
         paidSubcontractor: dlg.editing.paidSubcontractor,
@@ -144,7 +144,7 @@ async function submit() {
       });
       ElMessage.success('已保存');
     } else {
-      // 新建的项目：项目结算 = 否、不归属合同，所以出现在本表
+      // 新建的项目：不归属合同，所以出现在本表
       await api.projects.create(body);
       ElMessage.success('已新建项目');
     }

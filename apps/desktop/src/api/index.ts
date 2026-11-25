@@ -114,8 +114,8 @@ export const api = {
   },
   projects: {
     /**
-     * 项目只有一张表，是否结算由「项目结算」字段区分：
-     * settled = true → 已结算项目表（结算 = 是）；settled = false → 未结算项目表（结算 = 否）；省略 = 全部。
+     * 项目只有一张表，是否结算由项目的「合同」字段是否有值区分：
+     * settled = true → 已结算项目表（已归入合同）；settled = false → 未结算项目表（未归入合同）；省略 = 全部。
      * 传 contractId 只取该合同下的项目。
      */
     list: (opts: { contractId?: string; settled?: boolean } = {}) => {
@@ -128,7 +128,7 @@ export const api = {
     /** 已有的区域（去重），供下拉选择 */
     regions: () => get<string[]>('/api/projects/regions'),
     get: (id: string) => get<Project>(`/api/projects/${id}`),
-    /** 新建项目：项目结算 = 否、不归属合同，出现在未结算项目表 */
+    /** 新建项目：不归属合同（出现在未结算项目表）、上海院已支付 = 否 */
     create: (body: CreateProjectInput) => post<Project>('/api/projects', body),
     update: (id: string, body: UpdateProjectInput) => patch<Project>(`/api/projects/${id}`, body),
     /** 「删除」：后端只归档，不物理删除 */

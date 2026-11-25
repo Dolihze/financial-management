@@ -62,7 +62,15 @@ describe('账户类型与字段', () => {
   });
 });
 
-const PROJECT_HEADERS = ['合同编号', '批次', '区域', '项目名称', '合同价', '企信实收', '企信支付下家', '陈沛', '企信利润', '项目结算', '支付下家', '支付陈沛', '备注'];
+/**
+ * 导入测试默认表头：不含可选列「上海院已支付」（缺列 = 不涉及）；
+ * 完整表头（与导入模板一致）见 PROJECT_HEADERS_FULL。是否结算由「合同编号」是否有值决定。
+ */
+const PROJECT_HEADERS = ['合同编号', '批次', '区域', '项目名称', '合同价', '企信实收', '企信支付下家', '陈沛', '企信利润', '支付下家', '支付陈沛', '备注'];
+const PROJECT_HEADERS_FULL = [
+  '合同编号', '批次', '区域', '项目名称', '合同价', '企信实收', '企信支付下家', '陈沛', '企信利润',
+  '上海院已支付', '支付下家', '支付陈沛', '备注'
+];
 
 /** 项目导入 Excel：第 1 行表头，第 2 行合计（项目名称为「合计」），之后为数据 */
 async function projectXlsx(rows: unknown[][], headers: string[] = PROJECT_HEADERS): Promise<Buffer> {
@@ -82,9 +90,9 @@ describe('项目管理（Excel 导入）', () => {
   it('忽略合计行；金额转整数分；是否字段仅「是」为真，其他一律为否', async () => {
     const m = multipart(
       await projectXlsx([
-        ['HT-001', '第15批', '华东', '办公楼装修', 1000000.5, '800,000', 400000, 50000, 200000, '是', '是', '否'],
-        ['', 15, '华南', '展厅设计', 500000, 200000, 200000, 50000, 100000, '否', '已付', ''], // 未结算：无合同编号
-        ['', '', '', '仓库改造', null, null, null, null, null, 'yes', '是 ', '√'] // 无合同编号，「yes」按否
+        ['HT-001', '第15批', '华东', '办公楼装修', 1000000.5, '800,000', 400000, 50000, 200000, '是', '否'],
+        ['', 15, '华南', '展厅设计', 500000, 200000, 200000, 50000, 100000, '已付', ''], // 未结算：无合同编号
+        ['', '', '', '仓库改造', null, null, null, null, null, '是 ', '√'] // 无合同编号，「√」按否
       ])
     );
     const preview = (await ctx.app.inject({ method: 'POST', url: importUrl('preview'), ...m })).json() as Record<string, unknown>;
@@ -100,12 +108,12 @@ describe('项目管理（Excel 导入）', () => {
     expect(by('办公楼装修')).toMatchObject({
       contractNo: 'HT-001', batchNo: 15, region: '华东',
       contractPrice: 100_000_050, qxReceived: 80_000_000, qxSubcontractFee: 40_000_000, chenPei: 5_000_000, qxProfit: 20_000_000,
-      qxMoneyReceived: true, paidSubcontractor: true, paidChenPei: false
+      shPaid: false, paidSubcontractor: true, paidChenPei: false
     });
-    expect(by('展厅设计')).toMatchObject({ qxMoneyReceived: false, paidSubcontractor: false, paidChenPei: false });
-    // 空金额按 0；「yes」「√」等非「是」内容按否；「是 」去掉空白后为是
+    expect(by('展厅设计')).toMatchObject({ shPaid: false, paidSubcontractor: false, paidChenPei: false });
+    // 空金额按 0；「已付」「√」等非「是」内容按否；「是 」去掉空白后为是
     expect(by('仓库改造')).toMatchObject({
-      contractPrice: 0, qxReceived: 0, qxProfit: 0, qxMoneyReceived: false, paidSubcontractor: true, paidChenPei: false
+      contractPrice: 0, qxReceived: 0, qxProfit: 0, shPaid: false, paidSubcontractor: true, paidChenPei: false
     });
 
     const id = by('办公楼装修').id as string;
@@ -116,14 +124,14 @@ describe('项目管理（Excel 导入）', () => {
   it('以项目名称为唯一键：同名则更新（含合同编号），不同名则新增，合同编号可重复', async () => {
     await ctx.app.inject({
       method: 'POST', url: importUrl('commit'),
-      ...multipart(await projectXlsx([['HT-001', '第14批', '华东', '项目甲', 100, 0, 0, 0, 0, '是', '否', '否']]))
+      ...multipart(await projectXlsx([['HT-001', '第14批', '华东', '项目甲', 100, 0, 0, 0, 0, '否', '否']]))
     });
     const m2 = multipart(
       await projectXlsx([
-        ['HT-009', ' 第 15 批 ', '华北', '项目甲', 200, 150, 0, 0, 50, '是', '否', '否'], // 同名 -> 更新，合同编号随之更新
-        ['HT-001', '', '', '项目乙', 300, 0, 0, 0, 0, '是', '否', '否'], // 合同编号与库里已有的相同，但名称不同 -> 新增
-        ['HT-001', '', '', '项目丙', 400, 0, 0, 0, 0, '是', '否', '否'], // 同文件内合同编号重复 -> 允许
-        ['', '', '', '项目丁', 500, 0, 0, 0, 0, '否', '否', '否'] // 合同编号为空 -> 允许
+        ['HT-009', ' 第 15 批 ', '华北', '项目甲', 200, 150, 0, 0, 50, '否', '否'], // 同名 -> 更新，合同编号随之更新
+        ['HT-001', '', '', '项目乙', 300, 0, 0, 0, 0, '否', '否'], // 合同编号与库里已有的相同，但名称不同 -> 新增
+        ['HT-001', '', '', '项目丙', 400, 0, 0, 0, 0, '否', '否'], // 同文件内合同编号重复 -> 允许
+        ['', '', '', '项目丁', 500, 0, 0, 0, 0, '否', '否'] // 合同编号为空 -> 允许
       ])
     );
     expect((await ctx.app.inject({ method: 'POST', url: importUrl('preview'), ...m2 })).json()).toMatchObject({
@@ -137,7 +145,7 @@ describe('项目管理（Excel 导入）', () => {
     const by = (name: string) => list.find((p) => p.name === name)!;
     // 项目甲原先在 HT-001（第14批），导入改为 HT-009：HT-009 是新合同，归属 Excel 里的第15批，项目批次号随合同走
     expect(by('项目甲')).toMatchObject({
-      contractNo: 'HT-009', batchNo: 15, region: '华北', contractPrice: 20_000, qxReceived: 15_000, qxMoneyReceived: true
+      contractNo: 'HT-009', batchNo: 15, region: '华北', contractPrice: 20_000, qxReceived: 15_000, shPaid: false
     });
     expect(by('项目乙').contractNo).toBe('HT-001');
     expect(by('项目丙').contractNo).toBe('HT-001');
@@ -147,10 +155,10 @@ describe('项目管理（Excel 导入）', () => {
   it('同一文件内项目名称重复属于错误；其他错误行同样报告，整批不入库', async () => {
     const m = multipart(
       await projectXlsx([
-        ['HT-001', '', '', '正常项目', 100, 0, 0, 0, 0, '是', '是', '是'], // Excel 第 3 行
-        ['HT-002', '', '', '', 100, 0, 0, 0, 0, '', '', ''], // 第 4 行：缺项目名称
-        ['HT-003', '', '', '金额非法', 'abc', 0, 0, 0, 0, '', '', ''], // 第 5 行
-        ['HT-004', '', '', '正常项目', 100, 0, 0, 0, 0, '', '', ''] // 第 6 行：项目名称与第 3 行重复
+        ['HT-001', '', '', '正常项目', 100, 0, 0, 0, 0, '是', '是'], // Excel 第 3 行
+        ['HT-002', '', '', '', 100, 0, 0, 0, 0, '', ''], // 第 4 行：缺项目名称
+        ['HT-003', '', '', '金额非法', 'abc', 0, 0, 0, 0, '', ''], // 第 5 行
+        ['HT-004', '', '', '正常项目', 100, 0, 0, 0, 0, '', ''] // 第 6 行：项目名称与第 3 行重复
       ])
     );
     const preview = (await ctx.app.inject({ method: 'POST', url: importUrl('preview'), ...m })).json() as {
@@ -163,7 +171,7 @@ describe('项目管理（Excel 导入）', () => {
     expect((await ctx.app.inject({ url: '/api/projects' })).json()).toEqual([]);
   });
 
-  describe('项目归入合同即结算：导入时合同编号不为空，项目结算必须为是', () => {
+  describe('是否结算由合同编号决定；「上海院已支付」只对有合同的项目有意义（导入只打标记，不入账）', () => {
     const preview = async (rows: unknown[][], headers?: string[]) =>
       (await ctx.app.inject({ method: 'POST', url: importUrl('preview'), ...multipart(await projectXlsx(rows, headers)) })).json() as {
         errors: Array<{ row: number; message: string }>;
@@ -171,21 +179,21 @@ describe('项目管理（Excel 导入）', () => {
     const commit = async (rows: unknown[][], headers?: string[]) =>
       ctx.app.inject({ method: 'POST', url: importUrl('commit'), ...multipart(await projectXlsx(rows, headers)) });
     const count = (sql: string) => (ctx.db.prepare(sql).get() as { n: number }).n;
+    const F = PROJECT_HEADERS_FULL;
 
-    it('合同编号不为空而项目结算为否 / 空白 / 其他内容：按行报错（行号为 Excel 行号），预览与确认导入一致，整批不入库', async () => {
+    it('没有合同编号却把「上海院已支付」填「是」：按行报错（行号为 Excel 行号），预览与确认导入一致，整批不入库', async () => {
       const rows = [
-        ['HT-1', '第1批', '天水', '正常已结算', 100, 80, 0, 0, 0, '是', '否', '否'], // 第 3 行：合法
-        ['HT-2', '第1批', '天水', '结算为否', 100, 80, 0, 0, 0, '否', '否', '否'], // 第 4 行：拒绝
-        ['HT-3', '第1批', '天水', '结算为空', 100, 80, 0, 0, 0, '', '否', '否'], // 第 5 行：拒绝（空白按否）
-        ['HT-4', '第1批', '天水', '结算写错', 100, 80, 0, 0, 0, 'yes', '否', '否'], // 第 6 行：拒绝（只有「是」才是是）
-        ['', '', '天水', '未结算', 100, 80, 0, 0, 0, '否', '否', '否'] // 第 7 行：无合同编号，结算为否，合法
+        ['HT-1', '第1批', '天水', '有合同已支付', 100, 80, 0, 0, 0, '是', '否', '否'], // 第 3 行：合法（有合同）
+        ['', '', '天水', '无合同已支付', 100, 80, 0, 0, 0, '是', '否', '否'], // 第 4 行：拒绝
+        ['', '', '天水', '无合同写错', 100, 80, 0, 0, 0, 'yes', '否', '否'], // 第 5 行：「yes」按否，合法
+        ['', '', '天水', '无合同未支付', 100, 80, 0, 0, 0, '否', '否', '否'] // 第 6 行：合法
       ];
-      const pv = await preview(rows);
-      expect(pv.errors.map((e) => e.row)).toEqual([4, 5, 6]);
-      expect(pv.errors[0]!.message).toContain('项目「结算为否」合同编号为「HT-2」');
-      expect(pv.errors[0]!.message).toContain('项目结算');
+      const pv = await preview(rows, F);
+      expect(pv.errors.map((e) => e.row)).toEqual([4]);
+      expect(pv.errors[0]!.message).toContain('项目「无合同已支付」没有合同编号');
+      expect(pv.errors[0]!.message).toContain('上海院已支付');
 
-      const res = await commit(rows);
+      const res = await commit(rows, F);
       expect(res.statusCode).toBe(422);
       expect(res.json()).toMatchObject({ code: 'IMPORT_INVALID' });
       // 整批不入库：合法的行也不导入，不产生合同/批次
@@ -194,72 +202,76 @@ describe('项目管理（Excel 导入）', () => {
       expect(count('SELECT COUNT(*) AS n FROM batch')).toBe(0);
     });
 
-    it('合同编号为空：项目结算为否 / 是 都允许（未结算项目，或导入的历史标记）', async () => {
-      expect((await preview([['', '', '天水', '未结算甲', 1, 0, 0, 0, 0, '否', '否', '否'], ['', '', '天水', '标记已结算', 1, 0, 0, 0, 0, '是', '否', '否']])).errors).toEqual([]);
+    it('有合同编号：上海院已支付为否 / 是 / 空白 都允许；是否结算只看合同编号', async () => {
+      expect((await preview([
+        ['HT-1', '', '天水', '甲', 1, 0, 0, 0, 0, '是', '否', '否'],
+        ['HT-2', '', '天水', '乙', 1, 0, 0, 0, 0, '否', '否', '否'],
+        ['HT-3', '', '天水', '丙', 1, 0, 0, 0, 0, '', '否', '否']
+      ], F)).errors).toEqual([]);
+      // 没有合同编号且上海院已支付不是「是」：同样允许（未结算项目）
+      expect((await preview([['', '', '天水', '未结算', 1, 0, 0, 0, 0, '否', '否', '否']], F)).errors).toEqual([]);
     });
 
-    it('缺列：没有「项目结算」列时，新增且带合同编号的项目默认为否 → 拒绝；没有合同编号的不受影响', async () => {
-      const headers = ['合同编号', '项目名称', '合同价'];
-      expect((await preview([['HT-1', '缺列项目', 100]], headers)).errors.map((e) => e.row)).toEqual([3]); // 第 2 行是合计行
-      expect((await preview([['', '缺列项目', 100]], headers)).errors).toEqual([]);
+    it('缺列：没有「合同编号」「上海院已支付」列时，新增项目就是未结算、上海院已支付为否，不会报错', async () => {
+      expect((await preview([['缺列项目', 100]], ['项目名称', '合同价'])).errors).toEqual([]);
+      expect((await preview([['HT-1', '缺列项目', 100]], ['合同编号', '项目名称', '合同价'])).errors).toEqual([]);
     });
 
     it('更新已有项目：按导入后的最终状态判断（缺列沿用库里原值）', async () => {
-      // 库里已有：已结算项目（在合同里，结算为是）、未结算项目（无合同）
+      // 库里已有：已结算项目（在合同里）、未结算项目（无合同）
       expect((await commit([
         ['HT-1', '第1批', '天水', '已结算项目', 100, 80, 0, 0, 0, '是', '否', '否'],
         ['', '', '天水', '未结算项目', 100, 80, 0, 0, 0, '否', '否', '否']
-      ])).statusCode).toBe(201);
+      ], F)).statusCode).toBe(201);
 
-      // 只改合同价/备注（没有合同编号、项目结算列）：已结算项目沿用原归属与结算 → 允许
-      const noCols = ['项目名称', '合同价', '备注'];
-      expect((await preview([['已结算项目', 999, '改备注']], noCols)).errors).toEqual([]);
-      // 只有合同编号列、没有项目结算列：给未结算项目填合同编号 → 沿用结算为否 → 拒绝
-      const onlyNo = ['合同编号', '项目名称', '合同价'];
-      const bad = await preview([['HT-9', '未结算项目', 100]], onlyNo);
-      expect(bad.errors.map((e) => e.row)).toEqual([3]);
-      // 同时把项目结算改为是 → 允许（项目从未结算变为已结算，仅是标记，不入账）
-      expect((await preview([['HT-9', '未结算项目', 100, '是']], [...onlyNo, '项目结算'])).errors).toEqual([]);
-      // 已结算项目被改成「合同编号保留、项目结算改否」→ 拒绝
-      expect((await preview([['HT-1', '已结算项目', 100, '否']], [...onlyNo, '项目结算'])).errors.map((e) => e.row)).toEqual([3]);
-      // 清空合同编号 → 脱离合同，项目结算为否合法
-      expect((await preview([['', '已结算项目', 100, '否']], [...onlyNo, '项目结算'])).errors).toEqual([]);
+      // 只改合同价/备注（没有合同编号、上海院已支付列）：已结算项目沿用原归属 → 允许
+      expect((await preview([['已结算项目', 999, '改备注']], ['项目名称', '合同价', '备注'])).errors).toEqual([]);
+      // 只有「上海院已支付」列、没有合同编号列：未结算项目沿用无合同 → 填「是」被拒绝
+      const onlyPaid = ['项目名称', '合同价', '上海院已支付'];
+      expect((await preview([['未结算项目', 100, '是']], onlyPaid)).errors.map((e) => e.row)).toEqual([3]);
+      // 同时给它填合同编号 → 允许
+      expect((await preview([['HT-9', '未结算项目', 100, '是']], ['合同编号', ...onlyPaid])).errors).toEqual([]);
+      // 已结算项目清空合同编号（脱离合同），而库里「上海院已支付」为是、本次又没改 → 拒绝（没有合同却已支付）
+      expect((await preview([['', '已结算项目', 100]], ['合同编号', '项目名称', '合同价'])).errors.map((e) => e.row)).toEqual([3]);
+      // 清空合同编号的同时把「上海院已支付」改为否 → 允许
+      expect((await preview([['', '已结算项目', 100, '否']], ['合同编号', '项目名称', '合同价', '上海院已支付'])).errors).toEqual([]);
     });
 
-    it('项目结算已入账（有有效收入流水）时，导入不会覆盖该标记，视为已结算：Excel 写否也不拦', async () => {
+    it('上海院已支付已入账（有有效收入流水）时，导入不会覆盖该标记，视为已支付：Excel 写否也不拦；导入不生成流水', async () => {
       const acc = await makeAccount('入账户', 0);
-      expect((await commit([['', '', '天水', '入账项目', 100, 80, 0, 0, 0, '否', '否', '否']])).statusCode).toBe(201);
+      expect((await commit([['HT-1', '第1批', '天水', '入账项目', 100, 80, 0, 0, 0, '否', '否', '否']], F)).statusCode).toBe(201);
       const p = ((await ctx.app.inject({ url: '/api/projects' })).json() as Array<{ id: string }>)[0]!;
       const full = { region: '天水', name: '入账项目', contractPrice: 10_000, qxReceived: 8_000, qxSubcontractFee: 0, chenPei: 0, qxProfit: 0, paidSubcontractor: false, paidChenPei: false };
-      expect((await ctx.app.inject({ method: 'PATCH', url: `/api/projects/${p.id}`, payload: { ...full, qxMoneyReceived: true, postingAccountId: acc.id } })).statusCode).toBe(200);
+      expect((await ctx.app.inject({ method: 'PATCH', url: `/api/projects/${p.id}`, payload: { ...full, shPaid: true, postingAccountId: acc.id } })).statusCode).toBe(200);
 
       const rows = [['HT-1', '第1批', '天水', '入账项目', 100, 80, 0, 0, 0, '否', '否', '否']];
-      expect((await preview(rows)).errors).toEqual([]);
-      expect((await commit(rows)).statusCode).toBe(201);
-      expect(await (async () => (await ctx.app.inject({ url: `/api/projects/${p.id}` })).json())()).toMatchObject({
-        contractNo: 'HT-1', qxMoneyReceived: true, postedKinds: ['qx_received'] // 标记保持为是
+      expect((await preview(rows, F)).errors).toEqual([]);
+      expect((await commit(rows, F)).statusCode).toBe(201);
+      expect((await ctx.app.inject({ url: `/api/projects/${p.id}` })).json()).toMatchObject({
+        contractNo: 'HT-1', shPaid: true, qxReceived: 8_000, postedKinds: ['qx_received'] // 标记与金额保持
       });
+      expect(count('SELECT COUNT(*) AS n FROM tx')).toBe(1); // 导入没有新增流水
     });
 
-    it('项目模板本身必须能导入，且导入后已结算项目在合同里、未结算项目不在合同里', async () => {
+    it('项目模板本身必须能导入，且导入后有合同编号的在合同里（已结算）、没有的不在合同里（未结算）', async () => {
       const tpl = await ctx.app.inject({ url: '/api/projects/import/template' });
       const res = await ctx.app.inject({ method: 'POST', url: importUrl('commit'), ...multipart(Buffer.from(tpl.rawPayload)) });
       expect(res.statusCode).toBe(201);
-      const list = (await ctx.app.inject({ url: '/api/projects' })).json() as Array<{ name: string; contractId: string | null; qxMoneyReceived: boolean }>;
-      expect(list.find((x) => x.name === '示例项目A')).toMatchObject({ qxMoneyReceived: true });
+      const list = (await ctx.app.inject({ url: '/api/projects' })).json() as Array<{ name: string; contractId: string | null; shPaid: boolean }>;
+      expect(list.find((x) => x.name === '示例项目A')).toMatchObject({ shPaid: true });
       expect(list.find((x) => x.name === '示例项目A')!.contractId).not.toBeNull();
-      expect(list.find((x) => x.name === '示例项目B')).toMatchObject({ qxMoneyReceived: false, contractId: null });
+      expect(list.find((x) => x.name === '示例项目B')).toMatchObject({ shPaid: false, contractId: null });
     });
   });
 
   it('批次：「第15批」记为批次号 15；数字、带空白同样识别；批次随合同走，没有合同编号的项目没有批次；其他写法报错', async () => {
     const m = multipart(
       await projectXlsx([
-        ['HT-A', '第15批', '', '甲', 0, 0, 0, 0, 0, '是', '', ''],
-        ['HT-B', 16, '', '乙', 0, 0, 0, 0, 0, '是', '', ''],
-        ['HT-C', '第 7 批', '', '丙', 0, 0, 0, 0, 0, '是', '', ''],
-        ['HT-D', '', '', '丁', 0, 0, 0, 0, 0, '是', '', ''], // 有合同但没填批次 -> 「未分批」，项目批次号为空
-        ['', '第9批', '', '戊', 0, 0, 0, 0, 0, '', '', ''] // 没有合同编号 -> 不归任何合同，也就没有批次
+        ['HT-A', '第15批', '', '甲', 0, 0, 0, 0, 0, '', ''],
+        ['HT-B', 16, '', '乙', 0, 0, 0, 0, 0, '', ''],
+        ['HT-C', '第 7 批', '', '丙', 0, 0, 0, 0, 0, '', ''],
+        ['HT-D', '', '', '丁', 0, 0, 0, 0, 0, '', ''], // 有合同但没填批次 -> 「未分批」，项目批次号为空
+        ['', '第9批', '', '戊', 0, 0, 0, 0, 0, '', ''] // 没有合同编号 -> 不归任何合同，也就没有批次
       ])
     );
     expect((await ctx.app.inject({ method: 'POST', url: importUrl('commit'), ...m })).statusCode).toBe(201);
@@ -272,10 +284,10 @@ describe('项目管理（Excel 导入）', () => {
 
     const bad = multipart(
       await projectXlsx([
-        ['', '第十五批', '', '戊', 0, 0, 0, 0, 0, '', '', ''],
-        ['', '第15期', '', '己', 0, 0, 0, 0, 0, '', '', ''],
-        ['', '15.5', '', '庚', 0, 0, 0, 0, 0, '', '', ''],
-        ['', '第0批', '', '辛', 0, 0, 0, 0, 0, '', '', ''] // 0 号保留给「未分批」
+        ['', '第十五批', '', '戊', 0, 0, 0, 0, 0, '', ''],
+        ['', '第15期', '', '己', 0, 0, 0, 0, 0, '', ''],
+        ['', '15.5', '', '庚', 0, 0, 0, 0, 0, '', ''],
+        ['', '第0批', '', '辛', 0, 0, 0, 0, 0, '', ''] // 0 号保留给「未分批」
       ])
     );
     const preview = (await ctx.app.inject({ method: 'POST', url: importUrl('preview'), ...bad })).json() as {
@@ -290,11 +302,11 @@ describe('项目管理（Excel 导入）', () => {
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet('s');
     ws.addRow(PROJECT_HEADERS); // 第 1 行：表头
-    ws.addRow(['', '', '', '项目名称', '合同价', '', '', '', '', '', '', '']); // 第 2 行：重复表头的说明行
-    ws.addRow(['', '', '', '合计', 300, 0, 0, 0, 0, '', '', '']); // 第 3 行：合计
-    ws.addRow(['HT-1', '第14批', '陇南', '真实项目一', 100, 0, 0, 0, 0, '是', '账清', '']); // 第 4 行
-    ws.addRow(['HT-1', '第15批', '陇南', '真实项目二', 200, 0, 0, 0, 0, '是', '', '']); // 第 5 行
-    ws.addRow(['HT-1', '第15批', '陇南', '', 0, 0, 0, 0, 0, '是', '', '']); // 第 6 行：缺项目名称
+    ws.addRow(['', '', '', '项目名称', '合同价', '', '', '', '', '', '']); // 第 2 行：重复表头的说明行
+    ws.addRow(['', '', '', '合计', 300, 0, 0, 0, 0, '', '']); // 第 3 行：合计
+    ws.addRow(['HT-1', '第14批', '陇南', '真实项目一', 100, 0, 0, 0, 0, '账清', '']); // 第 4 行
+    ws.addRow(['HT-1', '第15批', '陇南', '真实项目二', 200, 0, 0, 0, 0, '', '']); // 第 5 行
+    ws.addRow(['HT-1', '第15批', '陇南', '', 0, 0, 0, 0, 0, '', '']); // 第 6 行：缺项目名称
     const m = multipart(Buffer.from(await wb.xlsx.writeBuffer()));
 
     const preview = (await ctx.app.inject({ method: 'POST', url: importUrl('preview'), ...m })).json() as {
@@ -313,7 +325,7 @@ describe('项目管理（Excel 导入）', () => {
     }
 
     const reordered = ['项目名称', '合同编号', ...PROJECT_HEADERS.filter((h) => h !== '项目名称' && h !== '合同编号')];
-    const m = multipart(await projectXlsx([['乱序项目', 'HT-009', '', '', 100, 0, 0, 0, 0, '是', '', '', ''], [], [null]], reordered));
+    const m = multipart(await projectXlsx([['乱序项目', 'HT-009', '', '', 100, 0, 0, 0, 0, '', '', ''], [], [null]], reordered));
     expect((await ctx.app.inject({ method: 'POST', url: importUrl('commit'), ...m })).json()).toEqual({ total: 1, created: 1, updated: 0, skippedPosted: 0 });
     expect(((await ctx.app.inject({ url: '/api/projects' })).json() as Array<{ contractNo: string; name: string }>)[0]).toMatchObject({
       contractNo: 'HT-009', name: '乱序项目'
@@ -344,7 +356,7 @@ describe('项目管理（Excel 导入）', () => {
       expect(a).toMatchObject({
         region: '陇南', contractPrice: 11_800_000, note: '', contractId: null, contractNo: '', batchNo: null,
         qxReceived: 0, qxSubcontractFee: 0, chenPei: 0, qxProfit: 0,
-        qxMoneyReceived: false, paidSubcontractor: false, paidChenPei: false
+        shPaid: false, paidSubcontractor: false, paidChenPei: false
       });
       expect((await list()).find((p) => p.name === '麦积基站项目')).toMatchObject({ contractPrice: 1_300_050, note: '加急' });
       expect(ctx.db.prepare('SELECT COUNT(*) AS n FROM contract').get()).toEqual({ n: 0 }); // 没有合同编号列，不会建合同
@@ -366,9 +378,9 @@ describe('项目管理（Excel 导入）', () => {
 
     it('更新已有项目：Excel 没有的列保持库里原值，不会被清零；有的列照常更新', async () => {
       // 先用完整表头导入一个有数据的项目
-      await commit(await projectXlsx([['HT-1', '第7批', '兰州', '已有项目', 1000, 800, 400, 50, 350, '是', '是', '否', '原备注']]));
+      await commit(await projectXlsx([['HT-1', '第7批', '兰州', '已有项目', 1000, 800, 400, 50, 350, '是', '否', '原备注']]));
       const before = (await list())[0]!;
-      expect(before).toMatchObject({ contractNo: 'HT-1', batchNo: 7, region: '兰州', qxReceived: 80_000, qxMoneyReceived: true, note: '原备注' });
+      expect(before).toMatchObject({ contractNo: 'HT-1', batchNo: 7, region: '兰州', qxReceived: 80_000, shPaid: false, note: '原备注' });
 
       // 再用只有 4 列的文件更新：只改区域、合同价、备注
       const res = await commit(await sheet(['区域', '项目名称', '合同价', '备注'], [['白银', '已有项目', 2000, '新备注']]));
@@ -378,30 +390,30 @@ describe('项目管理（Excel 导入）', () => {
         region: '白银', contractPrice: 200_000, note: '新备注', // 有的列：更新
         contractNo: 'HT-1', contractId: before.contractId, batchNo: 7, // 没有的列：保持原值（含合同归属）
         qxReceived: 80_000, qxSubcontractFee: 40_000, chenPei: 5_000, qxProfit: 35_000,
-        qxMoneyReceived: true, paidSubcontractor: true, paidChenPei: false
+        shPaid: false, paidSubcontractor: true, paidChenPei: false
       });
       expect(ctx.db.prepare('SELECT COUNT(*) AS n FROM contract').get()).toEqual({ n: 1 });
     });
 
     it('「没有这一列」和「有这一列但单元格为空」不同：后者是明确的置空/置零', async () => {
-      await commit(await projectXlsx([['HT-1', '第7批', '兰州', '已有项目', 1000, 800, 400, 50, 350, '是', '是', '否', '原备注']]));
+      await commit(await projectXlsx([['HT-1', '第7批', '兰州', '已有项目', 1000, 800, 400, 50, 350, '是', '否', '原备注']]));
       // 有「区域」「备注」「企信实收」列但单元格为空 -> 清空
       await commit(await sheet(['项目名称', '合同价', '区域', '备注', '企信实收'], [['已有项目', 1000, '', '', '']]));
       expect((await list())[0]).toMatchObject({ region: '', note: '', qxReceived: 0, qxProfit: 35_000, batchNo: 7, contractNo: 'HT-1' });
     });
 
     it('已入账的字段不被覆盖：即使 Excel 里写了不同的值（与缺列规则互不冲突）', async () => {
-      await commit(await projectXlsx([['', '第1批', '兰州', '入账项目', 1000, 800, 0, 0, 0, '否', '否', '否', '']]));
+      await commit(await projectXlsx([['HT-1', '第1批', '兰州', '入账项目', 1000, 800, 0, 0, 0, '否', '否', '']]));
       const id = (await list())[0]!.id;
       const acc = await makeAccount('入账户', 0);
       const body = {
         region: '兰州', name: '入账项目', contractPrice: 100_000, qxReceived: 80_000, qxSubcontractFee: 0, chenPei: 0, qxProfit: 0,
-        qxMoneyReceived: true, paidSubcontractor: false, paidChenPei: false, postingAccountId: acc.id
+        shPaid: true, paidSubcontractor: false, paidChenPei: false, postingAccountId: acc.id
       };
       expect((await ctx.app.inject({ method: 'PATCH', url: `/api/projects/${id}`, payload: body })).statusCode).toBe(200);
-      // 用「企信实收 = 1、项目结算 = 否」的文件去导入
-      await commit(await sheet(['项目名称', '合同价', '企信实收', '项目结算'], [['入账项目', 1000, 1, '否']]));
-      expect((await list())[0]).toMatchObject({ qxReceived: 80_000, qxMoneyReceived: true, postedKinds: ['qx_received'] });
+      // 用「企信实收 = 1、上海院已支付 = 否」的文件去导入
+      await commit(await sheet(['项目名称', '合同价', '企信实收', '上海院已支付'], [['入账项目', 1000, 1, '否']]));
+      expect((await list())[0]).toMatchObject({ qxReceived: 80_000, shPaid: true, postedKinds: ['qx_received'] });
     });
 
     it('备注：详情页可修改；PATCH 省略 note 时保持原值；超长返回 400', async () => {
@@ -409,7 +421,7 @@ describe('项目管理（Excel 导入）', () => {
       const p = (await list())[0]!;
       const base = {
         region: '', name: '备注项目', contractPrice: 10_000, qxReceived: 0, qxSubcontractFee: 0, chenPei: 0, qxProfit: 0,
-        qxMoneyReceived: false, paidSubcontractor: false, paidChenPei: false
+        paidSubcontractor: false, paidChenPei: false
       };
       const patchP = (b: object) => ctx.app.inject({ method: 'PATCH', url: `/api/projects/${p.id}`, payload: b });
       expect((await patchP(base)).json()).toMatchObject({ note: '导入备注' }); // 省略 -> 不变
@@ -435,15 +447,15 @@ describe('项目管理（Excel 导入）', () => {
     const baseBody = {
       region: '陇南', name: '改名后的项目',
       contractPrice: 1000, qxReceived: 800, qxSubcontractFee: 400, chenPei: 50, qxProfit: 200,
-      qxMoneyReceived: false, paidSubcontractor: false, paidChenPei: false // 不涉及入账；入账见下方「入账与回退」
+      shPaid: false, paidSubcontractor: false, paidChenPei: false // 不涉及入账；入账见下方「入账与回退」
     };
     const seed = async () => {
       await ctx.app.inject({
         method: 'POST', url: importUrl('commit'),
         ...multipart(await projectXlsx([
-          // 合同编号不为空 = 已结算，项目结算必须为是（导入的「是」只是标记，没有入账流水）
-          ['HT-1', '第14批', '天水', '项目甲', 100, 0, 0, 0, 0, '是', '否', '否'],
-          ['HT-2', '第14批', '天水', '项目乙', 200, 0, 0, 0, 0, '是', '否', '否']
+          // 合同编号不为空 = 已结算项目（导入的「是」只是标记，没有入账流水）
+          ['HT-1', '第14批', '天水', '项目甲', 100, 0, 0, 0, 0, '否', '否'],
+          ['HT-2', '第14批', '天水', '项目乙', 200, 0, 0, 0, 0, '否', '否']
         ]))
       });
       const list = (await ctx.app.inject({ url: '/api/projects' })).json() as Array<{ id: string; name: string }>;
@@ -468,49 +480,63 @@ describe('项目管理（Excel 导入）', () => {
       expect(ctx.db.prepare("SELECT COUNT(*) AS n FROM contract WHERE contract_no='HT-HACK'").get()).toEqual({ n: 0 });
     });
 
-    it('详情页不再提供「项目结算」：PATCH 省略 qxMoneyReceived 时保持原值，不入账、不回退，其他字段照常保存', async () => {
-      // 一个已结算（导入时填「是」）的项目和一个未结算的项目
+    it('未结算项目页的编辑不涉及「上海院已支付」：PATCH 省略 shPaid 时保持原值，不入账、不回退，其他字段照常保存', async () => {
+      // 一个已结算（有合同、导入时标记为已支付）的项目和一个未结算（无合同）的项目
       await ctx.app.inject({
         method: 'POST', url: importUrl('commit'),
         ...multipart(await projectXlsx([
-          ['', '第1批', '天水', '已结算项目', 100, 80, 0, 0, 0, '是', '否', '否', ''],
-          ['', '第1批', '天水', '未结算项目', 100, 80, 0, 0, 0, '否', '否', '否', '']
-        ]))
+          ['HT-1', '第1批', '天水', '已结算项目', 100, 80, 0, 0, 0, '是', '否', ''],
+          ['', '第1批', '天水', '未结算项目', 100, 80, 0, 0, 0, '否', '否', '']
+        ], PROJECT_HEADERS_FULL))
       });
       const all = (await ctx.app.inject({ url: '/api/projects' })).json() as Array<{ id: string; name: string }>;
       const settled = all.find((p) => p.name === '已结算项目')!.id;
       const open = all.find((p) => p.name === '未结算项目')!.id;
-      const { qxMoneyReceived: _omit, ...withoutFlag } = baseBody;
+      const { shPaid: _omit, ...withoutFlag } = baseBody;
       const txBefore = ctx.db.prepare('SELECT COUNT(*) AS n FROM tx').get();
 
       const r1 = await patch(settled, { ...withoutFlag, name: '已结算项目', region: '改区域1' });
       expect(r1.statusCode).toBe(200);
-      expect(r1.json()).toMatchObject({ region: '改区域1', qxMoneyReceived: true, postedKinds: [] }); // 仍是已结算
+      expect(r1.json()).toMatchObject({ region: '改区域1', shPaid: true, postedKinds: [] }); // 标记保持
       const r2 = await patch(open, { ...withoutFlag, name: '未结算项目', region: '改区域2' });
       expect(r2.statusCode).toBe(200);
-      expect(r2.json()).toMatchObject({ region: '改区域2', qxMoneyReceived: false, postedKinds: [] }); // 仍是未结算
+      expect(r2.json()).toMatchObject({ region: '改区域2', shPaid: false, postedKinds: [] });
       expect(ctx.db.prepare('SELECT COUNT(*) AS n FROM tx').get()).toEqual(txBefore); // 没有产生任何流水
       expect(ctx.db.prepare('SELECT COUNT(*) AS n FROM project_posting').get()).toEqual({ n: 0 });
     });
 
-    it('已入账的企信实收：省略 qxMoneyReceived 保存不会回退入账；金额仍被锁定（409），其他字段可改', async () => {
+    it('已入账的企信实收：省略 shPaid 保存不会回退入账；金额仍被锁定（409），其他字段可改', async () => {
       const acc = await makeAccount('入账户', 0);
-      // 未结算项目（无合同编号、项目结算为否），才能通过接口「否 -> 是」入账
+      // 已归入合同的项目才能把「上海院已支付」设为是
       await ctx.app.inject({
         method: 'POST', url: importUrl('commit'),
-        ...multipart(await projectXlsx([['', '', '天水', '项目甲', 100, 0, 0, 0, 0, '否', '否', '否']]))
+        ...multipart(await projectXlsx([['HT-1', '', '天水', '项目甲', 100, 0, 0, 0, 0, '否', '否']]))
       });
       const a = ((await ctx.app.inject({ url: '/api/projects' })).json() as Array<{ id: string }>)[0]!.id;
-      const withFlag = { ...baseBody, name: '项目甲', qxReceived: 800, qxMoneyReceived: true, postingAccountId: acc.id };
-      expect((await patch(a, withFlag)).statusCode).toBe(200); // 先通过入参入账一笔（接口仍支持）
-      const { qxMoneyReceived: _o, postingAccountId: _p, ...rest } = withFlag;
+      const withFlag = { ...baseBody, name: '项目甲', qxReceived: 800, shPaid: true, postingAccountId: acc.id };
+      expect((await patch(a, withFlag)).statusCode).toBe(200); // 先入账一笔
+      const { shPaid: _o, postingAccountId: _p, ...rest } = withFlag;
       const ok = await patch(a, { ...rest, region: '新区域' });
       expect(ok.statusCode).toBe(200);
-      expect(ok.json()).toMatchObject({ region: '新区域', qxMoneyReceived: true, postedKinds: ['qx_received'] }); // 没被回退
+      expect(ok.json()).toMatchObject({ region: '新区域', shPaid: true, postedKinds: ['qx_received'] }); // 没被回退
       const locked = await patch(a, { ...rest, qxReceived: 999 });
       expect(locked.statusCode).toBe(409);
       expect(locked.json()).toMatchObject({ code: 'POSTED_AMOUNT_LOCKED' });
       expect((await ctx.app.inject({ url: '/api/accounts' })).json().find((x: { id: string }) => x.id === acc.id)).toMatchObject({ balance: 800 });
+    });
+
+    it('未归入合同（未结算）的项目不能把「上海院已支付」设为是（409 PROJECT_NOT_IN_CONTRACT），不入账也不改任何字段', async () => {
+      const acc = await makeAccount('入账户', 0);
+      await ctx.app.inject({
+        method: 'POST', url: importUrl('commit'),
+        ...multipart(await projectXlsx([['', '', '天水', '无合同项目', 100, 800, 0, 0, 0, '否', '否']]))
+      });
+      const a = ((await ctx.app.inject({ url: '/api/projects' })).json() as Array<{ id: string }>)[0]!.id;
+      const res = await patch(a, { ...baseBody, name: '无合同项目', region: '不应保存', qxReceived: 800, shPaid: true, postingAccountId: acc.id });
+      expect(res.statusCode).toBe(409);
+      expect(res.json()).toMatchObject({ code: 'PROJECT_NOT_IN_CONTRACT' });
+      expect((await ctx.app.inject({ url: `/api/projects/${a}` })).json()).toMatchObject({ shPaid: false, postedKinds: [], region: '天水' });
+      expect(ctx.db.prepare('SELECT COUNT(*) AS n FROM tx').get()).toEqual({ n: 0 });
     });
 
     it('批次号随合同走、不能通过项目接口修改：请求里带 batchNo 被忽略；保留自己的名称不算重名', async () => {
@@ -532,7 +558,7 @@ describe('项目管理（Excel 导入）', () => {
       expect((await patch(a, { ...baseBody, name: '  ' })).statusCode).toBe(400);
       expect((await patch(a, { ...baseBody, contractPrice: 10.5 })).statusCode).toBe(400); // 金额必须是整数分
       expect((await patch(a, { ...baseBody, contractPrice: -1 })).statusCode).toBe(400);
-      expect((await patch(a, { ...baseBody, qxMoneyReceived: 'yes' })).statusCode).toBe(400);
+      expect((await patch(a, { ...baseBody, shPaid: 'yes' })).statusCode).toBe(400);
       expect((await patch('nope', baseBody)).statusCode).toBe(404);
       // 失败的修改不改动数据
       expect((await ctx.app.inject({ url: `/api/projects/${a}` })).json()).toMatchObject({ name: '项目甲', contractPrice: 10_000 });
@@ -555,7 +581,7 @@ describe('项目管理（Excel 导入）', () => {
     it('归档后名称可复用：再次导入同名项目会新增而不是更新已归档的', async () => {
       const { a } = await seed();
       await post(`/api/projects/${a}/archive`, {});
-      const m = multipart(await projectXlsx([['HT-1', '第15批', '天水', '项目甲', 300, 0, 0, 0, 0, '是', '否', '否']]));
+      const m = multipart(await projectXlsx([['HT-1', '第15批', '天水', '项目甲', 300, 0, 0, 0, 0, '否', '否']]));
       expect((await ctx.app.inject({ method: 'POST', url: importUrl('commit'), ...m })).json()).toEqual({ total: 1, created: 1, updated: 0, skippedPosted: 0 });
       const list = (await ctx.app.inject({ url: '/api/projects' })).json() as Array<{ id: string; name: string; contractPrice: number }>;
       const again = list.find((p) => p.name === '项目甲')!;
@@ -566,7 +592,7 @@ describe('项目管理（Excel 导入）', () => {
     it('手工修改会被再次导入的 Excel 覆盖（同名匹配）', async () => {
       const { a } = await seed();
       await patch(a, { ...baseBody, name: '项目甲', region: '手工改的区域', contractPrice: 999 });
-      const m = multipart(await projectXlsx([['HT-1', '第14批', '天水', '项目甲', 100, 0, 0, 0, 0, '是', '否', '否']]));
+      const m = multipart(await projectXlsx([['HT-1', '第14批', '天水', '项目甲', 100, 0, 0, 0, 0, '否', '否']]));
       expect((await ctx.app.inject({ method: 'POST', url: importUrl('commit'), ...m })).json()).toMatchObject({ updated: 1 });
       expect((await ctx.app.inject({ url: `/api/projects/${a}` })).json()).toMatchObject({ region: '天水', contractPrice: 10_000 });
     });
@@ -578,15 +604,15 @@ describe('项目管理（Excel 导入）', () => {
     const full = (over: Record<string, unknown> = {}) => ({
       contractNo: 'HT-1', region: '陇南', name: '入账项目',
       contractPrice: 100_000, qxReceived: 80_000, qxSubcontractFee: 40_000, chenPei: 5_000, qxProfit: 35_000,
-      qxMoneyReceived: false, paidSubcontractor: false, paidChenPei: false,
+      shPaid: false, paidSubcontractor: false, paidChenPei: false,
       ...over
     });
     const setup = async () => {
       const acc = await makeAccount('入账账户', 1_000_000);
       await ctx.app.inject({
         method: 'POST', url: importUrl('commit'),
-        // 要测「否 -> 是」的入账，所以导入为未结算：合同编号留空、项目结算为否（有合同编号就必须为是）
-        ...multipart(await projectXlsx([['', '', '陇南', '入账项目', 1000, 800, 400, 50, 350, '否', '否', '否']]))
+        // 已结算项目（有合同编号）才能把「上海院已支付」设为是；导入的标记都是否，没有流水
+        ...multipart(await projectXlsx([['HT-1', '', '陇南', '入账项目', 1000, 800, 400, 50, 350, '否', '否']]))
       });
       const list = (await ctx.app.inject({ url: '/api/projects' })).json() as Array<{ id: string }>;
       return { acc: acc.id, id: list[0]!.id };
@@ -597,9 +623,9 @@ describe('项目管理（Excel 导入）', () => {
         items: Array<{ id: string; type: string; lines: Array<{ amount: number }>; note: string }>;
       }).items;
 
-    it('否 -> 是：企信收到钱记收入、支付下家/陈沛记支出，金额取对应列，余额随之变化', async () => {
+    it('否 -> 是：上海院已支付记收入、支付下家/陈沛记支出，金额取对应列，余额随之变化', async () => {
       const { acc, id } = await setup();
-      const res = await patch(id, full({ qxMoneyReceived: true, paidSubcontractor: true, paidChenPei: true, postingAccountId: acc }));
+      const res = await patch(id, full({ shPaid: true, paidSubcontractor: true, paidChenPei: true, postingAccountId: acc }));
       expect(res.statusCode).toBe(200);
       expect((res.json() as { postedKinds: string[] }).postedKinds.sort()).toEqual(['paid_chen_pei', 'paid_subcontractor', 'qx_received']);
 
@@ -644,10 +670,10 @@ describe('项目管理（Excel 导入）', () => {
 
     it('是 -> 否：删除对应流水（物理删除，写审计），余额回退，其他字段的流水不受影响', async () => {
       const { acc, id } = await setup();
-      await patch(id, full({ qxMoneyReceived: true, paidSubcontractor: true, postingAccountId: acc }));
+      await patch(id, full({ shPaid: true, paidSubcontractor: true, postingAccountId: acc }));
       expect(await balance(acc)).toBe(1_000_000 + 80_000 - 40_000);
 
-      const res = await patch(id, full({ qxMoneyReceived: false, paidSubcontractor: true }));
+      const res = await patch(id, full({ shPaid: false, paidSubcontractor: true }));
       expect(res.statusCode).toBe(200);
       expect((res.json() as { postedKinds: string[] }).postedKinds).toEqual(['paid_subcontractor']);
       expect(await balance(acc)).toBe(1_000_000 - 40_000); // 收入回退，支出保留
@@ -682,10 +708,10 @@ describe('项目管理（Excel 导入）', () => {
 
     it('回退后可再次入账，且按当时的金额重新生成一笔新流水', async () => {
       const { acc, id } = await setup();
-      await patch(id, full({ qxMoneyReceived: true, postingAccountId: acc }));
-      await patch(id, full({ qxMoneyReceived: false }));
-      await patch(id, full({ qxMoneyReceived: false, qxReceived: 90_000 })); // 回退后可以改金额
-      await patch(id, full({ qxMoneyReceived: true, qxReceived: 90_000, postingAccountId: acc }));
+      await patch(id, full({ shPaid: true, postingAccountId: acc }));
+      await patch(id, full({ shPaid: false }));
+      await patch(id, full({ shPaid: false, qxReceived: 90_000 })); // 回退后可以改金额
+      await patch(id, full({ shPaid: true, qxReceived: 90_000, postingAccountId: acc }));
       expect(await balance(acc)).toBe(1_000_000 + 90_000);
       const txs = await txOf(acc);
       expect(txs).toHaveLength(1); // 回退时旧流水已删除，只有重新入账的这一笔
@@ -694,32 +720,32 @@ describe('项目管理（Excel 导入）', () => {
 
     it('缺少入账账户 / 金额为 0 / 账户已归档：拒绝，且项目与流水都不变（原子性）', async () => {
       const { acc, id } = await setup();
-      const noAcc = await patch(id, full({ qxMoneyReceived: true, region: '不应保存' }));
+      const noAcc = await patch(id, full({ shPaid: true, region: '不应保存' }));
       expect(noAcc.statusCode).toBe(400);
       expect(noAcc.json()).toMatchObject({ code: 'POSTING_ACCOUNT_REQUIRED' });
 
-      const zero = await patch(id, full({ qxMoneyReceived: true, qxReceived: 0, postingAccountId: acc }));
+      const zero = await patch(id, full({ shPaid: true, qxReceived: 0, postingAccountId: acc }));
       expect(zero.statusCode).toBe(400);
 
-      const bad = await patch(id, full({ qxMoneyReceived: true, postingAccountId: 'not-exist', region: '不应保存' }));
+      const bad = await patch(id, full({ shPaid: true, postingAccountId: 'not-exist', region: '不应保存' }));
       expect(bad.statusCode).toBe(404);
 
       // 同时有两个字段入账，第二笔失败（账户不存在）：第一笔也必须回滚
       expect((await txOf(acc))).toHaveLength(0);
-      const p = (await ctx.app.inject({ url: `/api/projects/${id}` })).json() as { region: string; qxMoneyReceived: boolean; postedKinds: string[] };
-      expect(p).toMatchObject({ region: '陇南', qxMoneyReceived: false, postedKinds: [] });
+      const p = (await ctx.app.inject({ url: `/api/projects/${id}` })).json() as { region: string; shPaid: boolean; postedKinds: string[] };
+      expect(p).toMatchObject({ region: '陇南', shPaid: false, postedKinds: [] });
       expect(ctx.db.prepare('SELECT COUNT(*) AS n FROM project_posting').get()).toEqual({ n: 0 });
       expect(await balance(acc)).toBe(1_000_000);
     });
 
     it('已入账的字段不能直接改对应金额（409），未入账字段的金额照常可改', async () => {
       const { acc, id } = await setup();
-      await patch(id, full({ qxMoneyReceived: true, postingAccountId: acc }));
-      const locked = await patch(id, full({ qxMoneyReceived: true, qxReceived: 99_999 }));
+      await patch(id, full({ shPaid: true, postingAccountId: acc }));
+      const locked = await patch(id, full({ shPaid: true, qxReceived: 99_999 }));
       expect(locked.statusCode).toBe(409);
       expect(locked.json()).toMatchObject({ code: 'POSTED_AMOUNT_LOCKED' });
       // 其他金额（未入账）可以改
-      const ok = await patch(id, full({ qxMoneyReceived: true, qxSubcontractFee: 41_000, contractPrice: 123 }));
+      const ok = await patch(id, full({ shPaid: true, qxSubcontractFee: 41_000, contractPrice: 123 }));
       expect(ok.statusCode).toBe(200);
       expect(await balance(acc)).toBe(1_000_000 + 80_000);
     });
@@ -738,13 +764,13 @@ describe('项目管理（Excel 导入）', () => {
       const acc = await makeAccount('历史账户', 500_000);
       await ctx.app.inject({
         method: 'POST', url: importUrl('commit'),
-        ...multipart(await projectXlsx([['HT-2', '第15批', '陇南', '历史项目', 1000, 800, 400, 50, 350, '是', '是', '否']]))
+        ...multipart(await projectXlsx([['HT-2', '第15批', '陇南', '历史项目', 1000, 800, 400, 50, 350, '是', '是', '否']], PROJECT_HEADERS_FULL))
       });
-      const proj = ((await ctx.app.inject({ url: '/api/projects' })).json() as Array<{ id: string; qxMoneyReceived: boolean; postedKinds: string[] }>)[0]!;
-      expect(proj.qxMoneyReceived).toBe(true);
+      const proj = ((await ctx.app.inject({ url: '/api/projects' })).json() as Array<{ id: string; shPaid: boolean; postedKinds: string[] }>)[0]!;
+      expect(proj.shPaid).toBe(true);
       expect(proj.postedKinds).toEqual([]); // 导入不记账
       expect(await txOf(acc.id)).toHaveLength(0);
-      const res = await patch(proj.id, full({ name: '历史项目', qxMoneyReceived: false, paidSubcontractor: true }));
+      const res = await patch(proj.id, full({ name: '历史项目', shPaid: false, paidSubcontractor: true }));
       expect(res.statusCode).toBe(200);
       expect(await txOf(acc.id)).toHaveLength(0);
       expect(await balance(acc.id)).toBe(500_000);
@@ -752,8 +778,8 @@ describe('项目管理（Excel 导入）', () => {
 
     it('再次导入：已入账字段的标记与金额不被覆盖，其余字段照常覆盖；导入不生成流水', async () => {
       const { acc, id } = await setup();
-      await patch(id, full({ qxMoneyReceived: true, postingAccountId: acc }));
-      const m = multipart(await projectXlsx([['HT-NEW', '第16批', '天水', '入账项目', 2000, 1, 999, 77, 666, '否', '是', '否']]));
+      await patch(id, full({ shPaid: true, postingAccountId: acc }));
+      const m = multipart(await projectXlsx([['HT-NEW', '第16批', '天水', '入账项目', 2000, 1, 999, 77, 666, '否', '是', '否']], PROJECT_HEADERS_FULL));
       const pre = (await ctx.app.inject({ method: 'POST', url: importUrl('preview'), ...m })).json() as Record<string, unknown>;
       expect(pre).toMatchObject({ toUpdate: 1, toUpdatePartially: 1 });
       const res = await ctx.app.inject({ method: 'POST', url: importUrl('commit'), ...m });
@@ -761,7 +787,7 @@ describe('项目管理（Excel 导入）', () => {
 
       const p = (await ctx.app.inject({ url: `/api/projects/${id}` })).json() as Record<string, unknown>;
       expect(p).toMatchObject({
-        qxMoneyReceived: true, qxReceived: 80_000, // 已入账：标记与金额保持
+        shPaid: true, qxReceived: 80_000, // 已入账：标记与金额保持
         contractNo: 'HT-NEW', region: '天水', contractPrice: 200_000, qxSubcontractFee: 99_900, chenPei: 7_700, // 其余被覆盖
         paidSubcontractor: true // 未入账的字段按 Excel 覆盖，但只是标记
       });
@@ -771,7 +797,7 @@ describe('项目管理（Excel 导入）', () => {
 
     it('入账日期：流水的发生日期取 postingDate（多笔共用），省略时用当天；非法日期返回 400 且不入账', async () => {
       const { acc, id } = await setup();
-      const res = await patch(id, full({ qxMoneyReceived: true, paidSubcontractor: true, postingAccountId: acc, postingDate: '2026-03-15' }));
+      const res = await patch(id, full({ shPaid: true, paidSubcontractor: true, postingAccountId: acc, postingDate: '2026-03-15' }));
       expect(res.statusCode).toBe(200);
       const txs = await txOf(acc);
       expect(txs).toHaveLength(2);
@@ -786,15 +812,15 @@ describe('项目管理（Excel 导入）', () => {
       const d = new Date();
       const pad = (n: number) => String(n).padStart(2, '0');
       const localToday = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-      await patch(id, full({ qxMoneyReceived: true, paidSubcontractor: true, paidChenPei: true, postingAccountId: acc }));
+      await patch(id, full({ shPaid: true, paidSubcontractor: true, paidChenPei: true, postingAccountId: acc }));
       const row = ctx.db.prepare("SELECT t.occurred_on AS d FROM project_posting p JOIN tx t ON t.id=p.tx_id WHERE p.project_id=? AND p.kind='paid_chen_pei'").get(id) as { d: string };
       expect(row.d).toBe(localToday);
 
       // 非法日期：格式不对、2月30日、空串。先回退上面的入账，再用非法日期尝试，应全部被拒且不产生新流水
-      await patch(id, full({ qxMoneyReceived: false, paidSubcontractor: false, paidChenPei: false }));
+      await patch(id, full({ shPaid: false, paidSubcontractor: false, paidChenPei: false }));
       const before = (await txOf(acc)).length;
       for (const bad of ['2026/03/15', '2026-02-30', '2026-13-01', '', '昨天']) {
-        const r = await patch(id, full({ qxMoneyReceived: true, postingAccountId: acc, postingDate: bad }));
+        const r = await patch(id, full({ shPaid: true, postingAccountId: acc, postingDate: bad }));
         expect(r.statusCode, `postingDate=${JSON.stringify(bad)}`).toBe(400);
       }
       expect(await txOf(acc)).toHaveLength(before);
@@ -802,8 +828,8 @@ describe('项目管理（Excel 导入）', () => {
 
     it('审计：入账与回退都记录在项目的 update 审计里（含流水 id、金额、动作）', async () => {
       const { acc, id } = await setup();
-      await patch(id, full({ qxMoneyReceived: true, postingAccountId: acc }));
-      await patch(id, full({ qxMoneyReceived: false }));
+      await patch(id, full({ shPaid: true, postingAccountId: acc }));
+      await patch(id, full({ shPaid: false }));
       const rows = ctx.db.prepare("SELECT payload FROM audit_log WHERE entity='project' AND entity_id=? AND action='update' ORDER BY created_at, rowid").all(id) as Array<{ payload: string }>;
       expect(rows).toHaveLength(2);
       const [a, b] = rows.map((r) => JSON.parse(r.payload) as { postings: Array<{ kind: string; action: string; txId: string; amount: number }> });
@@ -819,7 +845,7 @@ describe('项目管理（Excel 导入）', () => {
     expect(tpl.statusCode).toBe(200);
     const wb = new ExcelJS.Workbook();
     await wb.xlsx.load(tpl.rawPayload as unknown as ArrayBuffer);
-    expect(wb.worksheets[0]!.getRow(1).values).toEqual([undefined, ...PROJECT_HEADERS]);
+    expect(wb.worksheets[0]!.getRow(1).values).toEqual([undefined, ...PROJECT_HEADERS_FULL]);
     // 模板本身必须能被导入
     const m = multipart(Buffer.from(tpl.rawPayload));
     expect((await ctx.app.inject({ method: 'POST', url: importUrl('commit'), ...m })).json()).toMatchObject({ created: 2 });
@@ -880,7 +906,7 @@ describe('批次管理', () => {
   });
 });
 
-describe('未结算项目 / 已结算项目（同一张 project 表，按「项目结算」字段区分）', () => {
+describe('未结算项目 / 已结算项目（同一张 project 表，按「合同」字段是否有值区分）', () => {
   const patch = (url: string, body: unknown) => ctx.app.inject({ method: 'PATCH', url, payload: body as object });
   const get = async (url: string) => (await ctx.app.inject({ url })).json();
   const body = (over: Record<string, unknown> = {}) => ({
@@ -898,7 +924,7 @@ describe('未结算项目 / 已结算项目（同一张 project 表，按「项�
     ctx.db.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE entity='project' AND action=?").get(action);
   const names = async (qs: string) => ((await get(`/api/projects${qs}`)) as Array<{ name: string }>).map((p) => p.name).sort();
 
-  it('新建项目：项目结算 = 否、不归属合同、不入账；文本去空白、金额按整数分原样保存；写审计', async () => {
+  it('新建项目：不归属合同（未结算）、上海院已支付 = 否、不入账；文本去空白、金额按整数分原样保存；写审计', async () => {
     const res = await post('/api/projects', body());
     expect(res.statusCode).toBe(201);
     expect(res.json()).toMatchObject({
@@ -909,7 +935,7 @@ describe('未结算项目 / 已结算项目（同一张 project 表，按「项�
       qxSubcontractFee: 200_000,
       chenPei: 50_000,
       qxProfit: 250_000,
-      qxMoneyReceived: false,
+      shPaid: false,
       paidSubcontractor: false,
       paidChenPei: false,
       contractId: null,
@@ -919,16 +945,23 @@ describe('未结算项目 / 已结算项目（同一张 project 表，按「项�
     expect(ctx.db.prepare('SELECT COUNT(*) AS n FROM tx').get()).toEqual({ n: 0 });
   });
 
-  it('settled 筛选：未结算项目表只含「项目结算 = 否」，已结算项目表只含「项目结算 = 是」；不传返回全部', async () => {
-    // 导入：项目结算填「是」= 已结算，填「否」= 未结算
+  it('新建项目不接收「上海院已支付」：请求里带了也被忽略，固定为否', async () => {
+    const res = await post('/api/projects', body({ name: '带了也忽略', shPaid: true }));
+    expect(res.statusCode).toBe(201);
+    expect(res.json()).toMatchObject({ shPaid: false, postedKinds: [] });
+    expect(ctx.db.prepare('SELECT COUNT(*) AS n FROM tx').get()).toEqual({ n: 0 });
+  });
+
+  it('settled 筛选：已结算 = 有合同，未结算 = 没有合同；不传返回全部', async () => {
+    // 导入：有合同编号 = 已结算，没有 = 未结算（「上海院已支付」只是标记）
     await ctx.app.inject({
       method: 'POST',
       url: '/api/projects/import/commit',
       ...multipart(
         await projectXlsx([
-          ['HT-1', '第1批', '天水', '已结算甲', 100, 80, 0, 0, 0, '是', '否', '否'],
-          ['HT-1', '第1批', '天水', '已结算乙', 100, 80, 0, 0, 0, '是', '否', '否'],
-          ['', '', '天水', '未结算丙', 100, 80, 0, 0, 0, '否', '否', '否']
+          ['HT-1', '第1批', '天水', '已结算甲', 100, 80, 0, 0, 0, '否', '否'],
+          ['HT-1', '第1批', '天水', '已结算乙', 100, 80, 0, 0, 0, '否', '否'],
+          ['', '', '天水', '未结算丙', 100, 80, 0, 0, 0, '否', '否']
         ])
       )
     });
@@ -945,25 +978,53 @@ describe('未结算项目 / 已结算项目（同一张 project 表，按「项�
     expect((await ctx.app.inject({ url: '/api/projects?settled=maybe' })).statusCode).toBe(400);
   });
 
-  it('归入合同即结算：项目从未结算项目表移到已结算项目表（项目结算由否变是）', async () => {
+  it('归入合同 = 项目从未结算项目表移到已结算项目表；归入不入账，上海院已支付保持否', async () => {
     const a = await mk({ name: '项目甲' });
     await mk({ name: '项目乙' });
     expect(await names('?settled=false')).toEqual(['项目乙', '项目甲'].sort());
     expect(await names('?settled=true')).toEqual([]);
 
     const batch = ((await post('/api/batches', { batchNo: 1 })).json() as { id: string }).id;
-    const acc = await makeAccount('结算户', 0);
     const res = await post('/api/contracts', {
       batchId: batch,
       contractNo: 'HT-1',
-      projects: [{ projectId: a.id, contractPrice: 1_000_000 }],
-      settlement: { accountId: acc.id, date: '2026-03-15' }
+      projects: [{ projectId: a.id, contractPrice: 1_000_000 }]
     });
     expect(res.statusCode).toBe(201);
 
     expect(await names('?settled=false')).toEqual(['项目乙']);
     expect(await names('?settled=true')).toEqual(['项目甲']);
-    expect(await get(`/api/projects/${a.id}`)).toMatchObject({ qxMoneyReceived: true, contractNo: 'HT-1', postedKinds: ['qx_received'] });
+    expect(await get(`/api/projects/${a.id}`)).toMatchObject({ shPaid: false, contractNo: 'HT-1', postedKinds: [] });
+    expect(ctx.db.prepare('SELECT COUNT(*) AS n FROM tx').get()).toEqual({ n: 0 }); // 归入合同不记任何流水
+    expect(ctx.db.prepare('SELECT COUNT(*) AS n FROM project_posting').get()).toEqual({ n: 0 });
+  });
+
+  it('归入合同后，把「上海院已支付」切换为是才按企信实收入账；切回否则回退；之后才能删除项目', async () => {
+    const a = await mk({ name: '项目甲', qxReceived: 500_000 });
+    const acc = await makeAccount('入账户', 100_000);
+    const batch = ((await post('/api/batches', { batchNo: 1 })).json() as { id: string }).id;
+    await post('/api/contracts', { batchId: batch, contractNo: 'HT-1', projects: [{ projectId: a.id, contractPrice: 1_000_000 }] });
+
+    const full = { ...body({ name: '项目甲' }), paidSubcontractor: false, paidChenPei: false };
+    const on = await patch(`/api/projects/${a.id}`, { ...full, shPaid: true, postingAccountId: acc.id, postingDate: '2026-03-15' });
+    expect(on.statusCode).toBe(200);
+    expect(on.json()).toMatchObject({ shPaid: true, postedKinds: ['qx_received'] });
+    expect(ctx.db.prepare("SELECT type, occurred_on AS d FROM tx").all()).toEqual([{ type: 'income', d: '2026-03-15' }]);
+    const bal = async () => ((await get('/api/accounts')) as Array<{ id: string; balance: number }>).find((x) => x.id === acc.id)!.balance;
+    expect(await bal()).toBe(100_000 + 500_000); // 企信实收入账
+    // 入账流水：内置分类「项目收入」，往来单位、备注为空
+    const listed = ((await get('/api/transactions?limit=100')) as { items: Array<{ categoryName: string; counterparty: string; note: string }> }).items;
+    expect(listed).toHaveLength(1);
+    expect(listed[0]).toMatchObject({ categoryName: '项目收入', counterparty: '', note: '' });
+    expect(ctx.db.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE entity='project' AND entity_id=? AND action='update'").get(a.id)).toEqual({ n: 1 });
+
+    // 已入账不能直接删除项目
+    expect((await post(`/api/projects/${a.id}/archive`, {})).json()).toMatchObject({ code: 'PROJECT_HAS_POSTINGS' });
+    // 切回否 = 回退入账
+    const off = await patch(`/api/projects/${a.id}`, { ...full, shPaid: false });
+    expect(off.json()).toMatchObject({ shPaid: false, postedKinds: [] });
+    expect(await bal()).toBe(100_000);
+    expect((await post(`/api/projects/${a.id}/archive`, {})).statusCode).toBe(200);
   });
 
   it('新建项目的校验：名称必填且在未归档项目中唯一；金额必须是非负整数分；失败不落库', async () => {
@@ -983,7 +1044,7 @@ describe('未结算项目 / 已结算项目（同一张 project 表，按「项�
     expect((await get('/api/projects')).length).toBe(1);
   });
 
-  it('未结算项目的编辑与删除：省略 qxMoneyReceived 保持「否」且不入账；删除 = 归档，物理上仍在', async () => {
+  it('未结算项目的编辑与删除：省略 shPaid 保持「否」且不入账；删除 = 归档，物理上仍在', async () => {
     const p = await mk();
     const ok = await patch(`/api/projects/${p.id}`, {
       ...body({ name: '改名', chenPei: 60_000 }),
@@ -991,13 +1052,36 @@ describe('未结算项目 / 已结算项目（同一张 project 表，按「项�
       paidChenPei: false
     });
     expect(ok.statusCode).toBe(200);
-    expect(ok.json()).toMatchObject({ name: '改名', chenPei: 60_000, qxMoneyReceived: false, postedKinds: [] });
+    expect(ok.json()).toMatchObject({ name: '改名', chenPei: 60_000, shPaid: false, postedKinds: [] });
     expect(ctx.db.prepare('SELECT COUNT(*) AS n FROM tx').get()).toEqual({ n: 0 });
 
     expect((await post(`/api/projects/${p.id}/archive`, {})).statusCode).toBe(200);
     expect(ctx.db.prepare('SELECT archived FROM project WHERE id = ?').get(p.id)).toEqual({ archived: 1 });
     expect(await names('?settled=false')).toEqual([]);
     expect(count('archive')).toEqual({ n: 1 });
+  });
+
+  it('Excel 导入：识别「上海院已支付」列（仅「是」为真，只打标记不入账）；缺列时新增为否、更新保持原值', async () => {
+    const commitRows = async (rows: unknown[][], headers: string[]) =>
+      ctx.app.inject({ method: 'POST', url: '/api/projects/import/commit', ...multipart(await projectXlsx(rows, headers)) });
+    const full = (no: string, name: string, paid: string) => [no, '', '天水', name, 100, 0, 0, 0, 0, paid, '否', '否', ''];
+    expect((await commitRows([full('HT-1', '导入甲', '是'), full('HT-1', '导入乙', '否'), full('HT-1', '导入丙', 'yes')], PROJECT_HEADERS_FULL)).statusCode).toBe(201);
+    const list = (await get('/api/projects')) as Array<{ name: string; shPaid: boolean; contractPrice: number }>;
+    const by = (n: string) => list.find((p) => p.name === n)!;
+    expect(by('导入甲')).toMatchObject({ shPaid: true });
+    expect(by('导入乙')).toMatchObject({ shPaid: false });
+    expect(by('导入丙')).toMatchObject({ shPaid: false });
+    expect(ctx.db.prepare('SELECT COUNT(*) AS n FROM tx').get()).toEqual({ n: 0 }); // 导入不入账
+
+    // 缺列：更新已有项目保持原值，新增为否
+    expect((await commitRows([['导入甲', 200], ['导入丁', 300]], ['项目名称', '合同价'])).statusCode).toBe(201);
+    const after = (await get('/api/projects')) as Array<{ name: string; shPaid: boolean; contractPrice: number }>;
+    expect(after.find((p) => p.name === '导入甲')).toMatchObject({ contractPrice: 20_000, shPaid: true }); // Excel 里的元 -> 整数分
+    expect(after.find((p) => p.name === '导入丁')).toMatchObject({ shPaid: false });
+
+    // 有这一列且单元格为空 = 明确置为否
+    expect((await commitRows([full('HT-1', '导入甲', '')], PROJECT_HEADERS_FULL)).statusCode).toBe(201);
+    expect(((await get('/api/projects')) as Array<{ name: string; shPaid: boolean }>).find((p) => p.name === '导入甲')).toMatchObject({ shPaid: false });
   });
 
   it('可选区域：未结算与已结算项目的区域并集，去重去空排序；归档后不再出现', async () => {
@@ -1011,104 +1095,48 @@ describe('未结算项目 / 已结算项目（同一张 project 表，按「项�
   });
 });
 
-describe('迁移 v17：旧独立表 unsettled_project 的数据并入 project（结算 = 否）', () => {
-  it('未归档的并入未结算项目；同名项目已存在则跳过；已归档的不迁移；旧表保留', async () => {
-    const { openDatabase } = await import('./db/database');
-    const { migrations } = await import('./db/migrations');
-    const { runMigrations } = await import('./db/database');
-    const Database = (await import('better-sqlite3')).default;
-
-    // 先只执行到 v16（独立表还在用的状态），造数据，再执行 v17
-    const db = new Database(':memory:');
-    db.pragma('foreign_keys = ON');
-    const original = [...migrations];
-    migrations.splice(0, migrations.length, ...original.filter((m) => m.version <= 16));
-    try {
-      runMigrations(db);
-    } finally {
-      migrations.splice(0, migrations.length, ...original);
-    }
-    const ins = db.prepare(
-      `INSERT INTO unsettled_project (id, region, name, contract_price, qx_received, qx_subcontract_fee, chen_pei, qx_profit, archived, created_at, updated_at, device_id)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
-    );
-    ins.run('u1', '天水', '迁移项目', 1000, 800, 400, 50, 350, 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 'd');
-    ins.run('u2', '陇南', '同名项目', 1, 1, 1, 1, 1, 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 'd');
-    ins.run('u3', '兰州', '已归档项目', 1, 1, 1, 1, 1, 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 'd');
-    db.prepare(
-      `INSERT INTO project (id, contract_no, region, name, contract_price, qx_money_received, archived, created_at, updated_at, device_id)
-       VALUES ('p1','','天水','同名项目',5,1,0,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z','d')`
-    ).run();
-
-    runMigrations(db);
-
-    const rows = db.prepare('SELECT id, name, region, contract_price, qx_received, qx_money_received, contract_id, archived FROM project ORDER BY id').all();
-    expect(rows).toEqual([
-      { id: 'p1', name: '同名项目', region: '天水', contract_price: 5, qx_received: 0, qx_money_received: 1, contract_id: null, archived: 0 }, // 已有同名项目保持不变
-      { id: 'u1', name: '迁移项目', region: '天水', contract_price: 1000, qx_received: 800, qx_money_received: 0, contract_id: null, archived: 0 } // 迁入：结算 = 否
-    ]);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM unsettled_project').get()).toEqual({ n: 3 }); // 旧表保留
-    expect(
-      db.prepare("SELECT entity_id AS id, action FROM audit_log WHERE entity='unsettled_project' ORDER BY entity_id").all()
-    ).toEqual([
-      { id: 'u1', action: 'migrate_to_project' },
-      { id: 'u2', action: 'migrate_skipped_duplicate_name' }
-    ]);
-    void openDatabase;
-    db.close();
-  });
-});
-
-
 describe('合同管理', () => {
   const patch = (url: string, body: unknown) => ctx.app.inject({ method: 'PATCH', url, payload: body as object });
   const get = async (url: string) => (await ctx.app.inject({ url })).json();
   const mkBatch = async (batchNo: number) => ((await post('/api/batches', { batchNo })).json() as { id: string }).id;
-  /** 结算入账账户：项目归入合同 = 结算入账，需要一个账户（按需创建，同一测试内复用） */
-  let settleAcc: string | undefined;
+  /** 入账账户：只有把项目的「上海院已支付」切换为是时才需要（项目归入合同本身不入账） */
+  let payAcc: string | undefined;
   beforeEach(() => {
-    settleAcc = undefined; // 每个测试都是全新的内存库
+    payAcc = undefined; // 每个测试都是全新的内存库
   });
-  const settleAccount = async () => (settleAcc ??= (await makeAccount('结算户', 0)).id);
-  /** 新增合同（默认带结算入账账户；settlement 传 null 表示不带） */
-  const mkContract = async (
-    batchId: string,
-    contractNo: string,
-    projects: Array<{ projectId: string; contractPrice: number }>,
-    settlement?: { accountId: string; date?: string } | null
-  ) =>
-    post('/api/contracts', {
-      batchId, contractNo, projects,
-      ...(settlement === null ? {} : { settlement: settlement ?? { accountId: await settleAccount(), date: '2026-03-15' } })
-    });
-  /**
-   * 把已结算（已入账）的项目「反结算」：项目结算切回否 = 回退入账（对应流水作废）。
-   * 已入账的项目不能直接删除，测试里要删除合同下的项目时先调用它。
-   */
-  const unsettle = async (projectId: string) => {
+  const payAccount = async () => (payAcc ??= (await makeAccount('入账户', 0)).id);
+  /** 新增合同：归入合同不入账，所以不需要入账账户 */
+  const mkContract = async (batchId: string, contractNo: string, projects: Array<{ projectId: string; contractPrice: number }>) =>
+    post('/api/contracts', { batchId, contractNo, projects });
+  /** 把项目的「上海院已支付」切换为是：按企信实收入账（项目必须已归入合同） */
+  const markPaid = async (projectId: string) => {
     const p = await get(`/api/projects/${projectId}`);
-    const res = await patch(`/api/projects/${projectId}`, { ...p, qxMoneyReceived: false });
+    const res = await patch(`/api/projects/${projectId}`, { ...p, shPaid: true, postingAccountId: await payAccount(), postingDate: '2026-03-15' });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ qxMoneyReceived: false, postedKinds: [] });
+    expect(res.json()).toMatchObject({ shPaid: true, postedKinds: ['qx_received'] });
   };
-  /** 编辑合同（默认带结算入账账户，用于加入未结算项目） */
-  const editContract = async (id: string, body: Record<string, unknown>) =>
-    patch(`/api/contracts/${id}`, { settlement: { accountId: await settleAccount(), date: '2026-03-15' }, ...body });
+  /** 切回否 = 回退入账（流水删除）。已入账的项目不能直接删除，测试里要删除合同下已入账的项目时先调用它 */
+  const unpay = async (projectId: string) => {
+    const p = await get(`/api/projects/${projectId}`);
+    const res = await patch(`/api/projects/${projectId}`, { ...p, shPaid: false });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ shPaid: false, postedKinds: [] });
+  };
+  /** 编辑合同 */
+  const editContract = async (id: string, body: Record<string, unknown>) => patch(`/api/contracts/${id}`, body);
 
-  /** 导入若干项目：合同编号为空 = 未结算 */
+  /** 导入若干项目：合同编号为空 = 未结算（不归入合同） */
   async function importProjects(rows: unknown[][]) {
     const res = await ctx.app.inject({ method: 'POST', url: '/api/projects/import/commit', ...multipart(await projectXlsx(rows)) });
     expect(res.statusCode).toBe(201);
     const list = (await get('/api/projects')) as Array<{ id: string; name: string }>;
     return (name: string) => list.find((p) => p.name === name)!.id;
   }
-  // 企信实收默认 800 元：项目归入合同要按企信实收入账，实收为 0 无法结算
-  // 有合同编号 = 已结算，导入时项目结算必须为是；没有合同编号 = 未结算，项目结算为否
-  const row = (contractNo: string, name: string, price = 0) => [contractNo, '', '天水', name, price, 800, 0, 0, 0, contractNo ? '是' : '否', '否', '否'];
+  // 企信实收默认 800 元；这里的 contractNo 通常留空（未结算），再由测试用例把项目归入合同
+  const row = (contractNo: string, name: string, price = 0) => [contractNo, '', '天水', name, price, 800, 0, 0, 0, '否', '否'];
 
-  it('新增合同：归属批次，从未结算项目里挑选并设置合同价，合同总价 = 各项目合同价之和（整数分）；归入即结算（项目结算置为是并按企信实收入账）；项目批次号随合同', async () => {
+  it('新增合同：归属批次，从未结算项目里挑选并设置合同价，合同总价 = 各项目合同价之和（整数分）；归入不入账；项目批次号随合同', async () => {
     const id = await importProjects([row('', '项目甲'), row('', '项目乙'), row('', '项目丙')]);
-    const acc = await settleAccount();
     const batchId = await mkBatch(7);
     const res = await mkContract(batchId, 'HT-100', [{ projectId: id('项目甲'), contractPrice: 100_010 }, { projectId: id('项目乙'), contractPrice: 20_005 }]);
     expect(res.statusCode).toBe(201);
@@ -1118,45 +1146,32 @@ describe('合同管理', () => {
     expect(((await get(`/api/contracts?batchId=${batchId}`)) as Array<{ qxReceived: number; qxProfit: number }>)[0]).toMatchObject({ qxReceived: 160_000, qxProfit: 0 });
     expect(res.json().projects.map((p: { name: string }) => p.name).sort()).toEqual(['项目乙', '项目甲']);
 
-    // 项目：归入合同、合同价被设置、批次号 = 合同所属批次；项目结算置为是并有入账记录
+    // 项目：归入合同、合同价被设置、批次号 = 合同所属批次；上海院已支付保持否，没有入账记录
     expect(await get(`/api/projects/${id('项目甲')}`)).toMatchObject({
-      contractNo: 'HT-100', batchNo: 7, contractPrice: 100_010, qxMoneyReceived: true, postedKinds: ['qx_received']
+      contractNo: 'HT-100', batchNo: 7, contractPrice: 100_010, shPaid: false, postedKinds: []
     });
-    expect(await get(`/api/projects/${id('项目乙')}`)).toMatchObject({ qxMoneyReceived: true, postedKinds: ['qx_received'] });
-    // 每个归入的项目恰好一笔收入流水，金额 = 企信实收（整数分），入账到所选账户、日期为所选日期
-    const txs = ctx.db.prepare("SELECT type, occurred_on AS d, status FROM tx ORDER BY rowid").all();
-    expect(txs).toEqual([
-      { type: 'income', d: '2026-03-15', status: 'normal' },
-      { type: 'income', d: '2026-03-15', status: 'normal' }
-    ]);
-    // 入账流水记入记账流水：分类为内置「项目收入」，往来单位和备注置空
-    const listed = ((await get('/api/transactions?limit=100')) as {
-      items: Array<{ categoryName: string; counterparty: string; counterpartyId: string | null; note: string }>;
-    }).items;
-    expect(listed).toHaveLength(2);
-    for (const t of listed) expect(t).toMatchObject({ categoryName: '项目收入', counterparty: '', counterpartyId: null, note: '' });
-    expect(((await get('/api/accounts')) as Array<{ id: string; balance: number }>).find((a) => a.id === acc)!.balance).toBe(160_000);
+    expect(await get(`/api/projects/${id('项目乙')}`)).toMatchObject({ shPaid: false, postedKinds: [] });
+    // 归入合同不记任何流水，不产生入账关联、不改账户余额
+    expect(ctx.db.prepare('SELECT COUNT(*) AS n FROM tx').get()).toEqual({ n: 0 });
+    expect(ctx.db.prepare('SELECT COUNT(*) AS n FROM project_posting').get()).toEqual({ n: 0 });
     // 未选的项目不受影响：仍是未结算、不归属合同
-    expect(await get(`/api/projects/${id('项目丙')}`)).toMatchObject({ contractId: null, contractNo: '', batchNo: null, qxMoneyReceived: false, postedKinds: [] });
+    expect(await get(`/api/projects/${id('项目丙')}`)).toMatchObject({ contractId: null, contractNo: '', batchNo: null, shPaid: false, postedKinds: [] });
     expect(ctx.db.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE entity='contract' AND action='create'").get()).toEqual({ n: 1 });
-    expect(ctx.db.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE entity='project' AND action='settle'").get()).toEqual({ n: 2 });
+    expect(ctx.db.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE entity='project' AND action='settle'").get()).toEqual({ n: 0 });
   });
 
-  it('归入合同即结算：必须带入账账户；企信实收为 0 的项目无法结算；失败整体回滚（不建合同、不改项目、不记流水）', async () => {
-    const id = await importProjects([row('', '项目甲'), ['', '', '天水', '零实收项目', 0, 0, 0, 0, 0, '否', '否', '否']]);
+  it('新增合同不再需要入账账户，也不再要求企信实收大于 0：实收为 0 的项目照样可以归入合同；请求里带 settlement 被忽略', async () => {
+    const id = await importProjects([row('', '项目甲'), ['', '', '天水', '零实收项目', 0, 0, 0, 0, 0, '否', '否']]);
     const b = await mkBatch(1);
-    const noAcc = await mkContract(b, 'HT-1', [{ projectId: id('项目甲'), contractPrice: 1 }], null);
-    expect(noAcc.statusCode).toBe(400);
-    expect(noAcc.json()).toMatchObject({ code: 'POSTING_ACCOUNT_REQUIRED' });
-    const badAcc = await mkContract(b, 'HT-1', [{ projectId: id('项目甲'), contractPrice: 1 }], { accountId: 'nope' });
-    expect(badAcc.statusCode).toBe(404);
-    // 同一合同里有一个实收为 0 的项目：整体失败，合法的项目也不应被结算
-    const zero = await mkContract(b, 'HT-1', [{ projectId: id('项目甲'), contractPrice: 1 }, { projectId: id('零实收项目'), contractPrice: 1 }]);
-    expect(zero.statusCode).toBe(400);
-    expect(zero.json()).toMatchObject({ code: 'SETTLE_AMOUNT_REQUIRED' });
-    expect((await get('/api/contracts')).length).toBe(0);
-    expect(await get(`/api/projects/${id('项目甲')}`)).toMatchObject({ contractId: null, qxMoneyReceived: false, postedKinds: [] });
+    const res = await post('/api/contracts', {
+      batchId: b, contractNo: 'HT-1',
+      projects: [{ projectId: id('项目甲'), contractPrice: 1 }, { projectId: id('零实收项目'), contractPrice: 1 }],
+      settlement: { accountId: await payAccount(), date: '2026-03-15' } // 旧客户端可能还会带：被忽略，不入账
+    });
+    expect(res.statusCode).toBe(201);
+    expect(res.json()).toMatchObject({ projectCount: 2 });
     expect(ctx.db.prepare('SELECT COUNT(*) AS n FROM tx').get()).toEqual({ n: 0 });
+    expect(await get(`/api/projects/${id('零实收项目')}`)).toMatchObject({ contractNo: 'HT-1', shPaid: false, postedKinds: [] });
   });
 
   it('新增合同的校验：必须指定存在的批次、编号必填且唯一、至少一个项目、项目必须存在且未归入其他合同、不能重复选同一项目', async () => {
@@ -1183,52 +1198,32 @@ describe('合同管理', () => {
     expect((await get('/api/contracts')).length).toBe(1);
   });
 
-  it('新增合同只能挑未结算项目（项目结算 = 否）：已结算项目返回 409，且不落库', async () => {
-    // 导入时「项目结算」填「是」= 已结算
-    await ctx.app.inject({
-      method: 'POST', url: '/api/projects/import/commit',
-      ...multipart(await projectXlsx([['', '第1批', '天水', '已结算项目', 100, 0, 0, 0, 0, '是', '否', '否']]))
-    });
-    const sid = ((await get('/api/projects')) as Array<{ id: string }>)[0]!.id;
-    const res = await mkContract(await mkBatch(1), 'HT-S', [{ projectId: sid, contractPrice: 100 }]);
+  it('新增合同只能挑未结算项目（没有合同的项目）：已在合同里的项目返回 409，且不落库', async () => {
+    const id = await importProjects([row('', '项目甲'), row('', '项目乙')]);
+    const b = await mkBatch(1);
+    expect((await mkContract(b, 'HT-S', [{ projectId: id('项目甲'), contractPrice: 100 }])).statusCode).toBe(201);
+    const res = await mkContract(b, 'HT-T', [{ projectId: id('项目乙'), contractPrice: 1 }, { projectId: id('项目甲'), contractPrice: 100 }]);
     expect(res.statusCode).toBe(409);
-    expect(res.json()).toMatchObject({ code: 'PROJECT_ALREADY_SETTLED' });
-    expect((await get('/api/contracts')).length).toBe(0);
-    expect(await get(`/api/projects/${sid}`)).toMatchObject({ contractId: null });
+    expect(res.json()).toMatchObject({ code: 'PROJECT_ALREADY_IN_CONTRACT' });
+    expect((await get('/api/contracts')).length).toBe(1);
+    expect(await get(`/api/projects/${id('项目乙')}`)).toMatchObject({ contractId: null }); // 合法的项目乙也没被归入
   });
 
   it('Excel 导入仍认旧表头「企信支付下家分包费」（旧文件可继续导入，金额不会被当成缺列丢掉），新表头「企信支付下家」同样可用', async () => {
     const legacy = PROJECT_HEADERS.map((h) => (h === '企信支付下家' ? '企信支付下家分包费' : h));
     const r1 = await ctx.app.inject({
       method: 'POST', url: '/api/projects/import/commit',
-      ...multipart(await projectXlsx([['', '', '天水', '旧列名项目', 100, 80, 60, 0, 0, '否', '否', '否']], legacy))
+      ...multipart(await projectXlsx([['', '', '天水', '旧列名项目', 100, 80, 60, 0, 0, '否', '否']], legacy))
     });
     expect(r1.statusCode).toBe(201);
     const r2 = await ctx.app.inject({
       method: 'POST', url: '/api/projects/import/commit',
-      ...multipart(await projectXlsx([['', '', '天水', '新列名项目', 100, 80, 60, 0, 0, '否', '否', '否']]))
+      ...multipart(await projectXlsx([['', '', '天水', '新列名项目', 100, 80, 60, 0, 0, '否', '否']]))
     });
     expect(r2.statusCode).toBe(201);
     const list = (await get('/api/projects')) as Array<{ name: string; qxSubcontractFee: number }>;
     expect(list.find((p) => p.name === '旧列名项目')!.qxSubcontractFee).toBe(6_000);
     expect(list.find((p) => p.name === '新列名项目')!.qxSubcontractFee).toBe(6_000);
-  });
-
-  it('Excel 导入仍认旧表头「企信是否收到钱」（旧文件可继续导入），新表头「项目结算」同样可用', async () => {
-    const legacy = PROJECT_HEADERS.map((h) => (h === '项目结算' ? '企信是否收到钱' : h));
-    const r1 = await ctx.app.inject({
-      method: 'POST', url: '/api/projects/import/commit',
-      ...multipart(await projectXlsx([['', '第1批', '天水', '旧表头项目', 1, 0, 0, 0, 0, '是', '否', '否']], legacy))
-    });
-    expect(r1.statusCode).toBe(201);
-    const r2 = await ctx.app.inject({
-      method: 'POST', url: '/api/projects/import/commit',
-      ...multipart(await projectXlsx([['', '第1批', '天水', '新表头项目', 1, 0, 0, 0, 0, '是', '否', '否']]))
-    });
-    expect(r2.statusCode).toBe(201);
-    const list = (await get('/api/projects')) as Array<{ name: string; qxMoneyReceived: boolean }>;
-    expect(list.find((p) => p.name === '旧表头项目')!.qxMoneyReceived).toBe(true);
-    expect(list.find((p) => p.name === '新表头项目')!.qxMoneyReceived).toBe(true);
   });
 
   it('列表与详情：可按批次过滤合同；详情包含其下所有项目；不存在返回 404', async () => {
@@ -1262,19 +1257,20 @@ describe('合同管理', () => {
 
   it('批次汇总：合同数、项目数、合同总价、企信实收、企信利润按整数分汇总；已删除的项目/合同不计入', async () => {
     const id = await importProjects([
-      ['', '', '', '项目甲', 0, 800, 0, 0, 350, '否', '否', '否'],
-      ['', '', '', '项目乙', 0, 200, 0, 0, 50, '否', '否', '否'],
-      ['', '', '', '项目丙', 0, 1, 0, 0, 1, '否', '否', '否']
+      ['', '', '', '项目甲', 0, 800, 0, 0, 350, '否', '否'],
+      ['', '', '', '项目乙', 0, 200, 0, 0, 50, '否', '否'],
+      ['', '', '', '项目丙', 0, 1, 0, 0, 1, '否', '否']
     ]);
     const b = await mkBatch(1);
     await mkContract(b, 'HT-1', [{ projectId: id('项目甲'), contractPrice: 300 }, { projectId: id('项目乙'), contractPrice: 700 }]);
     const c2 = (await mkContract(b, 'HT-2', [{ projectId: id('项目丙'), contractPrice: 5 }])).json();
     expect(await get(`/api/batches/${b}`)).toMatchObject({ contractCount: 2, projectCount: 3, totalPrice: 1005, qxReceived: 100_100, qxProfit: 40_100 });
 
-    // 归入合同即结算入账，已入账的项目不能直接删除：先把「项目结算」切回否（回退入账），再删项目，合同才能删除；
+    // 已入账（上海院已支付 = 是）的项目不能直接删除：先切回否（回退入账），再删项目，合同才能删除；
     // 之后两者都不再计入批次汇总
+    await markPaid(id('项目丙'));
     expect((await post(`/api/projects/${id('项目丙')}/archive`, {})).json()).toMatchObject({ code: 'PROJECT_HAS_POSTINGS' });
-    await unsettle(id('项目丙'));
+    await unpay(id('项目丙'));
     expect((await post(`/api/projects/${id('项目丙')}/archive`, {})).statusCode).toBe(200);
     expect((await post(`/api/contracts/${c2.id}/archive`, {})).statusCode).toBe(200);
     expect(await get(`/api/batches/${b}`)).toMatchObject({ contractCount: 1, projectCount: 2, totalPrice: 1000, qxReceived: 100_000, qxProfit: 40_000 });
@@ -1294,14 +1290,13 @@ describe('合同管理', () => {
     expect((await post(`/api/batches/${b1}/archive`, {})).statusCode).toBe(200);
   });
 
-  it('编辑合同：可加入未结算且未归属的已有项目；已归属其他合同/已结算/不存在的被拒绝，且整体不落库', async () => {
+  it('编辑合同：可加入未归入任何合同的已有项目（加入不入账）；已归属其他合同/不存在的被拒绝，且整体不落库', async () => {
     await ctx.app.inject({
       method: 'POST', url: '/api/projects/import/commit',
       ...multipart(await projectXlsx([
-        ['', '第1批', '天水', '项目甲', 0, 800, 0, 0, 0, '否', '否', '否'],
-        ['', '第1批', '天水', '项目乙', 250, 500, 0, 0, 0, '否', '否', '否'],
-        ['', '第1批', '天水', '项目丙', 0, 800, 0, 0, 0, '否', '否', '否'],
-        ['', '第1批', '天水', '已结算项目', 0, 800, 0, 0, 0, '是', '否', '否']
+        ['', '第1批', '天水', '项目甲', 0, 800, 0, 0, 0, '否', '否'],
+        ['', '第1批', '天水', '项目乙', 250, 500, 0, 0, 0, '否', '否'],
+        ['', '第1批', '天水', '项目丙', 0, 800, 0, 0, 0, '否', '否']
       ]))
     });
     const list = (await get('/api/projects')) as Array<{ id: string; name: string }>;
@@ -1310,32 +1305,25 @@ describe('合同管理', () => {
     const c = (await mkContract(b, 'HT-1', [{ projectId: id('项目甲'), contractPrice: 1_000 }])).json();
     const other = (await mkContract(b, 'HT-2', [{ projectId: id('项目丙'), contractPrice: 50 }])).json();
 
-    // 失败：已归属其他合同 409、已结算 409、不存在 404；同一请求里合法的新增项目也不应落库
+    // 失败：已归属其他合同 409、不存在 404；同一请求里合法的新增项目也不应落库
     const bad = (projectId: string) => editContract(c.id, {
       contractNo: 'HT-1', projects: [{ projectId: id('项目甲'), contractPrice: 1_000 }, { projectId: id('项目乙'), contractPrice: 1 }, { projectId, contractPrice: 1 }]
     });
     expect((await bad(id('项目丙'))).json()).toMatchObject({ code: 'PROJECT_ALREADY_IN_CONTRACT' });
-    expect((await bad(id('已结算项目'))).json()).toMatchObject({ code: 'PROJECT_ALREADY_SETTLED' });
     expect((await bad('nope')).statusCode).toBe(404);
     expect(await get(`/api/projects/${id('项目乙')}`)).toMatchObject({ contractId: null, contractNo: '', batchNo: null, contractPrice: 25_000 });
     expect(await get(`/api/contracts/${c.id}`)).toMatchObject({ projectCount: 1, totalPrice: 1_000 });
     expect(await get(`/api/contracts/${other.id}`)).toMatchObject({ projectCount: 1, totalPrice: 50 });
 
-    // 失败：加入未结算项目需要入账账户（归入即结算）
-    const noAcc = await patch(`/api/contracts/${c.id}`, { contractNo: 'HT-1', projects: [{ projectId: id('项目乙'), contractPrice: 1 }] });
-    expect(noAcc.statusCode).toBe(400);
-    expect(noAcc.json()).toMatchObject({ code: 'POSTING_ACCOUNT_REQUIRED' });
-    expect(await get(`/api/projects/${id('项目乙')}`)).toMatchObject({ contractId: null, qxMoneyReceived: false });
-
-    // 成功：加入项目乙并改编号；总价 = 各项目合同价之和；项目批次号 = 合同批次；加入的项目同步结算（置为是并入账 500 元）
+    // 成功：加入项目乙并改编号（不需要入账账户）；总价 = 各项目合同价之和；项目批次号 = 合同批次；加入不入账
     const txBefore = (ctx.db.prepare('SELECT COUNT(*) AS n FROM tx').get() as { n: number }).n;
     const ok = await editContract(c.id, {
       contractNo: 'HT-1B', projects: [{ projectId: id('项目甲'), contractPrice: 1_000 }, { projectId: id('项目乙'), contractPrice: 30_005 }]
     });
     expect(ok.statusCode).toBe(200);
     expect(ok.json()).toMatchObject({ contractNo: 'HT-1B', batchNo: 3, projectCount: 2, totalPrice: 31_005 });
-    expect(await get(`/api/projects/${id('项目乙')}`)).toMatchObject({ contractId: c.id, contractNo: 'HT-1B', batchNo: 3, contractPrice: 30_005, qxMoneyReceived: true, postedKinds: ['qx_received'] });
-    expect(ctx.db.prepare('SELECT COUNT(*) AS n FROM tx').get()).toEqual({ n: txBefore + 1 }); // 只为新加入的项目乙入账一笔
+    expect(await get(`/api/projects/${id('项目乙')}`)).toMatchObject({ contractId: c.id, contractNo: 'HT-1B', batchNo: 3, contractPrice: 30_005, shPaid: false, postedKinds: [] });
+    expect(ctx.db.prepare('SELECT COUNT(*) AS n FROM tx').get()).toEqual({ n: txBefore }); // 加入合同不产生流水
     const audit = ctx.db.prepare("SELECT payload FROM audit_log WHERE entity='contract' AND entity_id=? AND action='update'").get(c.id) as { payload: string };
     expect(JSON.parse(audit.payload).addedProjects).toEqual([id('项目乙')]);
 
@@ -1465,8 +1453,7 @@ describe('合同管理', () => {
     expect(await get(`/api/projects/${id('项目甲')}`)).toMatchObject({ contractId: c.id, contractNo: 'HT-1', batchNo: 1, contractPrice: 300 });
     expect(ctx.db.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE entity='contract' AND action='archive'").get()).toEqual({ n: 0 });
 
-    // 只删掉一个项目后仍有项目，继续拒绝；剩余项目也删除后才允许（已结算入账的项目先反结算才能删除）
-    await unsettle(id('项目甲'));
+    // 只删掉一个项目后仍有项目，继续拒绝；剩余项目也删除后才允许
     await post(`/api/projects/${id('项目甲')}/archive`, {});
     expect((await post(`/api/contracts/${c.id}/archive`, {})).statusCode).toBe(409);
     expect((await post(`/api/contracts/${c.id}/archive`, {})).json().message).toContain('1 个项目');
@@ -1477,8 +1464,7 @@ describe('合同管理', () => {
     const b = await mkBatch(1);
     // 空合同：没有任何项目（新增合同本身要求至少一个项目，所以通过「删光项目」得到）
     const c = (await mkContract(b, 'HT-1', [{ projectId: id('项目甲'), contractPrice: 300 }])).json();
-    await unsettle(id('项目甲')); // 归入合同即已结算入账，要先反结算（回退入账）才能删除项目
-    expect((await post(`/api/projects/${id('项目甲')}/archive`, {})).statusCode).toBe(200);
+    expect((await post(`/api/projects/${id('项目甲')}/archive`, {})).statusCode).toBe(200); // 归入合同不入账，可直接删除
 
     const del = await post(`/api/contracts/${c.id}/archive`, {});
     expect(del.statusCode).toBe(200);
@@ -1492,25 +1478,27 @@ describe('合同管理', () => {
   });
 
   it('已入账的项目不能删除，因此其所在合同也不能删除（先回退入账、删除项目后才行）', async () => {
-    const id = await importProjects([['', '', '天水', '入账项目', 0, 800, 0, 0, 0, '否', '否', '否']]);
+    const id = await importProjects([['', '', '天水', '入账项目', 0, 800, 0, 0, 0, '否', '否']]);
     const b = await mkBatch(1);
-    // 归入合同即结算入账
     const c = (await mkContract(b, 'HT-1', [{ projectId: id('入账项目'), contractPrice: 1000 }])).json();
-    expect(await get(`/api/projects/${id('入账项目')}`)).toMatchObject({ qxMoneyReceived: true, postedKinds: ['qx_received'] });
+    // 归入合同不入账；在项目里把「上海院已支付」切换为是才入账
+    expect(await get(`/api/projects/${id('入账项目')}`)).toMatchObject({ shPaid: false, postedKinds: [] });
+    await markPaid(id('入账项目'));
+    expect(await get(`/api/projects/${id('入账项目')}`)).toMatchObject({ shPaid: true, postedKinds: ['qx_received'] });
 
     expect((await post(`/api/contracts/${c.id}/archive`, {})).json()).toMatchObject({ code: 'CONTRACT_HAS_PROJECTS' });
     expect((await post(`/api/projects/${id('入账项目')}/archive`, {})).json()).toMatchObject({ code: 'PROJECT_HAS_POSTINGS' });
     expect(ctx.db.prepare('SELECT archived FROM contract WHERE id = ?').get(c.id)).toEqual({ archived: 0 });
 
-    // 反结算（回退入账，流水作废）→ 删除项目 → 删除合同
-    await unsettle(id('入账项目'));
-    expect(ctx.db.prepare("SELECT COUNT(*) AS n FROM tx WHERE status = 'normal'").get()).toEqual({ n: 0 });
+    // 切回否（回退入账，流水删除）→ 删除项目 → 删除合同
+    await unpay(id('入账项目'));
+    expect(ctx.db.prepare('SELECT COUNT(*) AS n FROM tx').get()).toEqual({ n: 0 });
     expect((await post(`/api/projects/${id('入账项目')}/archive`, {})).statusCode).toBe(200);
     expect((await post(`/api/contracts/${c.id}/archive`, {})).statusCode).toBe(200);
   });
 
   it('Excel 导入：合同编号不存在时自动创建合同（及批次）并归入；已存在则复用且批次不被 Excel 改动；编号为空保持未结算；合同总价随之汇总', async () => {
-    const r = (no: string, batch: string, name: string, price: number) => [no, batch, '', name, price, 0, 0, 0, 0, no ? '是' : '否', '否', '否'];
+    const r = (no: string, batch: string, name: string, price: number) => [no, batch, '', name, price, 0, 0, 0, 0, '否', '否'];
     await importProjects([r('HT-1', '第3批', '项目甲', 100), r('HT-1', '第3批', '项目乙', 200), r('HT-2', '第4批', '项目丙', 50), r('', '', '项目丁', 9)]);
     const list = (await get('/api/contracts')) as Array<{ contractNo: string; batchNo: number; totalPrice: number; projectCount: number }>;
     expect(list.map((c) => c.contractNo).sort()).toEqual(['HT-1', 'HT-2']);
@@ -1535,7 +1523,7 @@ describe('合同管理', () => {
     const c1 = (await mkContract(b1, 'HT-1', [{ projectId: id('项目甲'), contractPrice: 100 }])).json();
     const c2 = (await mkContract(b2, 'HT-2', [{ projectId: id('项目乙'), contractPrice: 200 }])).json();
     const body = (name: string, extra: Record<string, unknown> = {}) => ({
-      // 归入合同即结算入账，企信实收已入账（80_000 分）金额被锁定，保存时必须保持原值
+      // 企信实收保持库里的 80_000 分（导入时 800 元）
       region: '天水', name, contractPrice: 100, qxReceived: 80_000, qxSubcontractFee: 0, chenPei: 0, qxProfit: 0,
       paidSubcontractor: false, paidChenPei: false, ...extra
     });
@@ -1564,7 +1552,7 @@ describe('合同管理', () => {
   });
 
   it('合同带出其下项目的区域：去重、去空、排序；换合同或项目归档后随之变化', async () => {
-    const r = (name: string, region: string) => ['', '', region, name, 0, 800, 0, 0, 0, '否', '否', '否'];
+    const r = (name: string, region: string) => ['', '', region, name, 0, 800, 0, 0, 0, '否', '否'];
     const id = await importProjects([r('项目甲', '陇南'), r('项目乙', '天水'), r('项目丙', '天水'), r('项目丁', ''), r('项目戊', '兰州')]);
     const b = await mkBatch(1);
     const c = (await mkContract(b, 'HT-1', ['项目甲', '项目乙', '项目丙', '项目丁'].map((n) => ({ projectId: id(n), contractPrice: 1 })))).json();
@@ -1572,13 +1560,12 @@ describe('合同管理', () => {
     const expected = ['天水', '陇南'].sort();
     expect(await regionsOf()).toEqual(expected);
     expect((await get(`/api/contracts/${c.id}`)).regions).toEqual(expected);
-    await unsettle(id('项目甲')); // 已结算入账的项目先反结算才能删除
     await post(`/api/projects/${id('项目甲')}/archive`, {});
     expect(await regionsOf()).toEqual(['天水']);
   });
 
   it('已有区域列表：未归档项目里出现过的非空区域，去重并排序；项目归档后不再出现', async () => {
-    const r = (name: string, region: string) => ['', '', region, name, 0, 0, 0, 0, 0, '否', '否', '否'];
+    const r = (name: string, region: string) => ['', '', region, name, 0, 0, 0, 0, 0, '否', '否'];
     const id = await importProjects([r('项目甲', '天水'), r('项目乙', '陇南'), r('项目丙', '天水'), r('项目丁', '')]);
     expect(await get('/api/projects/regions')).toEqual(['天水', '陇南'].sort());
     await post(`/api/projects/${id('项目乙')}/archive`, {});
